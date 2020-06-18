@@ -1,4 +1,4 @@
-# One
+# OneKube
 Zero trust peer-to-peer global scale computing for long lasting processes and functions.
 
 ## Idea
