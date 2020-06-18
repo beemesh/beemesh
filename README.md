@@ -14,6 +14,7 @@ Connectivity | Network based | Connection based
 
 ## Package
 One comes as single binary. Just deploy to join the P2P network to participate. 
+![OneKube Binary](OneKube.png)
 
 ## API
 Must be K8s compliant so that everybody can move on.
