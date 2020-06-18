@@ -6,7 +6,7 @@ OneKube comes as a single binary for datacenters and IoT as well. Service Mesh i
 
 Decoupling the the P2P network from the clustering,  coordination from the clustering offers a major advantage in scaling and continuous lifecycle. Networking is fully replaced by transport based connectivity.
 
-Just deploy to join the P2P network to participate. The underlying protocol naturally prefers nodes that are been alive for longer over newer entrants. As soon workload is deployed, consensus is deployed as sidecar to the pods. Stateless workload doesn't need any state management. This encourages stateless and zero trust based microservices.
+Just deploy to join the P2P network and start deploying your workloads. The underlying protocol naturally prefers nodes that are been alive for longer over newer entrants. As soon workload is deployed, consensus is deployed as sidecar to the pods. Stateless workload do not need state management. This encourages stateless and zero trust based microservices.
 
 ## Architecture
 
