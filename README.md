@@ -2,7 +2,7 @@
 Zero trust peer-to-peer global scale computing for long lasting processes and functions.
 
 ## Idea
-The current implementations are derived from data center architectures and pile up complexity. The idea is questioning the basic assumptions and cutting off the obsolete like heavy networking.
+The current implementations are derived from data center architectures and pile up complexity. The idea is questioning the basic assumptions and cutting off the obsolete like heavy networking. This is a classic inversion pattern.
 
 Decoupling the node coordination from the clustering offers a major advantage in scaling and continuous lifecycle. 
 
@@ -12,8 +12,10 @@ Clustering   | Supervised Consensus | P2P
 Scheduling | Relying on Cluster | Ad-hoc Consensus as required by Workload Specs
 Connectivity | Network based | Connection based
 
-## Package
-One comes as single binary. Just deploy to join the P2P network to participate. 
+OneKube comes as single binary. Just deploy to join the P2P network to participate with no need for consensus or leader election. The underlying protocol naturally prefers nodes that are been alive for longer over newer entrants. As soon workload is deployed, consensus is deployed as sidecar. Stateless workload does not need any state management. This encourages true stateless and zero trust based microservices.
+
+## Architecture
+
 ![OneKube Binary](OneKube.png)
 
 ## API
