@@ -10,11 +10,10 @@ Just deploy to join the P2P network and start deploying your workloads. The unde
 
 ![OneKube Binary](OneKube.png)
 
-## Service Mesh
-
 
 ## API
-Must be K8s compliant so that everybody can move on.
+Must be K8s compliant so that everybody can move on. GitOps based workload provisioning is strongly advised.
+
 
 ## Building Blocks
 * P2P: [https://libp2p.io/](https://libp2p.io/)
