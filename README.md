@@ -8,7 +8,7 @@ Just deploy to join the P2P network and start deploying your workloads. The unde
 
 ## Architecture
 
-![OneKube Binary](OneKube.png)
+![BeeMesh Binary](beemesh.png)
 
 
 ## API
