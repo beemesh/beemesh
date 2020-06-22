@@ -2,7 +2,7 @@
 Zero trust peer-to-peer global scale computing for long lasting processes and functions.
 
 ## Idea
-BeeMesh comes as a single binary for datacenters and IoT as well. Service Mesh is not just a pile up complexity but natively incorporated as P2P network. Clustering is a workload concern, as such the nodes do not need consensus or leader election. BeeMesh is designed for massive scale-out and improved software lifecycle.
+BeeMesh comes as a single binary for datacenters, edge and mobile computing. Service Mesh is not just a pile up complexity but natively incorporated as P2P network. Clustering is a workload concern, as such the nodes do not need consensus or leader election. BeeMesh is designed for massive scale-out and improved software lifecycle.
 
 Just deploy to join the P2P network and start deploying your workloads. The underlying protocol naturally prefers nodes that are been alive for longer over newer entrants. Networking is fully replaced by transport based connectivity. As soon workload is deployed, consensus is deployed as sidecar to the pods. Stateless workload do not need state management. This encourages stateless and zero trust based microservices.
 
