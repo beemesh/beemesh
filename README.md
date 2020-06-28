@@ -8,7 +8,7 @@ Kubernetes follows a scale-out approach when it comes to increase the available 
 
 Kubernetes connectivity can be extended with basic network virtualization in different forms. Several clusters are disjoint and therefore require further extensions such as service meshes with replicated control planes or cluster federation as needed. Traditional services are excluded and must be considered separately. Despite the overall intention, this infrastructure-focused connectivity does not meet today’s requirements for a fine-grained, resilient software design.
 
-The design decisions and ranking for a) clustering and b) connectivity, although individually exemplary and modularly implemented, lead to limitations in terms of scaling and connectivity.
+The overall design decisions and ranking made for a) clustering and b) connectivity, although individually exemplary and modularly implemented, lead to limitations in terms of scaling and connectivity.
 
 ## Architecture
 ![BeeMesh Binary](https://www.beemesh.io/assets/img/prototype.png)
