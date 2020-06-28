@@ -25,10 +25,9 @@ Peer to peer mesh policies allows you to make long-lasting processing or functio
 ## API
 A Kubernetes compliant API is encouraged so that workloads can be shifted smoothly.
 
-
 ## Building Blocks
-* P2P: [https://libp2p.io/](https://libp2p.io/)
-* Workload Clustering: [https://github.com/libp2p/go-libp2p-raft](https://github.com/libp2p/go-libp2p-raft)
-* Lightweight Kubernetes: [https://k3s.io/](https://k3s.io/)
-* Podman: https://github.com/containers/libpod
-* Example P2P Database: https://github.com/orbitdb
+* Peer-to-peer Networking: [libp2p](https://libp2p.io/)
+* Workload Clustering: [libp2p-raft](https://github.com/libp2p/go-libp2p-raft)
+* Standalone pods: [Podman](https://github.com/containers/libpod)
+* Lightweight Kubernetes: [k3s.io](https://k3s.io/)
+* Example P2P Database: [OrbitDB](https://github.com/orbitdb)
