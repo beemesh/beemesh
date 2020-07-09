@@ -13,7 +13,7 @@ The overall design decisions and ranking made for a) clustering and b) connectiv
 
 
 ## Architecture
-![BeeMesh Binary](assets/img/prototype.png)
+![BeeMesh Binary](assets/prototype.png)
 
 BeeMesh prioritises connectivity and dissolves clustering in its present form. Removing the infrastructure clustering eliminates the scaling limits. This favours today's security concepts, life cycle and reduces the administrative efforts.
 
