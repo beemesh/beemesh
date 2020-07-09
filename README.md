@@ -35,8 +35,3 @@ A Kubernetes compliant API is encouraged so that workloads can be shifted smooth
 * Lightweight Kubernetes: [k3s.io](https://k3s.io/)
 * Example P2P Database: [OrbitDB](https://github.com/orbitdb)
 * Varlink Interface: [Varlink](https://varlink.org/)
-
-## Longterm
-A reconsideration of Cri-O and Kubernetes instead of Podman while retaining the new innovative design decisions is possible. This will be evaluated on a second stage.
-
-![BeeMesh Binary](assets/img/beemesh.png)
