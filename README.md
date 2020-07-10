@@ -1,3 +1,5 @@
+[![Coverage Status](https://coveralls.io/repos/github/beemesh/beemesh/badge.svg?branch=master)](https://coveralls.io/github/beemesh/beemesh?branch=master)
+
 ## Overview
 BeeMesh combines zero trust security with peer to peer concepts. Decentralized processing, service based meshing and ad-hoc storage are current and foreseeable requirements of towards evolution. This requires policies based on authentication and cryptography.
 
