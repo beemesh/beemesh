@@ -16,7 +16,6 @@ Docker mulitstage build based build:
 > docker run -d p2pchat
 ```
 
-```
 ## So how does it work?
 
 1. **Configure a p2p host**
