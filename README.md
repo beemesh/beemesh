@@ -13,7 +13,7 @@ Docker mulitstage build based build:
 ## Usage
 
 ```
-> docker run -d p2pchat
+> docker run -ti p2pchat
 ```
 
 ## So how does it work?
