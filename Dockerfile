@@ -12,7 +12,5 @@ RUN set -ex;\
 FROM alpine
 
 COPY --from=build /files /
-COPY files /
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["/usr/local/bin/chat", "-listen", "/ip4/127.0.0.1/tcp/${PORT}"]
+CMD ["/usr/local/bin/chat"]
