@@ -7,13 +7,13 @@ This program demonstrates a simple p2p chat application. You will learn how to d
 Docker mulitstage build based build:
 
 ```
-> docker build .
+> docker build -t p2pchat .
 ```
 
 ## Usage
 
 ```
-> docker run -d flavioaiello/p2pchat
+> docker run -d p2pchat
 ```
 
 ```
