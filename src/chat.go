@@ -8,22 +8,17 @@ import (
 	"os"
 	"sync"
 
+	"github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
 	discovery "github.com/libp2p/go-libp2p-discovery"
-	routing "github.com/libp2p/go-libp2p-routing"
-
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	multiaddr "github.com/multiformats/go-multiaddr"
-	logging "github.com/whyrusleeping/go-logging"
-
-	"github.com/ipfs/go-log"
 )
 
-var logger = log.Logger("rendezvous")
+var logger = log.Logger("beemesh")
 
 func handleStream(stream network.Stream) {
 	logger.Info("Got a new stream!")
@@ -82,8 +77,7 @@ func writeData(rw *bufio.ReadWriter) {
 }
 
 func main() {
-	log.SetAllLoggers(logging.WARNING)
-	log.SetLogLevel("rendezvous", "info")
+	log.SetLogLevel("beemesh", "info")
 	help := flag.Bool("h", false, "Display Help")
 	config, err := ParseFlags()
 	if err != nil {
@@ -102,15 +96,9 @@ func main() {
 
 	// libp2p.New constructs a new libp2p Host. Other options can be added
 	// here.
-	var kademliaDHT *dht.IpfsDHT
 	host, err := libp2p.New(ctx,
 		libp2p.ListenAddrs([]multiaddr.Multiaddr(config.ListenAddresses)...),
-		libp2p.NATPortMap(),
-		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
-			kademliaDHT, err = dht.New(ctx, h)
-			return kademliaDHT, err
-		}),
-		libp2p.EnableAutoRelay(),
+		libp2p.EnableNATService(),
 	)
 	if err != nil {
 		panic(err)
@@ -126,10 +114,10 @@ func main() {
 	// // client because we want each peer to maintain its own local copy of the
 	// // DHT, so that the bootstrapping node of the DHT can go down without
 	// // inhibiting future peer discovery.
-	// kademliaDHT, err := dht.New(ctx, host)
-	// if err != nil {
-	// 	panic(err)
-	// }
+	kademliaDHT, err := dht.New(ctx, host)
+	if err != nil {
+		panic(err)
+	}
 
 	// Bootstrap the DHT. In the default configuration, this spawns a Background
 	// thread that will refresh the peer table every five minutes.
@@ -141,6 +129,7 @@ func main() {
 	// Let's connect to the bootstrap nodes first. They will tell us about the
 	// other nodes in the network.
 	var wg sync.WaitGroup
+	//logger.Debug(config.BootstrapPeers)
 	for _, peerAddr := range config.BootstrapPeers {
 		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
 		wg.Add(1)
@@ -160,7 +149,8 @@ func main() {
 	logger.Info("Announcing ourselves...")
 	routingDiscovery := discovery.NewRoutingDiscovery(kademliaDHT)
 	discovery.Advertise(ctx, routingDiscovery, config.RendezvousString)
-	logger.Debug("Successfully announced!")
+	logger.Info("Successfully announced!")
+	kademliaDHT.RoutingTable().Print()
 
 	// Now, look for others who have announced
 	// This is like your friend telling you the location to meet you.
@@ -171,10 +161,11 @@ func main() {
 	}
 
 	for peer := range peerChan {
+
 		if peer.ID == host.ID() {
 			continue
 		}
-		logger.Debug("Found peer:", peer)
+		logger.Info("Found peer:", peer)
 
 		logger.Debug("Connecting to:", peer)
 		stream, err := host.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID))
