@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
-	"os"
+	"io"
+	"net"
 	"sync"
 
 	"github.com/ipfs/go-log"
@@ -21,65 +21,38 @@ import (
 var logger = log.Logger("beemesh")
 
 func handleStream(stream network.Stream) {
-	logger.Info("Got a new stream!")
-
-	// Create a buffer stream for non blocking read and write.
-	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-
-	go readData(rw)
-	go writeData(rw)
-
-	// 'stream' will stay open until you close it (or the other side closes it).
-}
-
-func readData(rw *bufio.ReadWriter) {
-	for {
-		str, err := rw.ReadString('\n')
-		if err != nil {
-			fmt.Println("Error reading from buffer")
-			panic(err)
+	logger.Info("New incomming connection. Fowarding to server")
+	conn, err := net.Dial("tcp", config.ServerConnectAddress)
+	if err != nil {
+		logger.Errorf("Error connecting to server: %v", err)
+		if err := stream.Close(); err != nil {
+			logger.Errorf("Cannot close stream: %v", err)
 		}
-
-		if str == "" {
-			return
-		}
-		if str != "\n" {
-			// Green console colour: 	\x1b[32m
-			// Reset console colour: 	\x1b[0m
-			fmt.Printf("\x1b[32m%s\x1b[0m> ", str)
-		}
-
+		return
 	}
+	forward(stream, conn)
 }
 
-func writeData(rw *bufio.ReadWriter) {
-	stdReader := bufio.NewReader(os.Stdin)
-
-	for {
-		fmt.Print("> ")
-		sendData, err := stdReader.ReadString('\n')
-		if err != nil {
-			fmt.Println("Error reading from stdin")
-			panic(err)
+func forward(stream network.Stream, conn net.Conn) {
+	go func() {
+		if _, err := io.Copy(stream, conn); err != nil {
+			logger.Errorf("Error forwarding data from connection to stream: %v", err)
 		}
-
-		_, err = rw.WriteString(fmt.Sprintf("%s\n", sendData))
-		if err != nil {
-			fmt.Println("Error writing to buffer")
-			panic(err)
+	}()
+	go func() {
+		if _, err := io.Copy(conn, stream); err != nil {
+			logger.Errorf("Error sending data from stream to connection: %v", err)
 		}
-		err = rw.Flush()
-		if err != nil {
-			fmt.Println("Error flushing buffer")
-			panic(err)
-		}
-	}
+	}()
 }
+
+var config Config
 
 func main() {
 	log.SetLogLevel("beemesh", "info")
 	help := flag.Bool("h", false, "Display Help")
-	config, err := ParseFlags()
+	var err error
+	config, err = ParseFlags()
 	if err != nil {
 		panic(err)
 	}
@@ -98,7 +71,7 @@ func main() {
 	// here.
 	host, err := libp2p.New(ctx,
 		libp2p.ListenAddrs([]multiaddr.Multiaddr(config.ListenAddresses)...),
-		libp2p.EnableNATService(),
+		libp2p.NATPortMap(),
 	)
 	if err != nil {
 		panic(err)
@@ -152,36 +125,48 @@ func main() {
 	logger.Info("Successfully announced!")
 	kademliaDHT.RoutingTable().Print()
 
-	// Now, look for others who have announced
-	// This is like your friend telling you the location to meet you.
-	logger.Debug("Searching for other peers...")
-	peerChan, err := routingDiscovery.FindPeers(ctx, config.RendezvousString)
+	// Open listening port
+	ln, err := net.Listen("tcp", config.ProxyListenAddress)
 	if err != nil {
 		panic(err)
 	}
-
-	for peer := range peerChan {
-
-		if peer.ID == host.ID() {
-			continue
-		}
-		logger.Info("Found peer:", peer)
-
-		logger.Debug("Connecting to:", peer)
-		stream, err := host.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID))
-
+	for {
+		conn, err := ln.Accept()
 		if err != nil {
-			logger.Warning("Connection failed:", err)
+			// handle error
 			continue
-		} else {
-			rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-
-			go writeData(rw)
-			go readData(rw)
 		}
+		logger.Info("New incomming connection. Looking for peers to forward")
 
-		logger.Info("Connected to:", peer)
+		// Now, look for others who have announced
+		// This is like your friend telling you the location to meet you.
+		logger.Debug("Searching for other peers...")
+		peerChan, err := routingDiscovery.FindPeers(ctx, config.RendezvousString)
+		if err != nil {
+			panic(err)
+		}
+		var found bool
+		for peer := range peerChan {
+			if peer.ID == host.ID() {
+				continue
+			}
+
+			logger.Debugf("Connecting to: %s", peer)
+			stream, err := host.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID))
+			if err != nil {
+				logger.Warningf("Connection failed: %v", err)
+				continue
+			}
+			logger.Infof("Forwarding to peer %v", peer.ID)
+			forward(stream, conn)
+			found = true
+			break
+		}
+		if !found {
+			logger.Info("No peers found. Disconnecting")
+			if err := conn.Close(); err != nil {
+				logger.Infof("error closing connection: %v", err)
+			}
+		}
 	}
-
-	select {}
 }

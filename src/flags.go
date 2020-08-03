@@ -40,15 +40,19 @@ func StringsToAddrs(addrStrings []string) (maddrs []maddr.Multiaddr, err error) 
 }
 
 type Config struct {
-	RendezvousString string
-	BootstrapPeers   addrList
-	ListenAddresses  addrList
-	ProtocolID       string
+	RendezvousString     string
+	BootstrapPeers       addrList
+	ListenAddresses      addrList
+	ProtocolID           string
+	ProxyListenAddress   string
+	ServerConnectAddress string
 }
 
 func ParseFlags() (Config, error) {
 	config := Config{}
-	flag.StringVar(&config.RendezvousString, "rendezvous", "beemesh2", "Unique string to identify group of nodes. ")
+	flag.StringVar(&config.ProxyListenAddress, "proxy-listener", "localhost:1234", "Address to listen for TCP IP connections.")
+	flag.StringVar(&config.ServerConnectAddress, "server-address", "localhost:443", "Address of the server to forward incomming libp2p requests.")
+	flag.StringVar(&config.RendezvousString, "rendezvous", "beemesh4", "Unique string to identify group of nodes. ")
 	flag.Var(&config.BootstrapPeers, "peer", "Adds a peer multiaddress to the bootstrap list")
 	flag.Var(&config.ListenAddresses, "listen", "Adds a multiaddress to the listen list")
 	flag.StringVar(&config.ProtocolID, "pid", "/chat/1.1.0", "Sets a protocol id for stream headers")
