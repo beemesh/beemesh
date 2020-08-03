@@ -9,10 +9,12 @@ import (
 	"sync"
 
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
-	"github.com/libp2p/go-libp2p-discovery"
+	discovery "github.com/libp2p/go-libp2p-discovery"
+	routing "github.com/libp2p/go-libp2p-routing"
 
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	multiaddr "github.com/multiformats/go-multiaddr"
@@ -100,8 +102,15 @@ func main() {
 
 	// libp2p.New constructs a new libp2p Host. Other options can be added
 	// here.
+	var kademliaDHT *dht.IpfsDHT
 	host, err := libp2p.New(ctx,
 		libp2p.ListenAddrs([]multiaddr.Multiaddr(config.ListenAddresses)...),
+		libp2p.NATPortMap(),
+		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
+			kademliaDHT, err = dht.New(ctx, h)
+			return kademliaDHT, err
+		}),
+		libp2p.EnableAutoRelay(),
 	)
 	if err != nil {
 		panic(err)
@@ -113,14 +122,14 @@ func main() {
 	// initiates a connection and starts a stream with this peer.
 	host.SetStreamHandler(protocol.ID(config.ProtocolID), handleStream)
 
-	// Start a DHT, for use in peer discovery. We can't just make a new DHT
-	// client because we want each peer to maintain its own local copy of the
-	// DHT, so that the bootstrapping node of the DHT can go down without
-	// inhibiting future peer discovery.
-	kademliaDHT, err := dht.New(ctx, host)
-	if err != nil {
-		panic(err)
-	}
+	// // Start a DHT, for use in peer discovery. We can't just make a new DHT
+	// // client because we want each peer to maintain its own local copy of the
+	// // DHT, so that the bootstrapping node of the DHT can go down without
+	// // inhibiting future peer discovery.
+	// kademliaDHT, err := dht.New(ctx, host)
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	// Bootstrap the DHT. In the default configuration, this spawns a Background
 	// thread that will refresh the peer table every five minutes.
