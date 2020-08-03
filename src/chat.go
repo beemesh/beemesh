@@ -117,11 +117,10 @@ func main() {
 	}
 	wg.Wait()
 
-	// We use a rendezvous point "meet me here" to announce our location.
-	// This is like telling your friends to meet you at the Eiffel Tower.
+	// We use an application id to announce our context.
 	logger.Info("Announcing ourselves...")
 	routingDiscovery := discovery.NewRoutingDiscovery(kademliaDHT)
-	discovery.Advertise(ctx, routingDiscovery, config.RendezvousString)
+	discovery.Advertise(ctx, routingDiscovery, config.AppId)
 	logger.Info("Successfully announced!")
 	kademliaDHT.RoutingTable().Print()
 
@@ -141,7 +140,7 @@ func main() {
 		// Now, look for others who have announced
 		// This is like your friend telling you the location to meet you.
 		logger.Debug("Searching for other peers...")
-		peerChan, err := routingDiscovery.FindPeers(ctx, config.RendezvousString)
+		peerChan, err := routingDiscovery.FindPeers(ctx, config.AppId)
 		if err != nil {
 			panic(err)
 		}
