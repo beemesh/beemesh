@@ -1,4 +1,5 @@
 # BeeMesh
+<<<<<<< HEAD
 [![Coverage Status](https://coveralls.io/repos/github/beemesh/beemesh/badge.svg?branch=master)](https://coveralls.io/github/beemesh/beemesh?branch=master)
 
 ## Overview
@@ -29,3 +30,6 @@ Peer to peer mesh policies allows you to make long-lasting processing or functio
 
 ## API
 A Kubernetes compliant API is encouraged so that workloads can be shifted smoothly.
+=======
+
+>>>>>>> r1remote/master
