@@ -1,6 +1,7 @@
 module github.com/libp2p/go-libp2p-examples
 
 require (
+	github.com/google/gopacket v1.1.18
 	github.com/ipfs/go-log v1.0.4
 	github.com/libp2p/go-libp2p v0.10.2
 	github.com/libp2p/go-libp2p-core v0.6.1
