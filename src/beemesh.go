@@ -71,12 +71,12 @@ func init() {
 
 	// Connect to the bootstrap nodes
 	logger.Debug("Connect boostrap nodes: ", config.BootstrapPeers)
-	var wg sync.WaitGroup
+	var bootwg sync.WaitGroup
 	for _, peerAddr := range config.BootstrapPeers {
 		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
-		wg.Add(1)
+		bootwg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer bootwg.Done()
 			if err := pod.Connect(ctx, *peerinfo); err != nil {
 				logger.Warn(err)
 			} else {
@@ -84,7 +84,7 @@ func init() {
 			}
 		}()
 	}
-	wg.Wait()
+	bootwg.Wait()
 
 	// Announce application
 	logger.Debug("Announce application ...")
@@ -96,7 +96,45 @@ func main() {
 
 	streams := make(chan network.Stream)
 
-	go func(chan<- network.Stream) {
+	// Proxy server connection
+	go func() {
+		listener, err := net.Listen("tcp", config.Proxy)
+		if err != nil {
+			logger.Errorf("No proxy connection established: %s", err)
+			return
+		}
+		logger.Infof("Listening for proxy server connection: http://%s", listener.Addr())
+		for {
+			conn, err := listener.Accept()
+			defer conn.Close()
+			if err != nil {
+				logger.Errorf("Accept error: %s", err)
+				return
+			}
+			go connHandler(conn)
+		}
+	}()
+
+	// Proxy peer stream
+	go func() {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			logger.Errorf("No proxy peer stream established: %s", err)
+			return
+		}
+		logger.Infof("Listening for proxy peer stream: http://%s", listener.Addr())
+		for {
+			conn, err := listener.Accept()
+			defer conn.Close()
+			if err != nil {
+				logger.Errorf("Accept error: %s", err)
+				return
+			}
+			go forward(<-streams, conn)
+		}
+	}()
+
+	func(chan<- network.Stream) {
 		for {
 			logger.Debug("Find peers ...")
 			peerChan, err := routingDiscovery.FindPeers(ctx, config.AppID)
@@ -119,42 +157,6 @@ func main() {
 			}
 		}
 	}(streams)
-
-	// Proxy server connection
-	go func() {
-		listener, err := net.Listen("tcp", config.Proxy)
-		if err != nil {
-			logger.Errorf("No proxy connection established: %s", err)
-			return
-		}
-		logger.Infof("Listening for proxy server connection: http://%s", listener.Addr())
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				logger.Errorf("Accept error: %s", err)
-				return
-			}
-			go connHandler(conn)
-		}
-	}()
-
-	// Proxy peer stream
-	func() {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			logger.Errorf("No proxy peer stream established: %s", err)
-			return
-		}
-		logger.Infof("Listening for proxy peer stream: http://%s", listener.Addr())
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				logger.Errorf("Accept error: %s", err)
-				return
-			}
-			go forward(<-streams, conn)
-		}
-	}()
 }
 
 // Handle incoming peer stream
@@ -174,7 +176,6 @@ func streamHandler(stream network.Stream) {
 // Forward data between stream and connection
 func forward(stream network.Stream, conn net.Conn) {
 	logger.Debug("Forward data between peer stream and connection ...")
-	logger.Debugf("Forward stream to peer ID: %s", stream.Conn().RemotePeer())
 	go func() {
 		if _, err := io.Copy(conn, stream); err != nil {
 			logger.Errorf("Error copying data from peer stream to connection: %v", err)
