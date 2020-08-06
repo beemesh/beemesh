@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -42,10 +44,17 @@ func init() {
 		return
 	}
 
+	// Creates a new RSA key pair for this host.
+	prvKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+
 	// libp2p.New constructs a new libp2p host
 	pod, err = libp2p.New(ctx,
 		libp2p.ListenAddrs([]multiaddr.Multiaddr(config.ListenAddresses)...),
 		libp2p.NATPortMap(),
+		libp2p.Identity(prvKey),
 	)
 	if err != nil {
 		panic(err)
@@ -106,7 +115,7 @@ func main() {
 		logger.Infof("Listening for proxy server connection: http://%s", listener.Addr())
 		for {
 			conn, err := listener.Accept()
-			defer conn.Close()
+			//defer conn.Close()
 			if err != nil {
 				logger.Errorf("Accept error: %s", err)
 				return
@@ -125,7 +134,7 @@ func main() {
 		logger.Infof("Listening for proxy peer stream: http://%s", listener.Addr())
 		for {
 			conn, err := listener.Accept()
-			defer conn.Close()
+			//defer conn.Close()
 			if err != nil {
 				logger.Errorf("Accept error: %s", err)
 				return
@@ -134,29 +143,27 @@ func main() {
 		}
 	}()
 
-	func(chan<- network.Stream) {
-		for {
-			logger.Debug("Find peers ...")
-			peerChan, err := routingDiscovery.FindPeers(ctx, config.AppID)
-			if err != nil {
-				panic(err)
+	for {
+		logger.Debug("Find peers ...")
+		peerChan, err := routingDiscovery.FindPeers(ctx, config.AppID)
+		if err != nil {
+			panic(err)
+		}
+		for peer := range peerChan {
+			if peer.ID == pod.ID() {
+				continue
 			}
-			for peer := range peerChan {
-				if peer.ID == pod.ID() {
-					continue
-				}
-				logger.Debug("Found peer: ", peer)
-				stream, err := pod.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID))
-				if err != nil {
-					logger.Debug("Peer failed: ", err)
-					continue
-				} else {
-					logger.Debug("Peer connected: ", peer)
-					streams <- stream
-				}
+			logger.Debug("Found peer: ", peer)
+			stream, err := pod.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID))
+			if err != nil {
+				logger.Debug("Peer failed: ", err)
+				continue
+			} else {
+				logger.Debug("Peer connected: ", peer)
+				streams <- stream
 			}
 		}
-	}(streams)
+	}
 }
 
 // Handle incoming peer stream
