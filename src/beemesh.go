@@ -33,13 +33,11 @@ var (
 	kdht             *dht.IpfsDHT
 	routingDiscovery discovery.Discovery
 	peers            chan peer.AddrInfo
-	streams          chan network.Stream
 )
 
 func init() {
 
 	peers = make(chan peer.AddrInfo, 7)
-	streams = make(chan network.Stream)
 	ctx = context.Background()
 	log.SetLogLevel("beemesh", "info")
 
@@ -152,6 +150,7 @@ func main() {
 		logger.Errorf("No proxy peer stream established: %s", err)
 		return
 	}
+	listener.Close()
 	logger.Infof("Proxy listener: http://%s", listener.Addr())
 	for {
 		conn, err := listener.Accept()
