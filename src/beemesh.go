@@ -150,7 +150,7 @@ func main() {
 		logger.Errorf("No proxy peer stream established: %s", err)
 		return
 	}
-	listener.Close()
+	defer listener.Close()
 	logger.Infof("Proxy listener: http://%s", listener.Addr())
 	for {
 		conn, err := listener.Accept()
