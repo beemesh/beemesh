@@ -11,6 +11,8 @@ RUN set -ex;\
 ### runtime build ###
 FROM alpine
 
+RUN apk add --no-cache ca-certificates curl
+
 COPY --from=build /files /
 
 CMD ["/usr/local/bin/beemesh"]
