@@ -88,9 +88,6 @@ func init() {
 	logger.Info("ID: ", pod.ID())
 	logger.Info(pod.Addrs())
 
-	// Set stream handler for incoming peer streams
-	pod.SetStreamHandler(protocol.ID(config.ProtocolID), streamHandler)
-
 	// Connect to the bootstrap nodes
 	logger.Debug("Connect boostrap nodes: ", config.BootstrapPeers)
 	var bootwg sync.WaitGroup
@@ -112,6 +109,9 @@ func init() {
 	logger.Debug("Init MDNS ...")
 	notifee := mdnsInit(ctx, pod, config.AppID)
 
+	// Set stream handler for incoming peer streams
+	pod.SetStreamHandler(protocol.ID(config.ProtocolID), streamHandler)
+
 	go func() {
 		for {
 			peersChan, err := routingDiscovery.FindPeers(ctx, config.AppID)
@@ -124,7 +124,6 @@ func init() {
 				}
 				go notifee.HandlePeerFound(addrInfo)
 			}
-			logger.Info("Conns / FindPeers connected: ", len(pod.Network().Conns()), len(peers))
 		}
 	}()
 }
@@ -172,7 +171,6 @@ func main() {
 			conn.Close()
 		}
 	}
-
 	logger.Info("Shutting down ...")
 	if err := pod.Close(); err != nil {
 		panic(err)
@@ -197,14 +195,18 @@ func streamHandler(stream network.Stream) {
 // Forward data between stream and connection
 func forward(stream network.Stream, conn net.Conn) {
 	logger.Debug("Forward data between peer stream and connection ...")
+	errc := make(chan error, 1)
 	go func() {
 		if _, err := io.Copy(conn, stream); err != nil {
 			logger.Errorf("Error copying data from peer stream to connection: %v", err)
+			errc <- err
 		}
 	}()
 	go func() {
 		if _, err := io.Copy(stream, conn); err != nil {
 			logger.Errorf("Error copying data from connection to peer stream: %v", err)
+			errc <- err
 		}
 	}()
+	<-errc
 }

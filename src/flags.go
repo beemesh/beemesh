@@ -52,7 +52,7 @@ func ParseFlags() (Config, error) {
 	config := Config{}
 	flag.StringVar(&config.Proxy, "proxy", "0.0.0.0:8080", "Address to proxy connections")
 	flag.StringVar(&config.Server, "server", "0.0.0.0:8000", "Address of the server to forward incomming libp2p requests")
-	flag.StringVar(&config.AppID, "appid", "2f320948", "Unique string to identify the application ")
+	flag.StringVar(&config.AppID, "appid", "2f32kg0948", "Unique string to identify the application ")
 	flag.Var(&config.BootstrapPeers, "peer", "Adds a peer multiaddress to the bootstrap list")
 	flag.Var(&config.ListenAddresses, "listen", "Adds a multiaddress to the listen list")
 	flag.StringVar(&config.ProtocolID, "protocolid", "/beemesh/0.1.0", "Sets a protocol version for stream headers")

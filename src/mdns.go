@@ -23,14 +23,15 @@ func (notifee *Notifee) HandlePeerFound(addrInfo peer.AddrInfo) {
 		err := notifee.pod.Connect(notifee.ctx, addrInfo)
 		if err != nil {
 			logger.Debug("Peer failed: ", err)
-			for _, conn := range notifee.pod.Network().ConnsToPeer(addrInfo.ID) {
+			/*for _, conn := range notifee.pod.Network().ConnsToPeer(addrInfo.ID) {
 				logger.Info("Close connection to peer ", addrInfo.ID)
 				conn.Close()
 			}
 			notifee.pod.Network().ClosePeer(addrInfo.ID)
-			notifee.pod.Peerstore().ClearAddrs(addrInfo.ID)
+			notifee.pod.Peerstore().ClearAddrs(addrInfo.ID)*/
 		} else {
 			logger.Info("Peer connected: ", addrInfo)
+			logger.Info("Conns / FindPeers connected: ", len(pod.Network().Conns()), len(peers))
 			peers <- addrInfo
 		}
 	}
