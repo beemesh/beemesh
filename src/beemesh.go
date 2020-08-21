@@ -8,7 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sync"
+	"time"
 
 	"github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p"
@@ -19,6 +19,7 @@ import (
 	"github.com/libp2p/go-libp2p-core/protocol"
 	discovery "github.com/libp2p/go-libp2p-discovery"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	quic "github.com/libp2p/go-libp2p-quic-transport"
 	routing "github.com/libp2p/go-libp2p-routing"
 	multiaddr "github.com/multiformats/go-multiaddr"
@@ -30,16 +31,16 @@ var (
 	pod              host.Host
 	ctx              context.Context
 	logger           = log.Logger("beemesh")
-	kdht             *dht.IpfsDHT
 	routingDiscovery discovery.Discovery
-	peers            chan peer.AddrInfo
+	peerChan         chan peer.ID
+	//peers            sync.Map
 )
 
 func init() {
 
-	peers = make(chan peer.AddrInfo, 7)
 	ctx = context.Background()
 	log.SetLogLevel("beemesh", "info")
+	peerChan = make(chan peer.ID, 7)
 
 	// cli flags and helper
 	help := flag.Bool("help", false, "Display Help")
@@ -64,66 +65,81 @@ func init() {
 		ctx,
 		libp2p.DefaultTransports,
 		libp2p.Transport(quic.NewTransport),
-		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic"),
-		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"),
+		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic", "/ip4/0.0.0.0/tcp/0/ws"),
 		libp2p.ListenAddrs([]multiaddr.Multiaddr(config.ListenAddresses)...),
-		libp2p.NATPortMap(),
 		libp2p.Routing(func(pod host.Host) (routing.PeerRouting, error) {
 			kdht, err := dht.New(ctx, pod, dht.Mode(dht.ModeServer))
+			// Bootstrap dht
 			logger.Debug("Bootstrap the DHT ...")
 			if err = kdht.Bootstrap(ctx); err != nil {
 				panic(err)
 			}
-			logger.Debug("Announce application ...")
+			// Announce application
+			logger.Debug("Announce application as dht namespace ...")
 			routingDiscovery = discovery.NewRoutingDiscovery(kdht)
-			discovery.Advertise(ctx, routingDiscovery, config.AppID)
+			routingDiscovery.Advertise(ctx, config.AppID)
 			return kdht, err
 		}),
+		libp2p.NATPortMap(),
+		//libp2p.EnableNATService(),
+		//libp2p.EnableAutoRelay(),
 		libp2p.Identity(prvKey),
 	)
 	if err != nil {
 		panic(err)
 	}
-
 	logger.Info("ID: ", pod.ID())
 	logger.Info(pod.Addrs())
 
-	// Connect to the bootstrap nodes
-	logger.Debug("Connect boostrap nodes: ", config.BootstrapPeers)
-	var bootwg sync.WaitGroup
-	for _, peerAddr := range config.BootstrapPeers {
-		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
-		bootwg.Add(1)
-		go func() {
-			defer bootwg.Done()
-			if err := pod.Connect(ctx, *peerinfo); err != nil {
-				logger.Warn(err)
-			} else {
-				logger.Info("Connection established with bootstrap node:", *peerinfo)
-			}
-		}()
-	}
-	bootwg.Wait()
+	// Set stream handler for incoming peer streams
+	pod.SetStreamHandler(protocol.ID(config.ProtocolID), streamHandler)
 
 	// Init MDNS
 	logger.Debug("Init MDNS ...")
 	notifee := mdnsInit(ctx, pod, config.AppID)
 
-	// Set stream handler for incoming peer streams
-	pod.SetStreamHandler(protocol.ID(config.ProtocolID), streamHandler)
+	// Subscribe the topic
+	gossipSub, err := pubsub.NewGossipSub(ctx, pod)
+	if err != nil {
+		panic(err)
+	}
+	topic, err := gossipSub.Join(config.AppID)
+	if err != nil {
+		panic(err)
+	}
+	sub, err := topic.Subscribe()
+	if err != nil {
+		panic(err)
+	}
+	logger.Info("Topic subscribed: ", sub.Topic())
+
+	// Connect to the bootstrap nodes
+	logger.Debug("Connect boostrap nodes: ", config.BootstrapPeers)
+	for _, multiaddr := range config.BootstrapPeers {
+		addrInfo, _ := peer.AddrInfoFromP2pAddr(multiaddr)
+		go notifee.HandlePeerFound(*addrInfo)
+	}
+	peersChan, err := routingDiscovery.FindPeers(ctx, config.AppID)
+	if err != nil {
+		panic(err)
+	}
+	for addrInfo := range peersChan {
+		go notifee.HandlePeerFound(addrInfo)
+	}
 
 	go func() {
 		for {
-			peersChan, err := routingDiscovery.FindPeers(ctx, config.AppID)
-			if err != nil {
-				panic(err)
-			}
-			for addrInfo := range peersChan {
-				if addrInfo.ID == pod.ID() {
-					continue
+			for _, peerID := range gossipSub.ListPeers(sub.Topic()) {
+				if pod.Network().Connectedness(peerID) != network.Connected {
+					logger.Warn("Disconnected: ", peerID)
+				} else {
+					peerChan <- peerID
+					logger.Debug("Connected: ", peerID)
 				}
-				go notifee.HandlePeerFound(addrInfo)
 			}
+			//pod.Network().ClosePeer()
+			logger.Info("Peers: ", len(pod.Network().Peers()), len(peerChan))
+			time.Sleep(time.Second * 30)
 		}
 	}()
 }
@@ -157,19 +173,18 @@ func main() {
 			logger.Errorf("Accept error: %s", err)
 			return
 		}
-		if len(peers) > 0 {
-			addrInfo := (<-peers)
-			stream, err := pod.NewStream(ctx, addrInfo.ID, protocol.ID(config.ProtocolID))
+		peerID := (<-peerChan)
+		if len(peerChan) > 0 {
+			stream, err := pod.NewStream(ctx, peerID, protocol.ID(config.ProtocolID))
 			if err != nil {
 				logger.Debug("Forward to peer failed: ", err)
 			} else {
-				logger.Debug("Forward to peer: ", addrInfo)
 				go forward(stream, conn)
-				peers <- addrInfo
 			}
 		} else {
 			conn.Close()
 		}
+		peerChan <- peerID
 	}
 	logger.Info("Shutting down ...")
 	if err := pod.Close(); err != nil {
@@ -179,7 +194,7 @@ func main() {
 
 // Handle incoming peer stream
 func streamHandler(stream network.Stream) {
-	logger.Debug("Forward incomming peer stream to server ...")
+	logger.Debug("Forward incomming stream ...")
 	serverConn, err := net.Dial("tcp", config.Server)
 	if err != nil {
 		logger.Errorf("Error connecting to server: %v", err)
@@ -188,13 +203,12 @@ func streamHandler(stream network.Stream) {
 		}
 		return
 	}
-	logger.Infof("Serve ...")
 	forward(stream, serverConn)
 }
 
 // Forward data between stream and connection
 func forward(stream network.Stream, conn net.Conn) {
-	logger.Debug("Forward data between peer stream and connection ...")
+	logger.Debug("Forward data ...")
 	errc := make(chan error, 1)
 	go func() {
 		if _, err := io.Copy(conn, stream); err != nil {
@@ -210,3 +224,24 @@ func forward(stream network.Stream, conn net.Conn) {
 	}()
 	<-errc
 }
+
+/*
+
+func lenSyncMap(syncMap sync.Map) int {
+	len := 0
+	syncMap.Range(func(key, value interface{}) bool {
+		len++
+		return true
+	})
+	return len
+}
+
+func randomKey(syncMap sync.Map) peer.ID {
+	var peerID peer.ID
+	syncMap.Range(func(key, value interface{}) bool {
+		peerID = key.(peer.ID)
+		return false
+	})
+	return peerID
+}
+*/

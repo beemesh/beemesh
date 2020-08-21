@@ -16,29 +16,17 @@ type Notifee struct {
 }
 
 func (notifee *Notifee) HandlePeerFound(addrInfo peer.AddrInfo) {
-
 	if notifee.pod.Network().Connectedness(addrInfo.ID) != network.Connected {
-
-		logger.Debug("Handle Peer Found", addrInfo)
 		err := notifee.pod.Connect(notifee.ctx, addrInfo)
 		if err != nil {
-			logger.Debug("Peer failed: ", err)
-			/*for _, conn := range notifee.pod.Network().ConnsToPeer(addrInfo.ID) {
-				logger.Info("Close connection to peer ", addrInfo.ID)
-				conn.Close()
-			}
-			notifee.pod.Network().ClosePeer(addrInfo.ID)
-			notifee.pod.Peerstore().ClearAddrs(addrInfo.ID)*/
+			logger.Warn("Connection failed: ", err)
 		} else {
-			logger.Info("Peer connected: ", addrInfo)
-			logger.Info("Conns / FindPeers connected: ", len(pod.Network().Conns()), len(peers))
-			peers <- addrInfo
+			logger.Debug("Connection established: ", addrInfo)
 		}
 	}
 }
 
 func mdnsInit(ctx context.Context, pod host.Host, appID string) (n *Notifee) {
-
 	service, err := discovery.NewMdnsService(ctx, pod, time.Second*30, appID)
 	if err != nil {
 		panic(err)
