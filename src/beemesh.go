@@ -116,8 +116,11 @@ func init() {
 	// Connect to the bootstrap nodes
 	logger.Debug("Connect boostrap nodes: ", config.BootstrapPeers)
 	for _, multiaddr := range config.BootstrapPeers {
-		addrInfo, _ := peer.AddrInfoFromP2pAddr(multiaddr)
-		go notifee.HandlePeerFound(*addrInfo)
+		if addrInfo, err := peer.AddrInfoFromP2pAddr(multiaddr); err == nil {
+			go notifee.HandlePeerFound(*addrInfo)
+		} else {
+			logger.Panic(err)
+		}
 	}
 	peersChan, err := routingDiscovery.FindPeers(ctx, config.AppID)
 	if err != nil {
