@@ -5,6 +5,8 @@
 Imagine a world where everyone understands everyone else. Work would be continuously organized based on ability, capacity, and trustworthiness. Work can be loosely distributed to a reasonable extent to meet needs. When statefulness is required, ephemeral consensus just lives alongside the work. Would such a computational model scale globally?
 
 ## Problem Statement
+The reality is that trustworthiness is determined manually. Then consensus is determined regardless of whether the work requires it. If the consensus is compromised, then all work is also affected.
+
 Kubernetes aggregates infrastructure as a single uniform computer. Unity is achieved by a cluster algorithm. The continuous allocation of workload is done according to this set of rules and the runtime is continuously reconciliated. Such uniform computers aka clusters, usually follow the rules of perimeter security.
 
 Kubernetes follows a scale-out approach when it comes to increase the available resources for workloads. The infrastructure can also be requested larger eg. scaled-up for a more advantageous utilization rate.
