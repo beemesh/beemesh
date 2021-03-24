@@ -2,7 +2,7 @@
 [![Coverage Status](https://coveralls.io/repos/github/beemesh/beemesh/badge.svg?branch=master)](https://coveralls.io/github/beemesh/beemesh?branch=master)
 
 ## Vision
-Imagine a world where everyone understands each other. Work would be organized continuously based on ability, capacity and trustworthiness. If statefulness is required, ephemeral consensus lifes alongside the work lifecycle. Would such a computing model scale globally?
+Imagine a world where everyone understands everyone else. Work would be continuously organized based on ability, capacity, and trustworthiness. Work can be loosely distributed to a reasonable extent to meet needs. When statefulness is required, ephemeral consensus just lives alongside the work. Would such a computational model scale globally?
 
 ## Problem Statement
 Kubernetes aggregates infrastructure as a single uniform computer. Unity is achieved by a cluster algorithm. The continuous allocation of workload is done according to this set of rules and the runtime is continuously reconciliated. Such uniform computers aka clusters, usually follow the rules of perimeter security.
