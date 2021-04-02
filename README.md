@@ -2,19 +2,14 @@
 [![Coverage Status](https://coveralls.io/repos/github/beemesh/beemesh/badge.svg?branch=master)](https://coveralls.io/github/beemesh/beemesh?branch=master)
 
 ## Vision
-Imagine a world where everyone understands everyone else. Work would be continuously organized based on ability, capacity, and trustworthiness. Work can be loosely distributed to a reasonable extent to meet needs. When statefulness is required, ephemeral consensus just lives alongside the work. Would such a computational model scale globally?
+Imagine a world where everyone understands everyone else. Work would be continuously organized based on ability, capacity, and trustworthiness. Additionally it would be loosely distributed to a reasonable extent to meet the actual demand. When statefulness is required, ephemeral consensus just lives alongside the work. Would such a computational model scale globally?
 
 ## Problem Statement
-The reality is that trustworthiness is determined manually. Then consensus is determined overall, regardless of whether the work requires it. If the consensus is compromised, then all work is also affected regardless of whether it is loosely distributed or stateful.
+When thinking about scalability in distributed systems, the first thing that comes to mind is consensus algorithms. Well, this is not a necessary requirement. Scalability for stateless workloads can be achieved without consensus and is limited only by available resources. Therefore, consensus is only required for stateful workloads. Consensus requires an underlying protocol that can uniquely identify all participants and counter partitioning. Thus, to have a robust and consistent consensus, we first need robust messaging.
 
-Kubernetes aggregates infrastructure as a single uniform computer. Unity is achieved by a cluster algorithm. The continuous allocation of workload is done according to this set of rules and the runtime is continuously reconciliated. Such uniform computers aka clusters, usually follow the rules of perimeter security.
+So what is the underlying messaging used in Kubernetes? Actually, none. The reality is that trustworthiness is predefined manually and Kubernetes doesn't care about messaging. Instead, Kubernetes implements a monolithic consensus that overall manages cluster state, regardless of whether the workload requires it. If consensus is compromised, then all work is also affected.
 
-Kubernetes follows a scale-out approach when it comes to increase the available resources for workloads. The infrastructure can also be requested larger eg. scaled-up for a more advantageous utilization rate.
-
-Kubernetes connectivity can be extended with basic network virtualization in different forms. Several clusters are disjoint and therefore require further extensions such as service meshes with replicated control planes or cluster federation as needed. Traditional services are excluded and must be considered separately. Despite the overall intention, this infrastructure-focused connectivity does not meet today's requirements for a fine-grained, resilient software design.
-
-The overall design decisions and ranking made for a) clustering and b) connectivity, although individually exemplary and modularly implemented, lead to limitations in terms of scaling and connectivity.
-
+Kubernetes networking is extensible by additional virtualization. Several clusters are disjoint and therefore require further extensions such as service meshes with replicated control planes or cluster federation as needed. Traditional services are excluded and must be considered separately. Despite the overall intention, this infrastructure-focused connectivity does not meet today's requirements for a fine-grained, resilient software design as an underlying messaging for scalable consensus.
 
 ## Architecture
 ![BeeMesh Binary](assets/prototype.png)
