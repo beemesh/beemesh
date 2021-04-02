@@ -2,7 +2,7 @@
 [![Coverage Status](https://coveralls.io/repos/github/beemesh/beemesh/badge.svg?branch=master)](https://coveralls.io/github/beemesh/beemesh?branch=master)
 
 ## Vision
-Imagine a world where everyone understands everyone else. Work would be continuously organized based on ability, capacity, and trustworthiness. Additionally it would be loosely distributed to a reasonable extent to meet the actual demand. When statefulness is required, ephemeral consensus just lives alongside the work. Would such a computational model scale globally?
+Imagine a world where everyone understands everyone else. Workload would be continuously organized based on ability, capacity, trustworthiness and loosely distributed to meet the actual demand. When statefulness is required, ephemeral consensus just lives alongside the work. Would such a computational model scale globally?
 
 ## Problem Statement
 When thinking about scalability in distributed systems, the first thing that comes to mind is consensus algorithms. Well, this is not a necessary requirement. Scalability for stateless workloads can be achieved without consensus and is limited only by available resources. Therefore, consensus is only required for stateful workloads. Consensus requires an underlying protocol that can uniquely identify all participants and counter partitioning. Thus, to have a robust and consistent consensus, we first need robust messaging.
