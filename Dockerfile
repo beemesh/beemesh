@@ -9,7 +9,7 @@ RUN set -ex;\
     CGO_ENABLED=0 GOOS=linux go build -v -o /files/usr/local/bin/beemesh
 
 ### runtime build ###
-FROM alpine:3.15
+FROM alpine:3.16
 
 COPY --from=build /files /
 
