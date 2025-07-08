@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: my-raft-cluster
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      beemesh.workload: my-raft-cluster
+  template:
+    metadata:
+      labels:
+        beemesh.workload: my-raft-cluster
+    spec:
+      containers:
+      - name: app
+        image: alpine:latest
+        command: ["sleep", "infinity"]
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        - containerPort: 7000
+          protocol: TCP
+        volumeMounts:
+        - name: raft-data
+          mountPath: /raft
+      - name: sidecar
+        image: your-repo/beemesh-stateful-sidecar:latest
+        env:
+        - name: BEEMESH_RAFT_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: BEEMESH_WORKLOAD_KIND
+          value: stateful
+        - name: BEEMESH_WORKLOAD_NAME
+          value: my-raft-cluster
+        - name: BEEMESH_WORKLOAD_REPLICAS
+          value: "3"
+        - name: BEEMESH_WORKLOAD_PROXY_PORT
+          value: "8080"
+        - name: BEEMESH_WORKLOAD_SERVICE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: BEEMESH_RAFT_PEERS
+          value: "my-raft-cluster-0:7000,my-raft-cluster-1:7000,my-raft-cluster-2:7000"
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+  volumeClaimTemplates:
+  - metadata:
+      name: raft-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi

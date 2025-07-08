@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-stateless-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      beemesh.workload: my-stateless-app
+  template:
+    metadata:
+      labels:
+        beemesh.workload: my-stateless-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+          protocol: TCP
+      - name: sidecar
+        image: your-repo/beemesh-stateless-sidecar:latest
+        env:
+        - name: BEEMESH_WORKLOAD_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: BEEMESH_WORKLOAD_KIND
+          value: stateless
+        - name: BEEMESH_WORKLOAD_NAME
+          value: my-stateless-app
+        - name: BEEMESH_WORKLOAD_REPLICAS
+          value: "3"
+        - name: BEEMESH_WORKLOAD_PROXY_PORT
+          value: "8080"
+        - name: BEEMESH_WORKLOAD_SERVICE
+          value: my-stateless-app
+        ports:
+        - containerPort: 8080
+          protocol: TCP
