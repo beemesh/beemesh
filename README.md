@@ -1,4 +1,4 @@
-# Beemesh: Decentralized Container Orchestration
+# Beemesh Global Mesh Computing
 
 Beemesh is a lightweight, decentralized container orchestration system designed for infinite scalability. It surpasses Kubernetes' scaling limits (~5,000 nodes, ~150,000 pods) by eliminating the centralized control plane, leveraging loosely coupling, and implementing self-cloning for antifragility. The architecture strictly adheres to **Separation of Concerns** and aligns with **CAP** trade-offs: Availability and Partition Tolerance (A/P) for the Machine-Plane and stateless workloads, Consistency and Partition Tolerance (C/P) with eventual Availability for stateful workloads.
 
