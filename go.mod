@@ -1,18 +1,19 @@
 module beemesh
 
-go 1.20
+go 1.24
 
 require (
-	github.com/containers/podman/v5 v5.0.0
-	github.com/google/uuid v1.3.0
-	github.com/hashicorp/raft v1.3.10
-	github.com/libp2p/go-libp2p v0.22.0
-	github.com/libp2p/go-libp2p-kad-dht v0.15.0
-	github.com/multiformats/go-multiaddr v0.8.0
-	github.com/prometheus/client_golang v1.12.2
-	github.com/shirou/gopsutil v3.21.11+incompatible
-	k8s.io/api v0.24.0
-	sigs.k8s.io/yaml v1.3.0
+	github.com/containers/podman/v5 v5.5.2
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/mux v1.8.1
+	github.com/hashicorp/raft v1.7.3
+	github.com/libp2p/go-libp2p v0.42.0
+	github.com/libp2p/go-libp2p-kad-dht v0.33.1
+	github.com/multiformats/go-multiaddr v0.16.0
+	github.com/prometheus/client_golang v1.22.0
+	github.com/shirou/gopsutil v4.25.6
+	k8s.io/api v0.33.2
+	sigs.k8s.io/yaml v1.5.0
 )
 
 require (
