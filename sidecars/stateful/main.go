@@ -1,24 +1,25 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
+	"github.com/hashicorp/raft"
+	"io"
+	"k8s.io/api/apps/v1"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
+	"sigs.k8s.io/yaml"
+	"strconv"
 	"strings"
 	"time"
 
-	"beemesh/pkg/machine"
 	"beemesh/pkg/proxy"
-	"beemesh/pkg/registry"
 	"beemesh/pkg/types"
-	"github.com/google/uuid"
-	"github.com/hashicorp/raft"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multiaddr"
-	"k8s.io/api/apps/v1"
-	"sigs.k8s.io/yaml"
 )
 
 func main() {
@@ -32,6 +33,10 @@ func main() {
 	proxyPort := os.Getenv("BEEMESH_WORKLOAD_PROXY_PORT")
 	raftPeers := os.Getenv("BEEMESH_RAFT_PEERS")
 	serviceName := os.Getenv("BEEMESH_WORKLOAD_SERVICE")
+	namespace := os.Getenv("BEEMESH_NAMESPACE")
+	if namespace == "" {
+		namespace = "default"
+	}
 
 	desiredReplicas, err := strconv.Atoi(desiredReplicasStr)
 	if err != nil {
@@ -39,67 +44,47 @@ func main() {
 	}
 
 	ctx := context.Background()
-	client, err := machine.NewClient(ctx, nodeID)
-	if err != nil {
-		log.Fatalf("Failed to create Machine-Plane client: %v", err)
-	}
-	defer client.Close()
 
-	registry, err := registry.NewRegistry(ctx, client, nodeID)
-	if err != nil {
-		log.Fatalf("Failed to create service registry: %v", err)
-	}
-	defer registry.Close()
-
-	maddr, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/%s/p2p/%s", proxyPort, client.Host().ID().String()))
-	if err != nil {
-		log.Fatalf("Failed to create libp2p multiaddr: %v", err)
-	}
 	service := types.Service{
 		Name:       fmt.Sprintf("%s-%s", parentKind, parentName),
 		ProtocolID: "/beemesh/sidecar/stateful/1.0",
 		IP:         serviceName,
 		Port:       8080,
-		Libp2pAddr: maddr.String(),
+		Libp2pAddr: nodeID,
 	}
-	if err := registry.RegisterService(ctx, service); err != nil {
-		log.Fatalf("Failed to register stateful sidecar service: %v", err)
+	data, err := json.Marshal(service)
+	if err != nil {
+		log.Fatalf("Failed to marshal service: %v", err)
 	}
+	req, err := http.NewRequest("POST", "http://host.containers.internal:8080/v1/register_service", bytes.NewReader(data))
+	if err != nil {
+		log.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-Namespace", namespace)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatalf("Failed to register service: %v", err)
+	}
+	resp.Body.Close()
 
 	raftConfig := raft.DefaultConfig()
 	raftConfig.LocalID = raft.ServerID(nodeID)
-	raftNode, err := raft.NewRaft(raftConfig, nil, nil, nil, nil)
+	raftNode, err := raft.NewRaft(raftConfig, nil, nil, nil, nil) // Placeholder, implement fully
 	if err != nil {
 		log.Fatalf("Failed to initialize Raft: %v", err)
 	}
 
-	client.Host().SetStreamHandler("/beemesh/raft/1.0", func(s network.Stream) {
-		localConn, err := net.Dial("tcp", "localhost:7000")
-		if err != nil {
-			log.Printf("Failed to connect to local Raft: %v", err)
-			s.Close()
-			return
-		}
-		defer localConn.Close()
-		go io.Copy(localConn, s)
-		io.Copy(s, localConn)
-	})
+	go monitorRaftPeers(ctx, parentName, desiredReplicas, raftPeers, raftNode, namespace)
 
-	client.ReceiveTasks(ctx, func(task types.Task) {
-		log.Printf("Stateful sidecar received task %s: %s/%s", task.TaskID, task.Kind, task.Name)
-	})
-
-	go monitorRaftPeers(ctx, client, registry, parentName, desiredReplicas, raftPeers, raftNode)
-
-	proxy, err := proxy.NewProxy(registry, parentKind, parentName, desiredReplicasStr, 8080)
+	proxy, err := proxy.NewProxy(parentKind, parentName, desiredReplicasStr, 8080)
 	if err != nil {
 		log.Fatalf("Failed to create proxy: %v", err)
 	}
-	log.Printf("Running stateful sidecar: %s, proxying to localhost:8080 and Raft to localhost:7000", nodeID)
+	log.Printf("Running stateful sidecar: %s, proxying to localhost:8080 and Raft to localhost:7000 in namespace %s", nodeID, namespace)
 	log.Fatal(proxy.ListenAndServe(proxyPort))
 }
 
-func monitorRaftPeers(ctx context.Context, client *machine.Client, reg *registry.Registry, workloadName string, desiredReplicas int, raftPeers string, raftNode *raft.Raft) {
+func monitorRaftPeers(ctx context.Context, workloadName string, desiredReplicas int, raftPeers string, raftNode *raft.Raft, namespace string) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -109,9 +94,30 @@ func monitorRaftPeers(ctx context.Context, client *machine.Client, reg *registry
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			addresses, err := reg.ResolveService(ctx, "/beemesh/sidecar/stateful/1.0")
+			u, _ := url.Parse("http://host.containers.internal:8080/v1/resolve_service")
+			q := u.Query()
+			q.Set("protocol_id", "/beemesh/sidecar/stateful/1.0")
+			u.RawQuery = q.Encode()
+			req, err := http.NewRequest("GET", u.String(), nil)
+			if err != nil {
+				log.Printf("Failed to create request: %v", err)
+				continue
+			}
+			req.Header.Set("X-Namespace", namespace)
+			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				log.Printf("Failed to query Raft peers: %v", err)
+				continue
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				log.Printf("Failed to read response: %v", err)
+				continue
+			}
+			var addresses []string
+			if err := json.Unmarshal(body, &addresses); err != nil {
+				log.Printf("Failed to unmarshal addresses: %v", err)
 				continue
 			}
 			activePeers := make(map[string]bool)
@@ -123,10 +129,26 @@ func monitorRaftPeers(ctx context.Context, client *machine.Client, reg *registry
 			}
 			hasQuorum := raftNode.State() == raft.Leader || raftNode.State() == raft.Follower
 			if len(activePeers) < desiredReplicas || !hasQuorum {
-				log.Printf("Detected %d/%d Raft peers for %s, quorum: %v, cloning missing", len(activePeers), desiredReplicas, workloadName, hasQuorum)
-				manifestBytes, err := reg.GetManifest(ctx, workloadName)
+				log.Printf("Detected %d/%d Raft peers for %s, quorum: %v, cloning missing in namespace %s", len(activePeers), desiredReplicas, workloadName, hasQuorum, namespace)
+				u, _ = url.Parse("http://host.containers.internal:8080/v1/get_manifest")
+				q = u.Query()
+				q.Set("workload_name", workloadName)
+				u.RawQuery = q.Encode()
+				req, err = http.NewRequest("GET", u.String(), nil)
+				if err != nil {
+					log.Printf("Failed to create request: %v", err)
+					continue
+				}
+				req.Header.Set("X-Namespace", namespace)
+				resp, err = http.DefaultClient.Do(req)
 				if err != nil {
 					log.Printf("Failed to get manifest for %s: %v", workloadName, err)
+					continue
+				}
+				manifestBytes, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					log.Printf("Failed to read manifest: %v", err)
 					continue
 				}
 				var ss v1.StatefulSet
@@ -147,10 +169,23 @@ func monitorRaftPeers(ctx context.Context, client *machine.Client, reg *registry
 							MemoryRequest: 100 * 1024 * 1024,
 							CloneRequest:  true,
 						}
-						if err := client.PublishTask(ctx, task); err != nil {
+						data, err := json.Marshal(task)
+						if err != nil {
+							log.Printf("Failed to marshal task: %v", err)
+							continue
+						}
+						req, err = http.NewRequest("POST", "http://host.containers.internal:8080/v1/publish_task", bytes.NewReader(data))
+						if err != nil {
+							log.Printf("Failed to create request: %v", err)
+							continue
+						}
+						req.Header.Set("X-Namespace", namespace)
+						resp, err = http.DefaultClient.Do(req)
+						if err != nil {
 							log.Printf("Failed to publish clone task %s: %v", task.TaskID, err)
 						} else {
-							log.Printf("Published clone task %s for %s", task.TaskID, podName)
+							resp.Body.Close()
+							log.Printf("Published clone task %s for %s in namespace %s", task.TaskID, podName, namespace)
 						}
 					}
 				}

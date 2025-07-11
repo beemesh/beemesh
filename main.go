@@ -2,29 +2,42 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	"beemesh/pkg/crypto"
 	"beemesh/pkg/machine"
 	"beemesh/pkg/podman"
+	"beemesh/pkg/registry"
 	"beemesh/pkg/scheduler"
 	"beemesh/pkg/types"
+	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
+	"sigs.k8s.io/yaml"
 )
 
 func main() {
 	ctx := context.Background()
-	client, err := machine.NewClient(ctx, os.Getenv("BEEMESH_NODE_ID"))
+	nodeID := os.Getenv("BEEMESH_NODE_ID")
+	client, err := machine.NewClient(ctx, nodeID)
 	if err != nil {
 		log.Fatalf("Failed to create Machine-Plane client: %v", err)
 	}
 	defer client.Close()
+
+	reg, err := registry.NewRegistry(ctx, client, nodeID)
+	if err != nil {
+		log.Fatalf("Failed to create registry: %v", err)
+	}
+	defer reg.Close()
 
 	podmanClient, err := podman.NewClient()
 	if err != nil {
@@ -63,32 +76,277 @@ func main() {
 		}
 	}()
 
-	http.HandleFunc("/v1/workloads/stateless", func(w http.ResponseWriter, r *http.Request) {
+	router := mux.NewRouter()
+
+	// K8s-like API paths
+	router.HandleFunc("/api/v1/namespaces/{namespace}/pods", func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		namespace := vars["namespace"]
+		// List pods: Query DHT for workloads in namespace
+		// Placeholder: Implement actual listing
+		fmt.Fprintf(w, "Listing pods in namespace %s", namespace)
+	}).Methods("GET")
+
+	router.HandleFunc("/apis/apps/v1/namespaces/{namespace}/deployments", func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		namespace := vars["namespace"]
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		if err := scheduler.ProcessWorkload(ctx, body, "stateless"); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to process workload: %v", err), http.StatusInternalServerError)
+		if err := scheduler.ProcessWorkload(ctx, body, "stateless", namespace); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to process deployment in namespace %s: %v", namespace, err), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(w, "Stateless workload processed")
-	})
+		fmt.Fprintf(w, "Deployment processed in namespace %s", namespace)
+	}).Methods("POST")
 
-	http.HandleFunc("/v1/workloads/stateful", func(w http.ResponseWriter, r *http.Request) {
+	router.HandleFunc("/apis/apps/v1/namespaces/{namespace}/statefulsets", func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		namespace := vars["namespace"]
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		if err := scheduler.ProcessWorkload(ctx, body, "stateful"); err != nil {
+		if err := scheduler.ProcessWorkload(ctx, body, "stateful", namespace); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to process statefulset in namespace %s: %v", namespace, err), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "StatefulSet processed in namespace %s", namespace)
+	}).Methods("POST")
+
+	// RBAC endpoints
+	router.HandleFunc("/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/roles", func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		namespace := vars["namespace"]
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		var policy types.RBACPolicy
+		if err := json.Unmarshal(body, &policy); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		policyData, _ := json.Marshal(policy)
+		if err := reg.StoreRBACPolicy(ctx, namespace, policy.Name, policyData); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "RBAC Role %s created in namespace %s", policy.Name, namespace)
+	}).Methods("POST")
+
+	// ConfigMap endpoints
+	router.HandleFunc("/api/v1/namespaces/{namespace}/configmaps", func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		namespace := vars["namespace"]
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		var config struct {
+			Name string `json:"name"`
+			Data map[string]string `json:"data"`
+		}
+		if err := json.Unmarshal(body, &config); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		data, _ := json.Marshal(config.Data)
+		if err := reg.StoreConfigMap(ctx, namespace, config.Name, data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "ConfigMap %s created in namespace %s", config.Name, namespace)
+	}).Methods("POST")
+
+	// Existing endpoints with namespace support
+	router.HandleFunc("/v1/workloads/stateless", func(w http.ResponseWriter, r *http.Request) {
+		namespace := r.Header.Get("X-Namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		if err := scheduler.ProcessWorkload(ctx, body, "stateless", namespace); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to process workload: %v", err), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(w, "Stateful workload processed")
-	})
+		fmt.Fprintf(w, "Stateless workload processed in namespace %s", namespace)
+	}).Methods("POST")
 
-	http.Handle("/metrics", promhttp.Handler())
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	router.HandleFunc("/v1/workloads/stateful", func(w http.ResponseWriter, r *http.Request) {
+		namespace := r.Header.Get("X-Namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		if err := scheduler.ProcessWorkload(ctx, body, "stateful", namespace); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to process workload: %v", err), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "Stateful workload processed in namespace %s", namespace)
+	}).Methods("POST")
+
+	router.HandleFunc("/v1/register_service", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		namespace := r.Header.Get("X-Namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+		var service types.Service
+		if err := json.NewDecoder(r.Body).Decode(&service); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := reg.RegisterService(ctx, namespace, service); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "Service registered in namespace %s", namespace)
+	}).Methods("POST")
+
+	router.HandleFunc("/v1/resolve_service", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		namespace := r.Header.Get("X-Namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+		protocolID := r.URL.Query().Get("protocol_id")
+		if protocolID == "" {
+			http.Error(w, "Missing protocol_id", http.StatusBadRequest)
+			return
+		}
+		addresses, err := reg.ResolveService(ctx, namespace, protocolID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(addresses)
+	}).Methods("GET")
+
+	router.HandleFunc("/v1/store_manifest", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		namespace := r.Header.Get("X-Namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+		workloadName := r.URL.Query().Get("workload_name")
+		if workloadName == "" {
+			http.Error(w, "Missing workload_name", http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := reg.StoreManifest(ctx, namespace, workloadName, body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "Manifest stored in namespace %s", namespace)
+	}).Methods("POST")
+
+	router.HandleFunc("/v1/get_manifest", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		namespace := r.Header.Get("X-Namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+		workloadName := r.URL.Query().Get("workload_name")
+		if workloadName == "" {
+			http.Error(w, "Missing workload_name", http.StatusBadRequest)
+			return
+		}
+		manifest, err := reg.GetManifest(ctx, namespace, workloadName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write(manifest)
+	}).Methods("GET")
+
+	router.HandleFunc("/v1/publish_task", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		namespace := r.Header.Get("X-Namespace")
+		if namespace == "" {
+			namespace = "default"
+		}
+		var task types.Task
+		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Validate RBAC here
+		if err := validateRBAC(ctx, reg, namespace, r.Header.Get("X-Peer-ID"), "publish", "tasks"); err != nil {
+			http.Error(w, fmt.Sprintf("RBAC denied: %v", err), http.StatusForbidden)
+			return
+		}
+		if err := client.PublishTask(ctx, task); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "Task published in namespace %s", namespace)
+	}).Methods("POST")
+
+	router.Handle("/metrics", promhttp.Handler())
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+func validateRBAC(ctx context.Context, reg *registry.Registry, namespace, peerID, verb, resource string) error {
+	// Fetch all roles in namespace
+	// For simplicity, assume roles are stored as "role/<name>"
+	// This is placeholder; in practice, query DHT for keys with prefix
+	// Assume we fetch a policy
+	policyBytes, err := reg.GetRBACPolicy(ctx, namespace, "default-role") // Example
+	if err != nil {
+		return err
+	}
+	var policy types.RBACPolicy
+	if err := json.Unmarshal(policyBytes, &policy); err != nil {
+		return err
+	}
+	if !contains(policy.PeerIDs, peerID) {
+		return fmt.Errorf("peer %s not bound to policy", peerID)
+	}
+	if !contains(policy.Verbs, verb) || !contains(policy.Resources, resource) {
+		return fmt.Errorf("action %s on %s not allowed", verb, resource)
+	}
+	return nil
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

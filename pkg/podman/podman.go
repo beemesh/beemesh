@@ -63,12 +63,13 @@ func (c *Client) deployPodmanPod(name string, spec v1.PodSpec, replicas int, sta
 			podName = fmt.Sprintf("%s-%d", name, i)
 		}
 		podSpec := entities.PodCreateOptions{
-			Name:      podName,
-			Network:   []string{"private"},
-			Labels:    map[string]string{"beemesh.workload": name},
-			Infra:     false,
-			Share:     []string{"none"},
-			ShareParent: false,
+			Name:               podName,
+			Network:            []string{"slirp4netns"},
+			Labels:             map[string]string{"beemesh.workload": name},
+			Infra:              false,
+			Share:              []string{"none"},
+			ShareParent:        false,
+			AllowHostLoopback:  true,
 		}
 		if stateful {
 			podSpec.Labels["beemesh.workload.kind"] = "stateful"
@@ -95,6 +96,7 @@ func (c *Client) deployPodmanPod(name string, spec v1.PodSpec, replicas int, sta
 			} else {
 				env = append(env, fmt.Sprintf("BEEMESH_WORKLOAD_SERVICE=%s", name))
 			}
+			env = append(env, fmt.Sprintf("BEEMESH_NAMESPACE=%s", os.Getenv("BEEMESH_NAMESPACE")))
 			ports := []entities.ContainerPort{{HostPort: 8080, ContainerPort: 8080, Protocol: "tcp"}}
 			volumeMounts := make([]entities.Mount, 0, len(container.VolumeMounts))
 			for _, vm := range container.VolumeMounts {

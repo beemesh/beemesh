@@ -50,7 +50,7 @@ func (s *Scheduler) Schedule(ctx context.Context, task types.Task) error {
 	return s.client.PublishTask(ctx, task)
 }
 
-func (s *Scheduler) ProcessWorkload(ctx context.Context, manifest []byte, kind string) error {
+func (s *Scheduler) ProcessWorkload(ctx context.Context, manifest []byte, kind, namespace string) error {
 	taskID := uuid.New().String()
 	var task types.Task
 	switch kind {
@@ -68,7 +68,7 @@ func (s *Scheduler) ProcessWorkload(ctx context.Context, manifest []byte, kind s
 			CPURequest:    100,
 			MemoryRequest: 50 * 1024 * 1024,
 		}
-		if err := s.storeManifest(ctx, dep.Name, manifest); err != nil {
+		if err := s.storeManifest(ctx, namespace, dep.Name, manifest); err != nil {
 			return fmt.Errorf("failed to store manifest: %v", err)
 		}
 	case "stateful":
@@ -85,7 +85,7 @@ func (s *Scheduler) ProcessWorkload(ctx context.Context, manifest []byte, kind s
 			CPURequest:    200,
 			MemoryRequest: 100 * 1024 * 1024,
 		}
-		if err := s.storeManifest(ctx, ss.Name, manifest); err != nil {
+		if err := s.storeManifest(ctx, namespace, ss.Name, manifest); err != nil {
 			return fmt.Errorf("failed to store manifest: %v", err)
 		}
 	default:
@@ -94,11 +94,11 @@ func (s *Scheduler) ProcessWorkload(ctx context.Context, manifest []byte, kind s
 	return s.Schedule(ctx, task)
 }
 
-func (s *Scheduler) storeManifest(ctx context.Context, workloadName string, manifest []byte) error {
+func (s *Scheduler) storeManifest(ctx context.Context, namespace, workloadName string, manifest []byte) error {
 	registry, err := registry.NewRegistry(ctx, s.client, s.client.nodeID)
 	if err != nil {
 		return fmt.Errorf("failed to create registry: %v", err)
 	}
 	defer registry.Close()
-	return registry.StoreManifest(ctx, workloadName, manifest)
+	return registry.StoreManifest(ctx, namespace, workloadName, manifest)
 }

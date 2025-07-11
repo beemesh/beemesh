@@ -25,3 +25,10 @@ type HostMetrics struct {
 	MemoryFree int64 // Bytes
 	Timestamp  int64 // Unix seconds
 }
+
+type RBACPolicy struct {
+	Name       string
+	Verbs      []string // e.g., ["get", "list"]
+	Resources  []string // e.g., ["tasks", "services"]
+	PeerIDs    []string // Bound peer IDs
+}
