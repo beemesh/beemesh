@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"beemesh/pkg/types"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
+
+	"github.com/ipfs/go-cid"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/peer"
+	mh "github.com/multiformats/go-multihash"
 )
 
 type Registry struct {
@@ -19,18 +22,30 @@ type Registry struct {
 }
 
 func NewRegistry(ctx context.Context, client *Client, nodeID string) (*Registry, error) {
-	dht, err := dht.New(ctx, client.Host())
+	var bootstrappers []peer.AddrInfo
+	bootstrapStr := os.Getenv("BEEMESH_BOOTSTRAP_PEERS")
+	if bootstrapStr != "" {
+		for _, s := range strings.Split(bootstrapStr, ",") {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			ai, err := peer.AddrInfoFromString(s)
+			if err != nil {
+				log.Printf("Invalid bootstrap peer %s: %v", s, err)
+				continue
+			}
+			bootstrappers = append(bootstrappers, ai)
+		}
+	}
+	d, err := dht.New(ctx, client.Host(), dht.BootstrapPeers(bootstrappers...))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHT: %v", err)
 	}
-	if err := dht.Bootstrap(ctx); err != nil {
+	if err := d.Bootstrap(ctx); err != nil {
 		return nil, fmt.Errorf("failed to bootstrap DHT: %v", err)
 	}
-	return &Registry{client: client, dht: dht, nodeID: nodeID}, nil
-}
-
-func (c *Client) Host() host.Host {
-	return c.host
+	return &Registry{client: client, dht: d, nodeID: nodeID}, nil
 }
 
 func (r *Registry) Client() *Client {
@@ -42,24 +57,38 @@ func (r *Registry) Close() error {
 }
 
 func (r *Registry) RegisterService(ctx context.Context, namespace string, service types.Service) error {
-	key := fmt.Sprintf("/ns/%s/%s/%s", namespace, service.ProtocolID, service.Name)
-	value := []byte(service.Libp2pAddr)
-	if err := r.dht.PutValue(ctx, key, value); err != nil {
-		return fmt.Errorf("failed to register service %s in namespace %s: %v", service.Name, namespace, err)
+	keyStr := fmt.Sprintf("/ns/%s/%s/%s", namespace, service.ProtocolID, service.Name)
+	hashed, err := mh.Sum([]byte(keyStr), mh.SHA2_256, -1)
+	if err != nil {
+		return fmt.Errorf("failed to hash key: %v", err)
 	}
-	log.Printf("Registered service %s at %s in namespace %s", service.Name, service.Libp2pAddr, namespace)
+	cidKey := cid.NewCidV1(cid.Raw, hashed)
+	if err := r.dht.Provide(ctx, cidKey, true); err != nil {
+		return fmt.Errorf("failed to provide service %s in namespace %s: %v", service.Name, namespace, err)
+	}
+	log.Printf("Provided service %s at key %s in namespace %s", service.Name, keyStr, namespace)
 	return nil
 }
 
 func (r *Registry) ResolveService(ctx context.Context, namespace, protocolID string) ([]string, error) {
-	records, err := r.dht.FindProviders(ctx, fmt.Sprintf("/ns/%s/%s", namespace, protocolID))
+	keyStr := fmt.Sprintf("/ns/%s/%s", namespace, protocolID)
+	hashed, err := mh.Sum([]byte(keyStr), mh.SHA2_256, -1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash key: %v", err)
+	}
+	cidKey := cid.NewCidV1(cid.Raw, hashed)
+	providers, err := r.dht.FindProviders(ctx, cidKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve service %s in namespace %s: %v", protocolID, namespace, err)
 	}
-	addresses := make([]string, 0, len(records))
-	for _, record := range records {
-		for _, addr := range record.Addrs {
-			addresses = append(addresses, addr.String())
+	addresses := make([]string, 0, len(providers))
+	for _, p := range providers {
+		for _, addr := range p.Addrs {
+			fullAddr, err := addr.StringWithPeer(p.ID)
+			if err != nil {
+				continue
+			}
+			addresses = append(addresses, fullAddr)
 		}
 	}
 	return addresses, nil

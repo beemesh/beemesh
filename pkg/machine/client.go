@@ -5,21 +5,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"time"
+	"os"
 
 	"beemesh/pkg/types"
+
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
-	"github.com/multiformats/go-multiaddr"
+	discovery "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 )
+
+type discoveryNotifee struct {
+	h host.Host
+}
+
+func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
+	go n.h.Connect(context.Background(), pi)
+}
 
 type Client struct {
 	host      host.Host
 	nodeID    string
 	resources chan types.HostMetrics
+	mdns      discovery.Service
 }
 
 func NewClient(ctx context.Context, nodeID string) (*Client, error) {
@@ -27,7 +35,20 @@ func NewClient(ctx context.Context, nodeID string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create libp2p host: %v", err)
 	}
-	return &Client{host: h, nodeID: nodeID, resources: make(chan types.HostMetrics, 10)}, nil
+	c := &Client{host: h, nodeID: nodeID, resources: make(chan types.HostMetrics, 10)}
+	if os.Getenv("BEEMESH_ENABLE_MDNS") == "true" {
+		notifee := &discoveryNotifee{h: h}
+		mdnsService, err := discovery.NewMdnsService(h, "_beemesh._udp", notifee)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create mDNS service: %v", err)
+		}
+		if err := mdnsService.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start mDNS service: %v", err)
+		}
+		c.mdns = mdnsService
+		log.Println("mDNS discovery enabled")
+	}
+	return c, nil
 }
 
 func (c *Client) Host() host.Host {
@@ -112,5 +133,8 @@ func (c *Client) ReceiveMetrics(ctx context.Context) chan types.HostMetrics {
 }
 
 func (c *Client) Close() error {
+	if c.mdns != nil {
+		c.mdns.Close()
+	}
 	return c.host.Close()
 }
