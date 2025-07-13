@@ -12,6 +12,7 @@ import (
 	"github.com/ipfs/go-cid"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 	mh "github.com/multiformats/go-multihash"
 )
 
@@ -84,11 +85,12 @@ func (r *Registry) ResolveService(ctx context.Context, namespace, protocolID str
 	addresses := make([]string, 0, len(providers))
 	for _, p := range providers {
 		for _, addr := range p.Addrs {
-			fullAddr, err := addr.StringWithPeer(p.ID)
+			peerComp, err := ma.NewComponent("p2p", p.ID.String())
 			if err != nil {
 				continue
 			}
-			addresses = append(addresses, fullAddr)
+			fullMa := addr.Encapsulate(peerComp)
+			addresses = append(addresses, fullMa.String())
 		}
 	}
 	return addresses, nil
