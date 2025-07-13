@@ -132,6 +132,46 @@ func (c *Client) ReceiveMetrics(ctx context.Context) chan types.HostMetrics {
 	return c.resources
 }
 
+func (c *Client) PublishProposal(ctx context.Context, proposal types.Proposal) error {
+	topic, err := c.host.PubSub().Join("scheduler-proposals")
+	if err != nil {
+		return fmt.Errorf("failed to join scheduler-proposals: %v", err)
+	}
+	data, err := json.Marshal(proposal)
+	if err != nil {
+		return fmt.Errorf("failed to marshal proposal: %v", err)
+	}
+	return topic.Publish(ctx, data)
+}
+
+func (c *Client) ReceiveProposals(ctx context.Context) chan types.Proposal {
+	proposals := make(chan types.Proposal, 10)
+	go func() {
+		topic, err := c.host.PubSub().Join("scheduler-proposals")
+		if err != nil {
+			log.Fatalf("Failed to join scheduler-proposals: %v", err)
+		}
+		sub, err := topic.Subscribe()
+		if err != nil {
+			log.Fatalf("Failed to subscribe to scheduler-proposals: %v", err)
+		}
+		for {
+			msg, err := sub.Next(ctx)
+			if err != nil {
+				log.Printf("Failed to read from scheduler-proposals: %v", err)
+				continue
+			}
+			var proposal types.Proposal
+			if err := json.Unmarshal(msg.Data, &proposal); err != nil {
+				log.Printf("Failed to unmarshal proposal: %v", err)
+				continue
+			}
+			proposals <- proposal
+		}
+	}()
+	return proposals
+}
+
 func (c *Client) Close() error {
 	if c.mdns != nil {
 		c.mdns.Close()

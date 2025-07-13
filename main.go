@@ -8,20 +8,19 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
+	"sort"
 	"time"
 
-	"beemesh/pkg/crypto"
 	"beemesh/pkg/machine"
 	"beemesh/pkg/podman"
 	"beemesh/pkg/registry"
 	"beemesh/pkg/scheduler"
 	"beemesh/pkg/types"
+
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
-	"sigs.k8s.io/yaml"
 )
 
 func main() {
@@ -44,10 +43,14 @@ func main() {
 		log.Fatalf("Failed to create Podman client: %v", err)
 	}
 
-	scheduler := scheduler.NewScheduler(client)
+	sched := scheduler.NewScheduler(client)
 	client.ReceiveTasks(ctx, func(task types.Task) {
-		if err := podmanClient.Deploy(task); err != nil {
-			log.Printf("Failed to deploy task %s: %v", task.TaskID, err)
+		if task.Destination == "scheduler" {
+			distributedSchedule(ctx, task, client, podmanClient)
+		} else if task.Destination == "" || task.Destination == "all" || task.Destination == client.nodeID {
+			if err := podmanClient.Deploy(task); err != nil {
+				log.Printf("Failed to deploy task %s: %v", task.TaskID, err)
+			}
 		}
 	})
 
@@ -59,16 +62,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				totalCPU, _ := cpu.Counts(true)
-				cpuPercent, _ := cpu.Percent(0, false)
-				cpuUsed := int64(float64(totalCPU) * 1000 * cpuPercent[0] / 100)
-				vm, _ := mem.VirtualMemory()
-				metrics := types.HostMetrics{
-					NodeID:     client.nodeID,
-					CPUFree:    int64(totalCPU*1000) - cpuUsed,
-					MemoryFree: int64(vm.Free),
-					Timestamp:  time.Now().Unix(),
-				}
+				metrics := getCurrentMetrics(client.nodeID)
 				if err := client.PublishMetrics(ctx, metrics); err != nil {
 					log.Printf("Failed to publish metrics: %v", err)
 				}
@@ -95,7 +89,7 @@ func main() {
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		if err := scheduler.ProcessWorkload(ctx, body, "stateless", namespace); err != nil {
+		if err := sched.ProcessWorkload(ctx, body, "stateless", namespace); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to process deployment in namespace %s: %v", namespace, err), http.StatusInternalServerError)
 			return
 		}
@@ -110,7 +104,7 @@ func main() {
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		if err := scheduler.ProcessWorkload(ctx, body, "stateful", namespace); err != nil {
+		if err := sched.ProcessWorkload(ctx, body, "stateful", namespace); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to process statefulset in namespace %s: %v", namespace, err), http.StatusInternalServerError)
 			return
 		}
@@ -149,7 +143,7 @@ func main() {
 			return
 		}
 		var config struct {
-			Name string `json:"name"`
+			Name string            `json:"name"`
 			Data map[string]string `json:"data"`
 		}
 		if err := json.Unmarshal(body, &config); err != nil {
@@ -175,7 +169,7 @@ func main() {
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		if err := scheduler.ProcessWorkload(ctx, body, "stateless", namespace); err != nil {
+		if err := sched.ProcessWorkload(ctx, body, "stateless", namespace); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to process workload: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -192,7 +186,7 @@ func main() {
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		if err := scheduler.ProcessWorkload(ctx, body, "stateful", namespace); err != nil {
+		if err := sched.ProcessWorkload(ctx, body, "stateful", namespace); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to process workload: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -318,6 +312,82 @@ func main() {
 
 	router.Handle("/metrics", promhttp.Handler())
 	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+func distributedSchedule(ctx context.Context, task types.Task, client *machine.Client, podmanClient *podman.Client) {
+	metrics := getCurrentMetrics(client.nodeID)
+	perCPU := task.PerCPURequest
+	perMem := task.PerMemRequest
+	maxInst := int(1<<63 - 1) // large number
+	if perCPU > 0 {
+		maxInst = int(metrics.CPUFree / perCPU)
+	}
+	if perMem > 0 {
+		maxInst = min(maxInst, int(metrics.MemoryFree/perMem))
+	}
+	if maxInst > 0 {
+		if err := client.PublishProposal(ctx, types.Proposal{TaskID: task.TaskID, NodeID: client.nodeID, MaxInstances: maxInst}); err != nil {
+			log.Printf("Failed to publish proposal for task %s: %v", task.TaskID, err)
+		}
+	}
+	proposalsChan := client.ReceiveProposals(ctx)
+	var proposals []types.Proposal
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case p := <-proposalsChan:
+			if p.TaskID == task.TaskID {
+				proposals = append(proposals, p)
+			}
+		case <-timer.C:
+			sort.Slice(proposals, func(i, j int) bool {
+				return proposals[i].NodeID < proposals[j].NodeID
+			})
+			remaining := task.Replicas
+			currentOrdinal := 0
+			isStateful := task.WorkloadKind == "stateful"
+			for _, p := range proposals {
+				if remaining <= 0 {
+					break
+				}
+				assign := min(p.MaxInstances, remaining)
+				if p.NodeID == client.nodeID {
+					if err := podmanClient.DeployInstances(task, assign, currentOrdinal, isStateful); err != nil {
+						log.Printf("Failed to deploy instances for task %s: %v", task.TaskID, err)
+					} else {
+						log.Printf("Deployed %d instances for task %s starting at ordinal %d", assign, task.TaskID, currentOrdinal)
+					}
+				}
+				currentOrdinal += assign
+				remaining -= assign
+			}
+			if remaining > 0 {
+				log.Printf("Insufficient resources to deploy all %d replicas for task %s, %d remaining", task.Replicas, task.TaskID, remaining)
+			}
+			return
+		}
+	}
+}
+
+func getCurrentMetrics(nodeID string) types.HostMetrics {
+	totalCPU, _ := cpu.Counts(true)
+	cpuPercent, _ := cpu.Percent(0, false)
+	cpuUsed := int64(float64(totalCPU) * 1000 * cpuPercent[0] / 100)
+	vm, _ := mem.VirtualMemory()
+	return types.HostMetrics{
+		NodeID:     nodeID,
+		CPUFree:    int64(totalCPU*1000) - cpuUsed,
+		MemoryFree: int64(vm.Free),
+		Timestamp:  time.Now().Unix(),
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func validateRBAC(ctx context.Context, reg *registry.Registry, namespace, peerID, verb, resource string) error {

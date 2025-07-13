@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"beemesh/pkg/machine"
 	"beemesh/pkg/registry"
 	"beemesh/pkg/types"
+
 	"github.com/google/uuid"
 	"k8s.io/api/apps/v1"
 	"sigs.k8s.io/yaml"
@@ -23,30 +25,6 @@ func NewScheduler(client *machine.Client) *Scheduler {
 }
 
 func (s *Scheduler) Schedule(ctx context.Context, task types.Task) error {
-	if task.Destination != "scheduler" {
-		return s.client.PublishTask(ctx, task)
-	}
-	metricsChan := s.client.ReceiveMetrics(ctx)
-	var metrics []types.HostMetrics
-	timeout := time.After(5 * time.Second)
-	select {
-	case m := <-metricsChan:
-		metrics = append(metrics, m)
-	case <-timeout:
-		return fmt.Errorf("no metrics available for scheduling")
-	}
-	var targetNode string
-	for _, m := range metrics {
-		if m.CPUFree >= task.CPURequest && m.MemoryFree >= task.MemoryRequest {
-			targetNode = m.NodeID
-			break
-		}
-	}
-	if targetNode == "" {
-		return fmt.Errorf("no suitable node found for task %s", task.TaskID)
-	}
-	task.Destination = targetNode
-	log.Printf("Scheduled task %s to node %s", task.TaskID, targetNode)
 	return s.client.PublishTask(ctx, task)
 }
 
@@ -65,8 +43,10 @@ func (s *Scheduler) ProcessWorkload(ctx context.Context, manifest []byte, kind, 
 			Name:          dep.Name,
 			Spec:          &dep,
 			Destination:   "scheduler",
-			CPURequest:    100,
-			MemoryRequest: 50 * 1024 * 1024,
+			Replicas:      int(*dep.Spec.Replicas),
+			PerCPURequest: 100,
+			PerMemRequest: 50 * 1024 * 1024,
+			WorkloadKind:  kind,
 		}
 		if err := s.storeManifest(ctx, namespace, dep.Name, manifest); err != nil {
 			return fmt.Errorf("failed to store manifest: %v", err)
@@ -82,8 +62,10 @@ func (s *Scheduler) ProcessWorkload(ctx context.Context, manifest []byte, kind, 
 			Name:          ss.Name,
 			Spec:          &ss,
 			Destination:   "scheduler",
-			CPURequest:    200,
-			MemoryRequest: 100 * 1024 * 1024,
+			Replicas:      int(*ss.Spec.Replicas),
+			PerCPURequest: 200,
+			PerMemRequest: 100 * 1024 * 1024,
+			WorkloadKind:  kind,
 		}
 		if err := s.storeManifest(ctx, namespace, ss.Name, manifest); err != nil {
 			return fmt.Errorf("failed to store manifest: %v", err)
