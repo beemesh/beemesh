@@ -7,13 +7,13 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/hashicorp/raft v1.7.3
-	github.com/libp2p/go-libp2p v0.42.0
-	github.com/libp2p/go-libp2p-kad-dht v0.33.1
-	github.com/multiformats/go-multiaddr v0.16.0
-	github.com/prometheus/client_golang v1.22.0
-	github.com/shirou/gopsutil v4.25.6
-	k8s.io/api v0.33.2
-	sigs.k8s.io/yaml v1.5.0
+	github.com/libp2p/go-libp2p v0.35.1
+	github.com/libp2p/go-libp2p-kad-dht v0.25.2
+	github.com/multiformats/go-multiaddr v0.12.4
+	github.com/prometheus/client_golang v1.19.1
+	github.com/shirou/gopsutil v3.21.11+incompatible
+	k8s.io/api v0.29.3
+	sigs.k8s.io/yaml v1.4.0
 )
 
 require (
