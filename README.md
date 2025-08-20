@@ -113,10 +113,13 @@ beemesh/
 - **No Central Bottlenecks**: Unlike Kubernetes’ `etcd` and `kube-apiserver`, Beemesh distributes state and scheduling.
 
 ## Limitations
-- **Networking**: Cross-host `libp2p` routing assumes manual configuration; a CNI plugin (e.g., flannel) is recommended.
+- **Networking**: Enhanced slirp4netns configuration provides network isolation; cross-host `libp2p` routing may require additional configuration.
 - **Security**: POC lacks explicit `libp2p` encryption and TLS; production requires these.
 - **Ecosystem**: No CLI or Helm-like tooling yet.
 - **Clone Deduplication**: Missing, may cause transient over-provisioning.
+
+## Documentation
+- **[NETWORKING.md](NETWORKING.md)**: Comprehensive documentation of slirp4netns network implementation and architecture.
 
 ## Future Enhancements
 - Store manifests in DHT for fully decentralized cloning (implemented in `pkg/registry/registry.go`).
