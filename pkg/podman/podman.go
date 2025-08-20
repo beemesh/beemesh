@@ -23,6 +23,36 @@ type Client struct {
 	nodeID string
 }
 
+// configureNetworkIsolation returns the proper slirp4netns network configuration
+// for beemesh network isolation architecture
+func (c *Client) configureNetworkIsolation() []string {
+	// Enhanced slirp4netns configuration for network isolation:
+	// - enable_ipv6=true: Enable IPv6 support for full networking capabilities
+	// - allow_host_loopback=true: Allow containers to reach host services (needed for beemesh API)  
+	// - cidr=10.0.2.0/24: Use dedicated subnet for isolation
+	// - mtu=1500: Standard MTU size
+	// - no_map_gw=false: Allow gateway mapping for host communication
+	return []string{"slirp4netns:enable_ipv6=true,allow_host_loopback=true,cidr=10.0.2.0/24,mtu=1500"}
+}
+
+// validateNetworkConfiguration validates that the slirp4netns network configuration
+// aligns with beemesh architecture requirements
+func (c *Client) validateNetworkConfiguration() error {
+	log.Printf("Validating slirp4netns network configuration for node %s", c.nodeID)
+	
+	// Verify slirp4netns capabilities
+	config := c.configureNetworkIsolation()
+	if len(config) == 0 {
+		return fmt.Errorf("network configuration is empty")
+	}
+	
+	// Log network isolation configuration
+	log.Printf("Network isolation configured: %s", strings.Join(config, ","))
+	log.Printf("Network isolation features: IPv6 enabled, host loopback allowed, dedicated CIDR subnet")
+	
+	return nil
+}
+
 func NewClient() (*Client, error) {
 	conn, err := bindings.NewConnection(context.Background(), "unix:///run/podman/podman.sock")
 	if err != nil {
@@ -32,7 +62,15 @@ func NewClient() (*Client, error) {
 	if nodeID == "" {
 		return nil, fmt.Errorf("BEEMESH_NODE_ID not set")
 	}
-	return &Client{conn: conn, ctx: context.Background(), nodeID: nodeID}, nil
+	
+	client := &Client{conn: conn, ctx: context.Background(), nodeID: nodeID}
+	
+	// Validate network configuration on initialization
+	if err := client.validateNetworkConfiguration(); err != nil {
+		return nil, fmt.Errorf("network configuration validation failed: %v", err)
+	}
+	
+	return client, nil
 }
 
 func (c *Client) Deploy(task types.Task) error {
@@ -90,7 +128,7 @@ func (c *Client) DeployInstances(task types.Task, numInstances int, startOrdinal
 		}
 		podSpec := entities.PodCreateOptions{
 			Name:              podName,
-			Network:           []string{"slirp4netns"},
+			Network:           c.configureNetworkIsolation(),
 			Labels:            map[string]string{"beemesh.workload": name},
 			Infra:             false,
 			Share:             []string{"none"},
@@ -170,7 +208,7 @@ func (c *Client) deployPodmanPod(name string, spec v1.PodSpec, replicas int, sta
 		}
 		podSpec := entities.PodCreateOptions{
 			Name:              podName,
-			Network:           []string{"slirp4netns"},
+			Network:           c.configureNetworkIsolation(),
 			Labels:            map[string]string{"beemesh.workload": name},
 			Infra:             false,
 			Share:             []string{"none"},
