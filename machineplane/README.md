@@ -51,28 +51,37 @@ sequenceDiagram
   participant N2 as Node B
   participant MDHT as Machine DHT
   participant R as Runtime (Podman)
+  participant PubSub as Pub/Sub
 
-  P->>PubSub: Publish Task{task_id, reqs, qos, manifest_ref} on scheduler-tasks
+  P->>PubSub: Publish Task(task_id, reqs, qos, manifest_ref) on scheduler-tasks
   Note over N1,N2: All nodes receive task via Pub/Sub
+
   N1->>N1: Local Evaluate(reqs, policies)
   N2->>N2: Local Evaluate(reqs, policies)
-  N1->>PubSub: Bid{task_id, node_id, score, fit, latency}
-  N2->>PubSub: Bid{task_id, node_id, score, fit, latency}
+
+  N1->>PubSub: Bid(task_id, node_id, score, fit, latency)
+  N2->>PubSub: Bid(task_id, node_id, score, fit, latency)
+
   par Selection Window (~250ms ± jitter)
+    N1->>N1: Compute best_bid = argmax(score)
+  and
+    N2->>N2: Compute best_bid = argmax(score)
   end
-  N1->>N1: Compute best_bid = argmax(score)
-  N2->>N2: Compute best_bid = argmax(score)
-  N1->>MDHT: Try Put Lease(task_id, winner_id, ttl=3s) (CAS)
-  N2->>MDHT: Try Put Lease(task_id, winner_id, ttl=3s) (CAS)
+
+  N1->>MDHT: Try Put Lease(task_id, winner_id, ttl=3s) [CAS]
+  N2->>MDHT: Try Put Lease(task_id, winner_id, ttl=3s) [CAS]
+
   MDHT-->>N1: CAS Result (success/fail)
   MDHT-->>N2: CAS Result (success/fail)
+
   alt Lease acquired by winner
     N1->>R: Deploy(manifest_ref)
-    R-->>N1: Deployed OK / Failed
-    N1->>PubSub: Event{task_id, status=Deployed, node_id}
+    R-->>N1: Deployment Result (OK / Failed)
+    N1->>PubSub: Event(task_id, status=Deployed, node_id)
   else Lease conflict
-    N2->>N2: Backoff + Observe events
+    N2->>N2: Backoff and Observe events
   end
+
 ```
 
 ```mermaid
