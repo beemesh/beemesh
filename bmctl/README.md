@@ -1,6 +1,6 @@
-# beectl — Normative CLI Specification (v0.1)
+# Bmctl — Normative CLI Specification (v0.1)
 
-> Scope: This document specifies the **beectl** command‑line interface for Beemesh. It defines command surface, I/O formats, transport, security, exit codes, and observable behavior. Normative terms follow **RFC 2119**. Gherkin scenarios are provided for key interactions.
+> Scope: This document specifies the **bmctl** command‑line interface for Beemesh. It defines command surface, I/O formats, transport, security, exit codes, and observable behavior. Normative terms follow **RFC 2119**. Gherkin scenarios are provided for key interactions.
 
 ---
 
@@ -14,9 +14,9 @@
 
 ### 1.2 Non‑Goals (Machineplane‑only boundary)
 
-* beectl **MUST NOT** read from or write to the **Workload DHT** directly.
-* beectl **MUST NOT** hold or present **workload credentials**.
-* beectl **MUST NOT** execute workload‑level consensus/membership operations.
+* bmctl **MUST NOT** read from or write to the **Workload DHT** directly.
+* bmctl **MUST NOT** hold or present **workload credentials**.
+* bmctl **MUST NOT** execute workload‑level consensus/membership operations.
 
 ---
 
@@ -29,7 +29,7 @@
 
 ### 2.2 Identity & AuthZ
 
-* beectl **MUST** use an **Operator ID** (Ed25519) stored in `~/.beemesh/keys` (0600 perms).
+* bmctl **MUST** use an **Operator ID** (Ed25519) stored in `~/.beemesh/keys` (0600 perms).
 * Every mutating request **MUST** be signed; the daemon **MUST** verify and relay using its **Machine Peer ID**.
 * Authorization **SHOULD** be enforced by daemon policy (allow/deny lists, org CA chains).
 
@@ -39,12 +39,12 @@
 sequenceDiagram
   autonumber
   participant U as Operator
-  participant C as beectl
+  participant C as bmctl
   participant D as Local Daemon (Machineplane)
   participant PS as Pub/Sub (scheduler-*)
   participant N as Nodes
 
-  U->>C: beectl create -f app.yaml --wait
+  U->>C: bmctl create -f app.yaml --wait
   C->>C: Validate & sign (Operator ID)
   C->>D: SubmitEnvelope{Task}
   D->>PS: Publish Task (signed by Machine Peer ID)
@@ -59,7 +59,7 @@ sequenceDiagram
 ## 3. Command Surface (Machineplane‑Only)
 
 ```
-beectl [--context CTX] [--namespace NS] [--remote MADDR] [--output table|json|yaml] [--quiet]
+bmctl [--context CTX] [--namespace NS] [--remote MADDR] [--output table|json|yaml] [--quiet]
   create -f FILE [--labels k=v] [--set k=v] [--wait] [--timeout 60s] [--dry-run]
   delete pod NAME [--grace 30s] [--force]
   get pods [NAME...] [--watch] [--selector LABELSEL] [--since 10m]
@@ -202,7 +202,7 @@ beectl [--context CTX] [--namespace NS] [--remote MADDR] [--output table|json|ya
 ```mermaid
 sequenceDiagram
   autonumber
-  participant C as beectl
+  participant C as bmctl
   participant D as Daemon
   participant PS as Pub/Sub (scheduler)
   participant MDHT as Machine DHT
@@ -220,7 +220,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   autonumber
-  participant C as beectl
+  participant C as bmctl
   participant D as Local Daemon
   participant R as Runtime (Podman)
 
@@ -235,7 +235,7 @@ sequenceDiagram
 ## 9. Validation & Errors
 
 * Invalid flags/manifests **MUST** exit **2** with actionable diagnostics (line/column if available).
-* Auth failures **MUST** exit **3** and suggest `beectl auth show`.
+* Auth failures **MUST** exit **3** and suggest `bmctl auth show`.
 * Timeouts **MUST** exit **4** with partial progress summary.
 
 ---
@@ -257,8 +257,8 @@ sequenceDiagram
 
 ```
 Scenario: CLI refuses direct WDHT access
-  Given beectl is installed
-  When I run "beectl peers --workload"
+  Given bmctl is installed
+  When I run "bmctl peers --workload"
   Then the command MUST fail with exit code 2
   And the error MUST state that Workplane access is not permitted
 ```
@@ -266,7 +266,7 @@ Scenario: CLI refuses direct WDHT access
 ```
 Scenario: CLI uses only scheduler-events for status
   Given a workload W is deploying
-  When I run "beectl events --watch"
+  When I run "bmctl events --watch"
   Then the stream MUST include only Machineplane scheduler-events
 ```
 
@@ -275,14 +275,14 @@ Scenario: CLI uses only scheduler-events for status
 ```
 Scenario: Create requires operator signature
   Given an active Operator ID
-  When I run "beectl create -f app.yaml --dry-run -o json"
+  When I run "bmctl create -f app.yaml --dry-run -o json"
   Then the printed envelope MUST include op_id and op_sig
 ```
 
 ```
 Scenario: Daemon relays with machine signature
   Given the local daemon is running
-  When I run "beectl create -f app.yaml"
+  When I run "bmctl create -f app.yaml"
   Then the daemon MUST publish the Task signed by its Machine Peer ID
 ```
 
@@ -292,7 +292,7 @@ Scenario: Daemon relays with machine signature
 Scenario: Wait completes when replicas are ready
   Given desired replicas = 3
   And three Deployed events are observed followed by runtime readiness
-  When I run "beectl create -f app.yaml --wait --timeout 60s"
+  When I run "bmctl create -f app.yaml --wait --timeout 60s"
   Then the command MUST exit 0 before the timeout
 ```
 
@@ -300,7 +300,7 @@ Scenario: Wait completes when replicas are ready
 Scenario: Wait times out
   Given desired replicas = 3
   And only one replica becomes ready
-  When I run "beectl create -f app.yaml --wait --timeout 10s"
+  When I run "bmctl create -f app.yaml --wait --timeout 10s"
   Then the command MUST exit with code 4
 ```
 
@@ -309,14 +309,14 @@ Scenario: Wait times out
 ```
 Scenario: Graceful pod deletion
   Given a running pod named orders-1
-  When I run "beectl delete pod orders-1 --grace 30s"
+  When I run "bmctl delete pod orders-1 --grace 30s"
   Then a Cancel MUST be submitted with grace_ms=30000
 ```
 
 ```
 Scenario: Drain marks node unschedulable and evicts pods
   Given a node n1 hosting 2 pods
-  When I run "beectl drain n1 --grace 60s"
+  When I run "bmctl drain n1 --grace 60s"
   Then n1 MUST be marked unschedulable in the Machine DHT
   And eviction intents MUST be published for its pods
 ```
@@ -326,7 +326,7 @@ Scenario: Drain marks node unschedulable and evicts pods
 ```
 Scenario: Follow logs since a timestamp
   Given a running pod web-0
-  When I run "beectl logs web-0 --since 5m --follow"
+  When I run "bmctl logs web-0 --since 5m --follow"
   Then the CLI MUST stream lines with RFC3339 timestamps newer than 5 minutes ago
 ```
 
@@ -348,4 +348,4 @@ Scenario: Follow logs since a timestamp
 
 ## 13. Change Log
 
-* v0.1: Initial beectl CLI spec with normative behavior, diagrams, and Gherkin.
+* v0.1: Initial bmctl CLI spec with normative behavior, diagrams, and Gherkin.
