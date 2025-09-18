@@ -1,10 +1,3 @@
-// machine-plane / machine / daeomon binary
-// capabilities:
-// - Gets own machine PeerID
-// - register into the machine DHT
-// - communicates to other machine only mutually authenticated over libp2p streams
-// - scheduling algorithm
-
 import (
 	"beemesh/pkg/machine/podman"
 	"beemesh/pkg/machine/scheduler"
