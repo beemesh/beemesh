@@ -129,13 +129,13 @@ All communication in Beemesh is **mutually authenticated** and **end-to-end encr
 flowchart TB
   %% ===== Workplane (per-workload trust domain) =====
   subgraph "Workplane (workload trust domain)" as WP
-    WDHT[(Workload DHT\nService Discovery)]
-    W1[Workload W1\n(WP Agent + App)]
-    W2[Workload W2\n(WP Agent + App)]
+    WDHT[(Workload DHT - Service Discovery)]
+    W1[Workload W1]
+    W2[Workload W2]
 
     %% replace bi-dir labeled link with two one-way labeled links
-    W1 -->|mTLS (Noise/TLS)| W2
-    W2 -->|mTLS (Noise/TLS)| W1
+    W1 -->|mTLS| W2
+    W2 -->|mTLS| W1
 
     W1 -->|register/query| WDHT
     W2 -->|register/query| WDHT
@@ -143,17 +143,17 @@ flowchart TB
 
   %% ===== Machineplane (infrastructure trust domain) =====
   subgraph "Machineplane (infrastructure trust domain)" as MP
-    MDHT[(Machine DHT\nNode Discovery)]
-    PS{{Pub/Sub\nscheduler topics}}
+    MDHT[(Machine DHT - Node Discovery)]
+    PS{{Pub/Sub - scheduler topics}}
 
     subgraph "Machine A" as M1
       D1[Machine Daemon A]
-      R1[(Runtime A\nPodman)]
+      R1[(Runtime A - Podman)]
     end
 
     subgraph "Machine B" as M2
       D2[Machine Daemon B]
-      R2[(Runtime B\nPodman)]
+      R2[(Runtime B - Podman)]
     end
 
     %% avoid bi-dir with label; use two directed links
@@ -174,6 +174,7 @@ flowchart TB
   %% dotted edges: no spaces around the dots
   R1 -.hosts.-> W1
   R2 -.hosts.-> W2
+
 
 ```
 
