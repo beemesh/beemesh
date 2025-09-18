@@ -1,279 +1,260 @@
-package machine
+package scheduler
 
 import (
-	"beemesh/pkg/machine/node"
-	"beemesh/pkg/machine/podman"
-	"beemesh/pkg/types"
 	"context"
-	"log"
+	"errors"
+	"fmt"
 	"sort"
 	"time"
+
+	"beemesh/pkg/types"
 )
 
-// Scheduler is responsible for distributed scheduling decisions across the cluster.
-// It listens for proposals from other nodes and decides how to distribute replicas.
+// PublishProposalFn is provided by the machine to broadcast a proposal over the mesh.
+type PublishProposalFn func(ctx context.Context, p types.Proposal) error
+
+// DelegateTaskFn tells a remote node to deploy (re-publish the task with Destination = nodeID).
+type DelegateTaskFn func(ctx context.Context, nodeID string, t types.Task) error
+
+// DeployLocalFn deploys the task locally (Podman etc).
+type DeployLocalFn func(t types.Task) error
+
+// MetricsProviderFn returns current free capacity.
+type MetricsProviderFn func() types.HostMetrics
+
+// ScoreFunc converts metrics to a comparable score.
+type ScoreFunc func(m types.HostMetrics) float64
+
+// Options config for the scheduler.
+type Options struct {
+	NodeID           string
+	Window           time.Duration // proposal collection window
+	PublishProposal  PublishProposalFn
+	DelegateTask     DelegateTaskFn
+	DeployLocal      DeployLocalFn
+	MetricsProvider  MetricsProviderFn
+	Score            ScoreFunc
+	Now              func() time.Time // injectable clock for tests
+	MaxBufferedProps int              // protects against bursty meshes
+}
+
+// Scheduler implements the distributed selection + assignment.
 type Scheduler struct {
-	client       *node.Node
-	podmanClient *podman.Client
+	opt Options
+	// proposals intake is bounded to avoid unbounded growth under broadcast storms
+	intake chan types.Proposal
 }
 
-// NewScheduler creates a new Scheduler instance.
-func NewScheduler(client *node.Node) *Scheduler {
+// New creates a new scheduler instance.
+func New(opt Options) (*Scheduler, error) {
+	if opt.NodeID == "" {
+		return nil, errors.New("scheduler: NodeID is required")
+	}
+	if opt.PublishProposal == nil || opt.DelegateTask == nil || opt.DeployLocal == nil {
+		return nil, errors.New("scheduler: PublishProposal, DelegateTask, and DeployLocal are required")
+	}
+	if opt.MetricsProvider == nil || opt.Score == nil {
+		return nil, errors.New("scheduler: MetricsProvider and Score are required")
+	}
+	if opt.Window <= 0 {
+		opt.Window = 350 * time.Millisecond
+	}
+	if opt.Now == nil {
+		opt.Now = time.Now
+	}
+	if opt.MaxBufferedProps <= 0 {
+		opt.MaxBufferedProps = 256
+	}
 	return &Scheduler{
-		client: client,
-	}
+		opt:    opt,
+		intake: make(chan types.Proposal, opt.MaxBufferedProps),
+	}, nil
 }
 
-// SetPodmanClient sets the Podman client for the scheduler to use for deployments.
-func (s *Scheduler) SetPodmanClient(client *podman.Client) {
-	s.podmanClient = client
-}
+// Intake returns a send-only channel to push proposals observed on pubsub into the scheduler.
+// The caller should forward only relevant proposals (same TaskID). Backpressure applies.
+func (s *Scheduler) Intake() chan<- types.Proposal { return s.intake }
 
-// getCurrentMetrics returns the current node metrics.
-func (s *Scheduler) getCurrentMetrics() types.HostMetrics {
-	return metrics.GetCurrentMetrics(s.client.GetNodeID())
-}
-
-// DistributedSchedule implements a simple distributed scheduling algorithm.
-// Steps:
-//  1. Each node calculates a "score" representing its available capacity.
-//  2. Nodes publish proposals with these scores.
-//  3. Scheduler collects proposals for a fixed window (5 seconds).
-//  4. Replicas are assigned starting with the node that has the highest score.
-func (s *Scheduler) DistributedSchedule(ctx context.Context, task types.Task, proposalsChan <-chan types.Proposal) {
-	if s.podmanClient == nil {
-		log.Printf("[Scheduler] Error: Podman client not set, cannot deploy task %s", task.TaskID)
-		return
+// DistributedSchedule runs one selection round for a task.
+// It (1) computes and publishes our proposal, (2) collects proposals for s.opt.Window,
+// (3) assigns replicas proportionally to scores, (4) deploys locally or delegates remotely.
+func (s *Scheduler) DistributedSchedule(ctx context.Context, task types.Task) {
+	// 0) sanity
+	if task.Replicas <= 0 {
+		task.Replicas = 1
 	}
 
-	nodeID := s.client.GetNodeID()
-
-	// Step 1: Gather current metrics for this node.
-	m := s.getCurrentMetrics()
-
-	// Calculate a simple score: available memory (MB) + (CPU cores * 1000)
-	// This is a naive heuristic. A production scheduler would use a more sophisticated formula.
-	score := float64(m.MemoryFree/1024/1024) + float64(m.CPUCores*1000)
-
-	// Step 2: Publish this node's proposal to the cluster.
-	proposal := types.Proposal{
+	// 1) publish our proposal
+	m := s.opt.MetricsProvider()
+	selfScore := s.opt.Score(m)
+	selfProp := types.Proposal{
 		TaskID:    task.TaskID,
-		NodeID:    nodeID,
-		Score:     score,
-		Timestamp: time.Now().UTC(),
+		NodeID:    s.opt.NodeID,
+		Score:     selfScore,
+		Timestamp: s.opt.Now().UTC(),
 	}
+	_ = s.opt.PublishProposal(ctx, selfProp) // best-effort broadcast
 
-	if err := s.client.PublishProposal(ctx, proposal); err != nil {
-		log.Printf("[Scheduler] Failed to publish proposal for task %s: %v", task.TaskID, err)
+	// 2) collect proposals for a short, configurable window
+	props := s.collect(ctx, task.TaskID)
+
+	// Ensure our own proposal is included even if we didn't hear ourselves back.
+	props = upsertProposal(props, selfProp)
+
+	if len(props) == 0 {
+		// No proposals? deploy locally as a fallback.
+		_ = s.opt.DeployLocal(task)
 		return
 	}
 
-	log.Printf("[Scheduler] Published proposal for task %s with score %.2f", task.TaskID, score)
-
-	// Step 3: Collect proposals from all nodes for 5 seconds.
-	var proposals []types.Proposal
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-
-collectLoop:
-	for {
-		select {
-		case p := <-proposalsChan:
-			if p.TaskID == task.TaskID {
-				proposals = append(proposals, p)
-			}
-		case <-timer.C:
-			break collectLoop
-		case <-ctx.Done():
-			log.Printf("[Scheduler] Context cancelled while collecting proposals for task %s", task.TaskID)
-			return
+	// 3) sort deterministically (score desc, older timestamp first, then NodeID asc)
+	sort.Slice(props, func(i, j int) bool {
+		if props[i].Score != props[j].Score {
+			return props[i].Score > props[j].Score
 		}
-	}
-
-	if len(proposals) == 0 {
-		log.Printf("[Scheduler] No proposals received for task %s. Deploying locally.", task.TaskID)
-		// If no other proposals, deploy locally.
-		if err := s.podmanClient.DeployWorkloadFromTask(task); err != nil {
-			log.Printf("[Scheduler] Failed to deploy task %s locally: %v", task.TaskID, err)
-		} else {
-			log.Printf("[Scheduler] Successfully deployed task %s locally", task.TaskID)
+		if !props[i].Timestamp.Equal(props[j].Timestamp) {
+			return props[i].Timestamp.Before(props[j].Timestamp)
 		}
-		return
-	}
-
-	// Step 4: Sort proposals by score (descending). Highest score first.
-	sort.Slice(proposals, func(i, j int) bool {
-		return proposals[i].Score > proposals[j].Score
+		return props[i].NodeID < props[j].NodeID
 	})
 
-	// Step 5: Assign replicas to nodes based on sorted scores.
-	remaining := task.Replicas
-	for _, p := range proposals {
-		if remaining <= 0 {
-			break
+	// 4) proportional replica assignment (at least 1 for top scorers until we exhaust)
+	assignments := s.assignReplicas(task.Replicas, props)
+
+	// 5) execute assignments
+	for nodeID, count := range assignments {
+		if count <= 0 {
+			continue
 		}
-
-		// In this basic implementation, each node gets only one replica at a time.
-		assign := 1
-		if assign > remaining {
-			assign = remaining
-		}
-
-		if p.NodeID == nodeID {
-			// Instead of deploying immediately, wait a short time to ensure we've collected most proposals.
-			// This prevents the first responder from always getting the task.
-			time.Sleep(100 * time.Millisecond)
-
-			// Deploy directly on this node.
-			if err := s.podmanClient.DeployWorkloadFromTask(task); err != nil {
-				log.Printf("[Scheduler] Failed to deploy replica of task %s on node %s: %v", task.TaskID, nodeID, err)
-			} else {
-				log.Printf("[Scheduler] Deployed replica of task %s on node %s", task.TaskID, nodeID)
+		if nodeID == s.opt.NodeID {
+			// deploy N replicas locally (naive: repeat same manifest N times)
+			for i := 0; i < count; i++ {
+				if err := s.opt.DeployLocal(task); err != nil {
+					// best effort; in a real system you'd emit an event here
+				}
 			}
 		} else {
-			log.Printf("[Scheduler] Replica of task %s assigned to node %s", task.TaskID, p.NodeID)
-			// In a real system, you would send a direct message to that node's libp2p host
-			// instructing it to deploy the task. For now, we log it.
-			// TODO: Implement direct task delegation to remote nodes.
+			// delegate N replicas remotely; publish same task N times but targeted
+			for i := 0; i < count; i++ {
+				_ = s.opt.DelegateTask(ctx, nodeID, task)
+			}
 		}
-
-		remaining -= assign
-	}
-
-	if remaining > 0 {
-		log.Printf("[Scheduler] Insufficient resources or nodes to deploy all replicas for task %s. Remaining: %d", task.TaskID, remaining)
 	}
 }
 
-const (
-	TopicTasks     = "scheduler-tasks"
-	TopicProposals = "scheduler-proposals"
-	TopicWins      = "scheduler-wins"
-)
+// collect drains proposals for the window or until ctx cancellation.
+func (s *Scheduler) collect(ctx context.Context, taskID string) []types.Proposal {
+	deadline := time.NewTimer(s.opt.Window)
+	defer deadline.Stop()
 
-type ResourceRequirements struct {
-	CPU    float64 `json:"cpu"`
-	Memory float64 `json:"memory"`
-}
-
-type Task struct {
-	ID         string               `json:"id"`
-	Name       string               `json:"name"`
-	Resources  ResourceRequirements `json:"resources"`
-	Priority   int                  `json:"priority"`
-	Manifest   []byte               `json:"manifest"`
-	DeadlineMs int64                `json:"deadline_ms,omitempty"`
-}
-
-type Bid struct {
-	TaskID string  `json:"task_id"`
-	NodeID string  `json:"node_id"`
-	Score  float64 `json:"score"`
-}
-
-type Win struct {
-	TaskID string `json:"task_id"`
-	NodeID string `json:"node_id"`
-}
-
-type Scheduler struct {
-	log    Logger
-	ps     *common.PubSub
-	dht    *MachineDHT
-	mx     *Metrics
-	nodeID string
-
-	// internal queues
-	wins <-chan common.Message // alias doesn't exist; adapt
-}
-
-// modify PubSub visibility
-type pubsub interface {
-	Publish(string, any) error
-	Subscribe(string) <-chan common.Message
-}
-
-func NewScheduler(log Logger, ps *common.PubSub, dht *MachineDHT, mx *Metrics, nodeID string) *Scheduler {
-	return &Scheduler{log: log, ps: ps, dht: dht, mx: mx, nodeID: nodeID}
-}
-
-func PublishTask(ctx context.Context, ps *common.PubSub, t Task) error {
-	return ps.Publish(TopicTasks, t)
-}
-
-// EvaluateAndBid listens for tasks and submits bids based on local metrics.
-func (s *Scheduler) EvaluateAndBid(ctx context.Context) error {
-	taskCh := s.ps.Subscribe(TopicTasks)
+	var out []types.Proposal
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case msg, ok := <-taskCh:
-			if !ok {
-				return nil
-			}
-			task := common.Decode[Task](msg.Data)
-			score := s.score(task)
-			bid := Bid{TaskID: task.ID, NodeID: s.nodeID, Score: score}
-			s.log.Infof("bid: task=%s node=%s score=%.3f", task.ID, s.nodeID, score)
-			_ = s.ps.Publish(TopicProposals, bid)
-
-			// Local selection window (100-500ms)
-			go s.selectBestAfterWindow(task.ID, 200*time.Millisecond)
-		}
-	}
-}
-
-func (s *Scheduler) score(t Task) float64 {
-	// naive score: higher is better
-	availCPU := s.mx.AvailableCPU()
-	availMem := s.mx.AvailableMemory()
-	if availCPU <= 0 || availMem <= 0 {
-		return 0
-	}
-	return (availCPU / (t.Resources.CPU + 0.01)) + (availMem / (t.Resources.Memory + 1))
-}
-
-func (s *Scheduler) selectBestAfterWindow(taskID string, window time.Duration) {
-	proposals := make([]Bid, 0, 8)
-	proCh := s.ps.Subscribe(TopicProposals)
-	timer := time.NewTimer(window)
-	for {
-		select {
-		case <-timer.C:
-			if len(proposals) == 0 {
-				return
-			}
-			sort.Slice(proposals, func(i, j int) bool { return proposals[i].Score > proposals[j].Score })
-			win := Win{TaskID: taskID, NodeID: proposals[0].NodeID}
-			s.log.Infof("win selected locally: task=%s node=%s", taskID, win.NodeID)
-			_ = s.ps.Publish(TopicWins, win)
-			return
-		case msg := <-proCh:
-			bid := common.Decode[Bid](msg.Data)
-			if bid.TaskID == taskID {
-				proposals = append(proposals, bid)
+			return out
+		case <-deadline.C:
+			return out
+		case p := <-s.intake:
+			if p.TaskID == taskID {
+				out = append(out, p)
 			}
 		}
 	}
 }
 
-// DeployLoop listens for wins and deploys the task if this node won.
-func (s *Scheduler) DeployLoop(ctx context.Context) error {
-	winCh := s.ps.Subscribe(TopicWins)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case msg, ok := <-winCh:
-			if !ok {
-				return nil
-			}
-			win := common.Decode[Win](msg.Data)
-			if win.NodeID == s.nodeID {
-				s.log.Infof("deploying task=%s on node=%s (simulated)", win.TaskID, s.nodeID)
-				// TODO: integrate with Podman
-			}
+// assignReplicas distributes replicas across nodes in proportion to their scores,
+// guaranteeing deterministic rounding and at least 1 to the top node while replicas remain.
+func (s *Scheduler) assignReplicas(total int, props []types.Proposal) map[string]int {
+	assign := make(map[string]int, len(props))
+	if total <= 0 {
+		return assign
+	}
+	// Sum scores
+	var sum float64
+	for _, p := range props {
+		if p.Score > 0 {
+			sum += p.Score
 		}
 	}
+	if sum <= 0 {
+		// no meaningful scores; give one to the top prop until we run out
+		for i := 0; i < total && i < len(props); i++ {
+			assign[props[i].NodeID]++
+		}
+		return assign
+	}
+
+	// First pass: floor of proportional share
+	remaining := total
+	type frac struct {
+		nodeID string
+		frac   float64
+	}
+	// keep track of fractional remainders to allocate leftovers deterministically
+	var remainders []frac
+	for _, p := range props {
+		share := (p.Score / sum) * float64(total)
+		base := int(share) // floor
+		if base > 0 {
+			assign[p.NodeID] += base
+			remaining -= base
+		}
+		remainders = append(remainders, frac{nodeID: p.NodeID, frac: share - float64(base)})
+	}
+
+	// Distribute leftovers by largest remainder; tie-break by proposal order already deterministic
+	sort.SliceStable(remainders, func(i, j int) bool { return remainders[i].frac > remainders[j].frac })
+	for remaining > 0 {
+		for _, r := range remainders {
+			if remaining == 0 {
+				break
+			}
+			assign[r.nodeID]++
+			remaining--
+		}
+	}
+	return assign
+}
+
+func upsertProposal(list []types.Proposal, p types.Proposal) []types.Proposal {
+	found := false
+	for i := range list {
+		if list[i].NodeID == p.NodeID && list[i].TaskID == p.TaskID {
+			list[i] = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		list = append(list, p)
+	}
+	return list
+}
+
+// Utility for a sensible default score function (available mem + 1000*cpu + network)
+func DefaultScore(m types.HostMetrics) float64 {
+	return m.MemoryFreeMB + 1000*m.CPUCoresFree + m.NetworkScore
+}
+
+// Utility for pretty debug printing (optional)
+func DebugAssignments(a map[string]int) string {
+	type item struct {
+		node string
+		n    int
+	}
+	var v []item
+	for k, n := range a {
+		v = append(v, item{k, n})
+	}
+	sort.Slice(v, func(i, j int) bool {
+		if v[i].n != v[j].n {
+			return v[i].n > v[j].n
+		}
+		return v[i].node < v[j].node
+	})
+	out := "assignments:"
+	for _, it := range v {
+		out += fmt.Sprintf(" %s=%d", it.node, it.n)
+	}
+	return out
 }
