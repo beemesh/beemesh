@@ -89,13 +89,14 @@ stateDiagram-v2
 
 ```mermaid
 graph TD
-  subgraph Workplane (per Pod)
+  subgraph "Workplane per Pod"
     A[WP Agent] -- puts/gets --> B[(WDHT)]
     A -- secure streams --> C[Peer WP Agent]
     A -- probes --> D[App Process]
     A -- intents --> E{{Scheduler Topics}}
   end
-  subgraph Machineplane (separate)
+
+  subgraph "Machineplane separate"
     E
   end
 ```

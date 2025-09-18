@@ -92,18 +92,21 @@ stateDiagram-v2
 ```mermaid
 graph TD
   subgraph Machineplane
-    A[Node Daemon]-- secure streams -->B[Node Daemon]
-    A-- MDHT -->C[(Ephemeral Records)]
-    B-- MDHT -->C
-    A==>D{{Pub/Sub}}
-    B==>D
-    D-- tasks/proposals/events -->A
-    D-- tasks/proposals/events -->B
+    A[Node Daemon] -- secure streams --> B[Node Daemon]
+    A -- MDHT --> C[(Ephemeral Records)]
+    B -- MDHT --> C
+    A ==> D{{Pub/Sub}}
+    B ==> D
+    D -- tasks/proposals/events --> A
+    D -- tasks/proposals/events --> B
   end
-  subgraph Workplane (separate)
+
+  subgraph "Workplane separate"
     E[Pod Workload]
   end
+
   A -.runtime adapter.-> E
+
 ```
 
 ---

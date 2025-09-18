@@ -128,7 +128,7 @@ All communication in Beemesh is **mutually authenticated** and **end-to-end encr
 ```mermaid
 flowchart TB
   %% ===== Workplane (per-workload trust domain) =====
-  subgraph WP[Workplane (workload trust domain)]
+  subgraph "Workplane (workload trust domain)" as WP
     WDHT[(Workload DHT<br/>Service Discovery)]
     W1[Workload W1<br/>(WP Agent + App)]
     W2[Workload W2<br/>(WP Agent + App)]
@@ -142,16 +142,16 @@ flowchart TB
   end
 
   %% ===== Machineplane (infrastructure trust domain) =====
-  subgraph MP[Machineplane (infrastructure trust domain)]
+  subgraph "Machineplane (infrastructure trust domain)" as MP
     MDHT[(Machine DHT<br/>Node Discovery)]
     PS{{Pub/Sub<br/>scheduler topics}}
 
-    subgraph M1[Machine A]
+    subgraph "Machine A" as M1
       D1[Machine Daemon A]
       R1[(Runtime A<br/>Podman)]
     end
 
-    subgraph M2[Machine B]
+    subgraph "Machine B" as M2
       D2[Machine Daemon B]
       R2[(Runtime B<br/>Podman)]
     end
@@ -174,6 +174,7 @@ flowchart TB
   %% dotted edges: no spaces around the dots
   R1 -.hosts.-> W1
   R2 -.hosts.-> W2
+
 ```
 
 ---
