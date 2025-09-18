@@ -1,3 +1,5 @@
+package main
+
 import (
 	"beemesh/pkg/machine/podman"
 	"beemesh/pkg/machine/scheduler"
