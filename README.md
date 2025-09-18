@@ -128,46 +128,52 @@ All communication in Beemesh is **mutually authenticated** and **end-to-end encr
 ```mermaid
 flowchart TB
   %% ===== Workplane (per-workload trust domain) =====
-  subgraph WP["Workplane (workload trust domain)"]
-    WDHT[(Workload DHT\nService Discovery)]
+  subgraph WP[Workplane (workload trust domain)]
+    WDHT[(Workload DHT<br/>Service Discovery)]
+    W1[Workload W1<br/>(WP Agent + App)]
+    W2[Workload W2<br/>(WP Agent + App)]
 
-    W1["Workload W1\n(WP Agent + App)"]
-    W2["Workload W2\n(WP Agent + App)"]
+    %% replace bi-dir labeled link with two one-way labeled links
+    W1 -->|mTLS (Noise/TLS)| W2
+    W2 -->|mTLS (Noise/TLS)| W1
 
-    W1 <-->|mTLS (Noise/TLS)| W2
     W1 -->|register/query| WDHT
     W2 -->|register/query| WDHT
   end
 
   %% ===== Machineplane (infrastructure trust domain) =====
-  subgraph MP["Machineplane (infrastructure trust domain)"]
-    MDHT[(Machine DHT\nNode Discovery)]
-    PS{{Pub/Sub\nscheduler-* topics}}
+  subgraph MP[Machineplane (infrastructure trust domain)]
+    MDHT[(Machine DHT<br/>Node Discovery)]
+    PS{{Pub/Sub<br/>scheduler topics}}
 
-    subgraph M1["Machine A"]
-      D1["Machine Daemon A"]
-      R1[(Runtime A\nPodman)]
+    subgraph M1[Machine A]
+      D1[Machine Daemon A]
+      R1[(Runtime A<br/>Podman)]
     end
 
-    subgraph M2["Machine B"]
-      D2["Machine Daemon B"]
-      R2[(Runtime B\nPodman)]
+    subgraph M2[Machine B]
+      D2[Machine Daemon B]
+      R2[(Runtime B<br/>Podman)]
     end
 
-    D1 <-->|secure stream| D2
+    %% avoid bi-dir with label; use two directed links
+    D1 -->|secure stream| D2
+    D2 -->|secure stream| D1
+
     D1 -->|announce/lookup| MDHT
     D2 -->|announce/lookup| MDHT
-    D1 <-->|publish/subscribe| PS
-    D2 <-->|publish/subscribe| PS
+
+    D1 -->|publish/subscribe| PS
+    D2 -->|publish/subscribe| PS
   end
 
   %% ===== Cross-plane relationships (no shared creds) =====
   D1 -->|deploy/start| R1
   D2 -->|deploy/start| R2
 
-  %% Workloads run on runtimes (placement decided via Machineplane)
-  R1 -.hosts .-> W1
-  R2 -.hosts .-> W2
+  %% dotted edges: no spaces around the dots
+  R1 -.hosts.-> W1
+  R2 -.hosts.-> W2
 ```
 
 ---
