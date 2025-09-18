@@ -43,8 +43,8 @@ Beemesh divides orchestration into **two planes**:
 
 | Plane              | Purpose                                                               | CAP Trade-off                                |
 | ------------------ | --------------------------------------------------------------------- | -------------------------------------------- |
-| **Machine Plane**  | Node-level coordination, scheduling, and resource management.         | **A/P** – Availability & Partition Tolerance |
-| **Workload Plane** | Application-level self-healing, service discovery, secure networking. | **C/P** – Consistency & Partition Tolerance  |
+| **Machineplane**  | Node-level coordination, scheduling, and resource management.         | **A/P** – Availability & Partition Tolerance |
+| **Workplane** | Application-level self-healing, service discovery, secure networking. | **C/P** – Consistency & Partition Tolerance  |
 
 This separation eliminates cross-cutting concerns and allows **each plane to optimize independently**.
 
@@ -125,34 +125,56 @@ All communication in Beemesh is **mutually authenticated** and **end-to-end encr
 
 ### **6.1 High-Level Diagram**
 
-```
-                      +---------------------------------------+
-                      |             Workload Plane            |
-                      |---------------------------------------|
-                      | Secure Workload Communication (libp2p)|
-                      | Workload DHT for Service Discovery    |
-                      | Stateful Raft Clusters for App State  |
-                      +---------------------------------------+
-                                  ^            ^
-                                  |            |
-            Workload ↔ Workload Secure Streams | (TLS/Noise)
-                                  |
-                          Pub/Sub Messaging
-                                  |
-                      +---------------------------------------+
-                      |              Machine Plane            |
-                      |---------------------------------------|
-                      | Machine DHT for Node Discovery        |
-                      | Ephemeral Scheduler & Resource Bidding|
-                      | Machine ↔ Machine Secure Streams      |
-                      +---------------------------------------+
+```mermaid
+flowchart TB
+  %% ===== Workplane (per-workload trust domain) =====
+  subgraph WP["Workplane (workload trust domain)"]
+    WDHT[(Workload DHT\nService Discovery)]
+
+    W1["Workload W1\n(WP Agent + App)"]
+    W2["Workload W2\n(WP Agent + App)"]
+
+    W1 <-->|mTLS (Noise/TLS)| W2
+    W1 -->|register/query| WDHT
+    W2 -->|register/query| WDHT
+  end
+
+  %% ===== Machineplane (infrastructure trust domain) =====
+  subgraph MP["Machineplane (infrastructure trust domain)"]
+    MDHT[(Machine DHT\nNode Discovery)]
+    PS{{Pub/Sub\nscheduler-* topics}}
+
+    subgraph M1["Machine A"]
+      D1["Machine Daemon A"]
+      R1[(Runtime A\nPodman)]
+    end
+
+    subgraph M2["Machine B"]
+      D2["Machine Daemon B"]
+      R2[(Runtime B\nPodman)]
+    end
+
+    D1 <-->|secure stream| D2
+    D1 -->|announce/lookup| MDHT
+    D2 -->|announce/lookup| MDHT
+    D1 <-->|publish/subscribe| PS
+    D2 <-->|publish/subscribe| PS
+  end
+
+  %% ===== Cross-plane relationships (no shared creds) =====
+  D1 -->|deploy/start| R1
+  D2 -->|deploy/start| R2
+
+  %% Workloads run on runtimes (placement decided via Machineplane)
+  R1 -.hosts .-> W1
+  R2 -.hosts .-> W2
 ```
 
 ---
 
-### **6.2 Machine Plane**
+### **6.2 Machineplane**
 
-The **Machine Plane** manages infrastructure resources and scheduling, with **no persistent state**.
+The **Machineplane** manages infrastructure resources and scheduling, with **no persistent state**.
 
 #### **Responsibilities**
 
@@ -226,9 +248,9 @@ Beemesh introduces **ephemeral scheduling**, where **tasks are never persisted**
 
 ---
 
-### **6.5 Workload Plane**
+### **6.5 Workplane**
 
-The **Workload Plane** operates inside every Pod.
+The **Workplane** operates inside every Pod.
 
 | Function              | Description                                                                             |
 | --------------------- | --------------------------------------------------------------------------------------- |
@@ -257,7 +279,7 @@ The **Workload Plane** operates inside every Pod.
   Pods replicate themselves without relying on external control planes.
 * **Lightweight Footprint:**
 
-  * Machine Plane Daemon: \~50–80MB RAM.
+  * Machineplane Daemon: \~50–80MB RAM.
   * Workload Pods: \~20–40MB including Beemesh container.
 * **Kubernetes-Compatible:**
   Accepts Kubernetes `Deployment` and `StatefulSet` manifests.
@@ -272,6 +294,7 @@ The **Workload Plane** operates inside every Pod.
 | **Multi-Cloud Deployments** | Runs seamlessly across heterogeneous cloud providers.                   |
 | **Smart Cities**            | Self-healing workloads for millions of sensors and devices.             |
 | **Large-Scale Analytics**   | Stateless and stateful workloads scale independently of infrastructure. |
+| **Enterprise Workloads**    | Strong consistent reliable on-prem and multicloud workloads.            |
 
 ---
 
@@ -303,10 +326,10 @@ The **Workload Plane** operates inside every Pod.
 ### **10.2 Quick Start**
 
 ```bash
-# Build Machine Plane binary
+# Build Machineplane binary
 CGO_ENABLED=0 GOOS=linux go build -o beemesh ./cmd/machine/main.go
 
-# Build Workload Plane image
+# Build Workplane image
 docker build -t beemesh-infra -f Dockerfile.workload .
 
 # Run Beemesh daemon
@@ -339,17 +362,8 @@ docker build -t beemesh-infra -f Dockerfile.workload .
 
 ---
 
-## **13. Roadmap**
 
-| Phase           | Goals                                                                    |
-| --------------- | ------------------------------------------------------------------------ |
-| **Alpha**       | Core networking, ephemeral scheduling, CLI                               |
-| **Beta**        | Kubernetes API compatibility, edge performance tuning                    |
-| **1.0 Release** | Production-ready, security audits, decentralized marketplace integration |
-
----
-
-## **14. Summary**
+## **13. Summary**
 
 Beemesh represents a **paradigm shift** in orchestration:
 
@@ -375,6 +389,8 @@ Beemesh represents a **paradigm shift** in orchestration:
 | Mutually Authenticated Workload Streams | No            | No             | **Yes**                |
 | Global Consensus Required               | Yes           | Yes            | **No**                 |
 | Scalability Ceiling                     | \~5,000 nodes | \~10,000 nodes | **Tens of thousands+** |
-| Edge/IoT Suitability                    | Poor          | Medium         | **Excellent**          |
+| IoT Suitability                         | Poor          | Medium         | **Excellent**          |
+| Edge Suitability                        | Poor          | Medium         | **Excellent**          |
+| Enterprise Suitability                  | Excellent     | Excellent      | **Excellent**          |
 
 ---
