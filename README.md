@@ -1,7 +1,7 @@
 # **Beemesh: Global Mesh Computing**
 
 > **Beemesh** is a decentralized, lock-free orchestration system that turns any device — cloud, on-prem, edge, or IoT — into an interchangeable compute resource.
-> It scales infinitely by eliminating the centralized control plane, enabling **secure, self-healing workloads** across highly dynamic environments.
+> It scales out by eliminating the centralized control plane, enabling **secure, self-healing workloads** across highly dynamic environments.
 
 ---
 
@@ -18,7 +18,7 @@ Beemesh rethinks orchestration from the ground up:
 * **No central control plane** — fully peer-to-peer coordination.
 * **Workload-scoped consistency** — each application carries its own state management.
 * **Separate security and discovery planes** — machines and workloads each operate on their own DHT with independent trust domains.
-* **Infinite horizontal scale** — limited only by network capacity (`libp2p`).
+* **Scale out** — limited only by network capacity (`libp2p`).
 
 ---
 
@@ -115,7 +115,7 @@ All communication in Beemesh is **mutually authenticated** and **end-to-end encr
 | Kubernetes  | Centralized (etcd + API server) | \~5,000 nodes / 150,000 pods | Strong consistency cluster-wide     | Rich ecosystem but control-plane limited         |
 | Nomad       | Centralized Raft quorum         | Thousands of nodes           | Strong consistency global scheduler | Lighter than K8s but still infra-bound           |
 | Swarm       | Raft manager nodes              | \~1,000 nodes                | Strong consistency cluster-wide     | Simple but infra-coupled                         |
-| **Beemesh** | **None – peer-to-peer**         | **Tens of thousands+**       | **Consistency scoped to workload**  | Infinite scale; only stateful workloads run Raft |
+| **Beemesh** | **None – peer-to-peer**         | **Tens of thousands+**       | **Consistency scoped to workload**  | Scale out; only stateful workloads run Raft |
 
 ---
 
@@ -260,7 +260,7 @@ The **Work Plane** runs inside every Pod.
 
 ## **7. Key Features**
 
-* **Infinite Scalability**
+* **Scalability**
   Two independent DHTs prevent machine churn from disrupting workloads.
 
 * **Security by Design**
@@ -390,7 +390,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 Beemesh represents a **paradigm shift** in orchestration:
 
 * Eliminates centralized control planes and scaling bottlenecks.
-* Uses **ephemeral, decentralized scheduling** for effectively infinite scalability.
+* Uses **ephemeral, decentralized scheduling** for effectively unparalleled scalability.
 * Provides **strict isolation** between infrastructure and workloads via two DHTs and unique Peer IDs.
 * Ensures **all communications are mutually authenticated and encrypted**.
 * Scales to **tens of thousands of nodes**, ideal for edge, IoT, cloud, **multicloud**, and **air-gapped** environments.
