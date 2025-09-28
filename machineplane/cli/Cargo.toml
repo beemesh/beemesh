@@ -12,6 +12,13 @@ anyhow = "1.0.63"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+rand = "0.8"
+base64 = "0.21"
+dirs = "4.0"
+aes-gcm = "0.10"
+sharks = "0.4"
+kyber-rust = "0.2"
+saorsa-pqc = "0.3"
 
 [[bin]]
 name = "beectl"
