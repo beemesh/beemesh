@@ -1,0 +1,8 @@
+namespace beemesh.machine;
+
+table Health {
+  ok:bool;
+  status:string;
+}
+
+root_type Health;

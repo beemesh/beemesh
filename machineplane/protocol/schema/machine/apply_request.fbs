@@ -1,0 +1,11 @@
+namespace beemesh.machine;
+
+table ApplyRequest {
+  replicas:uint32 = 1;
+  tenant:string;
+  operation_id:string;
+  manifest_json:string;
+  origin_peer:string;
+}
+
+root_type ApplyRequest;

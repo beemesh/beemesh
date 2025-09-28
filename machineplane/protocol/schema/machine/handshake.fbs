@@ -1,0 +1,10 @@
+namespace beemesh.machine;
+
+table Handshake {
+  nonce:uint32;
+  signature: string;
+  protocol_version: string;
+  timestamp: uint64;
+}
+
+root_type Handshake;

@@ -1,0 +1,15 @@
+namespace beemesh.machine;
+
+// CapacityReply schema (separate file so we can have per-file root_type)
+table CapacityReply {
+  request_id:string;
+  ok:bool;
+  node_id:string;
+  region:string;
+  capabilities:[string];
+  cpu_available_milli:uint32;
+  memory_available_bytes:ulong;
+  storage_available_bytes:ulong;
+}
+
+root_type CapacityReply;

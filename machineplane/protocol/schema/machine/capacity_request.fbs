@@ -1,0 +1,11 @@
+namespace beemesh.machine;
+
+table CapacityRequest {
+  request_id:string;
+  cpu_milli:uint32;
+  memory_bytes:ulong;
+  storage_bytes:ulong;
+  replicas:uint32 = 1;
+}
+
+root_type CapacityRequest;
