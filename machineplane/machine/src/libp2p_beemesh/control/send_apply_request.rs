@@ -1,5 +1,6 @@
 use libp2p::{PeerId, Swarm};
 use tokio::sync::mpsc;
+use log::info;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 
@@ -10,7 +11,7 @@ pub async fn handle_send_apply_request(
     reply_tx: mpsc::UnboundedSender<Result<String, String>>,
     swarm: &mut Swarm<MyBehaviour>,
 ) {
-    println!("libp2p: control SendApplyRequest received for peer={}", peer_id);
+    info!("libp2p: control SendApplyRequest received for peer={}", peer_id);
 
     // Create apply request FlatBuffer
     let operation_id = uuid::Uuid::new_v4().to_string();
@@ -27,7 +28,7 @@ pub async fn handle_send_apply_request(
 
     // Send the request via request-response
     let request_id = swarm.behaviour_mut().apply_rr.send_request(&peer_id, apply_request);
-    println!("libp2p: sent apply request to peer={} request_id={:?}", peer_id, request_id);
+    info!("libp2p: sent apply request to peer={} request_id={:?}", peer_id, request_id);
 
     // For now, just send success immediately - we'll handle proper response tracking later
     let _ = reply_tx.send(Ok(format!("Apply request sent to {}", peer_id)));

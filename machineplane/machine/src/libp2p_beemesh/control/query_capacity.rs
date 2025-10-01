@@ -1,3 +1,4 @@
+use log::{debug, info, error};
 use libp2p::{gossipsub, Swarm};
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
@@ -14,7 +15,7 @@ pub async fn handle_query_capacity_with_payload(
     pending_queries: &mut StdHashMap<String, Vec<mpsc::UnboundedSender<String>>>,
 ) {
     // register the reply channel so incoming reply messages can be forwarded
-    println!("libp2p: control QueryCapacityWithPayload received request_id={} payload_len={}", request_id, payload.len());
+    log::debug!("libp2p: control QueryCapacityWithPayload received request_id={} payload_len={}", request_id, payload.len());
     pending_queries.entry(request_id.clone()).or_insert_with(Vec::new).push(reply_tx);
 
     // Parse the provided payload as a CapacityRequest FlatBuffer and rebuild it into a TopicMessage wrapper
@@ -38,7 +39,7 @@ pub async fn handle_query_capacity_with_payload(
             protocol::machine::finish_capacity_request_buffer(&mut fbb, cap_off);
             let finished = fbb.finished_data().to_vec();
             let res = swarm.behaviour_mut().gossipsub.publish(topic.clone(), finished.as_slice());
-            println!("libp2p: published capreq request_id={} publish_res={:?}", request_id, res);
+            log::info!("libp2p: published capreq request_id={} publish_res={:?}", request_id, res);
 
             // Also notify local pending senders directly so the originator is always considered
             // a potential responder. This ensures single-node operation and makes the
@@ -50,7 +51,7 @@ pub async fn handle_query_capacity_with_payload(
             }
         }
         Err(e) => {
-            println!("libp2p: failed to parse provided capacity payload: {:?}", e);
+            log::error!("libp2p: failed to parse provided capacity payload: {:?}", e);
         }
     }
 }

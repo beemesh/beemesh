@@ -1,9 +1,11 @@
 use libp2p::PeerId;
 use protocol::machine::{build_applied_manifest, SignatureScheme, OperationType};
 use serde_json::Value;
+use base64::Engine;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tokio::sync::mpsc;
+use log::{info, warn};
 
 use crate::libp2p_beemesh::control::Libp2pControl;
 
@@ -46,18 +48,39 @@ pub async fn store_manifest_in_dht(
     ];
 
     // Build the AppliedManifest FlatBuffer
-    // Note: In production, you should sign this with your node's private key
-    let empty_pubkey = vec![];
-    let empty_signature = vec![];
+    // Attempt to extract owner public key and signature from the incoming manifest envelope
+    // (the CLI places `pubkey` and `sig` in the JSON envelope). If present, decode base64
+    // and embed the raw bytes into the AppliedManifest so other nodes can verify the owner.
+    let owner_pubkey_bytes: Vec<u8> = manifest
+        .get("pubkey")
+        .and_then(|v| v.as_str())
+        .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
+        .unwrap_or_default();
+
+    let owner_signature_bytes: Vec<u8> = manifest
+        .get("sig")
+        .and_then(|v| v.as_str())
+        .map(|s| {
+            // signature may be prefixed like "ml-dsa-65:<b64>"; strip prefix if present
+            if let Some(idx) = s.find(':') {
+                &s[idx + 1..]
+            } else {
+                s
+            }
+        })
+        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+        .unwrap_or_default();
+
+    let signature_scheme = SignatureScheme::NONE; // CLI uses PQ scheme not represented in enum yet
 
     let manifest_data = build_applied_manifest(
         &manifest_id,
         &tenant,
         &operation_id,
         &local_peer_id.to_string(),
-        &empty_pubkey,
-        SignatureScheme::NONE,
-        &empty_signature,
+        &owner_pubkey_bytes,
+        signature_scheme,
+        &owner_signature_bytes,
         &manifest_json,
         &manifest_kind,
         labels,
@@ -80,7 +103,7 @@ pub async fn store_manifest_in_dht(
     // Wait for the result
     match reply_rx.recv().await {
         Some(Ok(())) => {
-            println!("Successfully stored manifest {} in DHT", manifest_id);
+            info!("Successfully stored manifest {} in DHT", manifest_id);
             Ok(manifest_id)
         }
         Some(Err(e)) => Err(format!("Failed to store manifest in DHT: {}", e)),
@@ -106,9 +129,9 @@ pub async fn get_manifest_from_dht(
     match reply_rx.recv().await {
         Some(Ok(result)) => {
             if result.is_some() {
-                println!("Successfully retrieved manifest {} from DHT", manifest_id);
+                info!("Successfully retrieved manifest {} from DHT", manifest_id);
             } else {
-                println!("Manifest {} not found in DHT", manifest_id);
+                warn!("Manifest {} not found in DHT", manifest_id);
             }
             Ok(result)
         }
@@ -130,10 +153,79 @@ pub async fn bootstrap_dht(
     // Wait for the result
     match reply_rx.recv().await {
         Some(Ok(())) => {
-            println!("Successfully bootstrapped DHT");
+            info!("Successfully bootstrapped DHT");
             Ok(())
         }
         Some(Err(e)) => Err(format!("Failed to bootstrap DHT: {}", e)),
         None => Err("DHT bootstrap operation was cancelled".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::machine::root_as_applied_manifest;
+
+    #[test]
+    fn test_build_applied_manifest_includes_owner() {
+        let tenant = "t".to_string();
+        let operation_id = "op".to_string();
+        let local_peer_id = libp2p::PeerId::random();
+        let manifest = serde_json::json!({
+            "pubkey": base64::engine::general_purpose::STANDARD.encode(&vec![1u8,2u8,3u8]),
+            "sig": format!("ml-dsa-65:{}", base64::engine::general_purpose::STANDARD.encode(&vec![9u8,8u8,7u8])),
+        });
+
+        // Call store_manifest_in_dht connects to control channel; instead, replicate the AppliedManifest builder logic here
+        let manifest_json = serde_json::to_string(&manifest).unwrap();
+        let mut hasher = DefaultHasher::new();
+        tenant.hash(&mut hasher);
+        operation_id.hash(&mut hasher);
+        manifest_json.hash(&mut hasher);
+        let manifest_id = format!("{:x}", hasher.finish());
+
+        let mut content_hasher = DefaultHasher::new();
+        manifest_json.hash(&mut content_hasher);
+        let content_hash = format!("{:x}", content_hasher.finish());
+
+        let timestamp = 0u64;
+
+        let labels = vec![("k".to_string(), "v".to_string())];
+
+        let owner_pubkey_bytes: Vec<u8> = manifest
+            .get("pubkey")
+            .and_then(|v| v.as_str())
+            .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
+            .unwrap_or_default();
+
+        let owner_signature_bytes: Vec<u8> = manifest
+            .get("sig")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                if let Some(idx) = s.find(':') { &s[idx+1..] } else { s }
+            })
+            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+            .unwrap_or_default();
+
+        let buf = build_applied_manifest(
+            &manifest_id,
+            &tenant,
+            &operation_id,
+            &local_peer_id.to_string(),
+            &owner_pubkey_bytes,
+            SignatureScheme::NONE,
+            &owner_signature_bytes,
+            &manifest_json,
+            "Test",
+            labels,
+            timestamp,
+            OperationType::APPLY,
+            3600,
+            &content_hash,
+        );
+
+        let parsed = root_as_applied_manifest(&buf).expect("parse");
+        assert_eq!(parsed.owner_pubkey().unwrap().len(), 3);
+        assert_eq!(parsed.signature().unwrap().len(), 3);
     }
 }

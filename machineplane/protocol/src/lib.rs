@@ -59,6 +59,18 @@ mod generated {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/apply_response_generated.rs"));
     }
 
+    pub mod generated_keyshare_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/keyshare_response_generated.rs"));
+    }
+
     pub mod generated_handshake {
         #![allow(
             dead_code,
@@ -178,6 +190,13 @@ pub mod machine {
         [operation_id: &str, message: &str]
     );
 
+    fb_builder!(build_keyshare_response,
+        crate::generated::generated_keyshare_response::beemesh::machine::KeyShareResponseArgs,
+        crate::generated::generated_keyshare_response::beemesh::machine::KeyShareResponse,
+        [ok: bool],
+        [operation_id: &str, message: &str]
+    );
+
     // Custom handshake builder since it only has string fields
     fb_builder!(build_handshake,
         crate::generated::generated_handshake::beemesh::machine::HandshakeArgs,
@@ -253,6 +272,7 @@ pub mod machine {
 }
 
 pub mod libp2p_constants;
+pub mod json;
 
 #[cfg(test)]
 mod test {

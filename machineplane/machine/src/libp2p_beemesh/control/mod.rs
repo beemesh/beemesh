@@ -6,9 +6,11 @@ use crate::libp2p_beemesh::{behaviour::MyBehaviour};
 
 mod query_capacity;
 mod send_apply_request;
+mod send_key_share;
 
 pub use query_capacity::handle_query_capacity_with_payload;
 pub use send_apply_request::handle_send_apply_request;
+pub use send_key_share::handle_send_key_share;
 
 /// Handle incoming control messages from other parts of the host (REST handlers)
 pub async fn handle_control_message(
@@ -23,6 +25,9 @@ pub async fn handle_control_message(
         }
         Libp2pControl::SendApplyRequest { peer_id, manifest, reply_tx } => {
             handle_send_apply_request(peer_id, manifest, reply_tx, swarm).await;
+        }
+        Libp2pControl::SendKeyShare { peer_id, share_payload, reply_tx } => {
+            handle_send_key_share(peer_id, share_payload, reply_tx, swarm).await;
         }
         Libp2pControl::StoreAppliedManifest { manifest_data: _, reply_tx } => {
             // For now, just acknowledge - full implementation would require DHT manager integration
@@ -52,6 +57,12 @@ pub enum Libp2pControl {
         peer_id: PeerId,
         manifest: serde_json::Value,
         reply_tx: mpsc::UnboundedSender<Result<String, String>>,
+    },
+    /// Send an encrypted key share to a specific peer
+    SendKeyShare {
+        peer_id: PeerId,
+        share_payload: serde_json::Value,
+        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
     /// Store an applied manifest in the DHT after successful deployment
     StoreAppliedManifest {

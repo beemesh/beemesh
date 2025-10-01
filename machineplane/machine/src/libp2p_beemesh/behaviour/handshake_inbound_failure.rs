@@ -1,6 +1,7 @@
 use libp2p::request_response;
+use log::warn;
 
 pub fn handshake_inbound_failure(peer: libp2p::PeerId, error: request_response::InboundFailure) {
-    println!("libp2p: handshake inbound failure from peer={}: {:?}", peer, error);
+    warn!("libp2p: handshake inbound failure from peer={}: {:?}", peer, error);
 }
 

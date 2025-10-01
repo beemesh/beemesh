@@ -1,0 +1,10 @@
+namespace beemesh.machine;
+
+table KeyShareResponse {
+  ok:bool;
+  operation_id:string;
+  message:string;
+  // optional: decrypted_share (base64) - omitted to avoid sending secret material back; we only ack
+}
+
+root_type KeyShareResponse;

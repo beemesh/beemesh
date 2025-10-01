@@ -7,11 +7,13 @@ use libp2p::{
 use std::collections::HashMap as StdHashMap;
 use std::{
     collections::hash_map::DefaultHasher,
-    error::Error,
     hash::{Hash, Hasher},
     time::Duration,
 };
+use anyhow::Result;
+use log::{info, warn, debug};
 use tokio::sync::{mpsc, watch};
+use once_cell::sync::OnceCell;
 
 use protocol::libp2p_constants::BEEMESH_CLUSTER;
 
@@ -24,6 +26,7 @@ pub mod control;
 mod behaviour;
 pub mod dht_manager;
 pub mod dht_helpers;
+pub mod security;
 #[allow(dead_code)]
 pub mod dht_usage_example;
 
@@ -35,15 +38,13 @@ pub struct HandshakeState {
     pub confirmed: bool,
 }
 
-pub fn setup_libp2p_node() -> Result<
-    (
+pub fn setup_libp2p_node()
+    -> Result<(
         Swarm<MyBehaviour>,
         gossipsub::IdentTopic,
         watch::Receiver<Vec<String>>,
         watch::Sender<Vec<String>>,
-    ),
-    Box<dyn Error>,
-> {
+    )> {
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(tcp::Config::default(), noise::Config::new, || {
@@ -51,7 +52,7 @@ pub fn setup_libp2p_node() -> Result<
         })?
         .with_quic()
         .with_behaviour(|key| {
-            println!("Local PeerId: {}", key.public().to_peer_id());
+            info!("Local PeerId: {}", key.public().to_peer_id());
             let message_id_fn = |message: &gossipsub::Message| {
                 let mut s = DefaultHasher::new();
                 message.data.hash(&mut s);
@@ -59,7 +60,8 @@ pub fn setup_libp2p_node() -> Result<
             };
             let gossipsub_config = gossipsub::ConfigBuilder::default()
                 .heartbeat_interval(Duration::from_secs(10))
-                .validation_mode(gossipsub::ValidationMode::None)
+                // require validation so we have an opportunity to reject invalid messages early
+                .validation_mode(gossipsub::ValidationMode::Strict)
                 .mesh_n_low(0) // don’t try to maintain minimum peers
                 .mesh_n(0) // target mesh size = 0
                 .mesh_n_high(0)
@@ -92,6 +94,15 @@ pub fn setup_libp2p_node() -> Result<
                 request_response::Config::default(),
             );
 
+            // Create the request-response behavior for key-share protocol
+            let keyshare_rr = request_response::Behaviour::new(
+                std::iter::once((
+                    "/beemesh/keyshare/1.0.0",
+                    request_response::ProtocolSupport::Full,
+                )),
+                request_response::Config::default(),
+            );
+
             // Create Kademlia DHT behavior
             let store = kad::store::MemoryStore::new(key.public().to_peer_id());
             let kademlia = kad::Behaviour::new(key.public().to_peer_id(), store);
@@ -101,13 +112,14 @@ pub fn setup_libp2p_node() -> Result<
                 mdns,
                 apply_rr,
                 handshake_rr,
+                keyshare_rr,
                 kademlia,
             })
         })?
         .build();
 
     let topic = gossipsub::IdentTopic::new(BEEMESH_CLUSTER);
-    println!("Subscribing to topic: {}", topic.hash());
+    info!("Subscribing to topic: {}", topic.hash());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
     // Ensure local host is an explicit mesh peer for the topic so publish() finds at least one subscriber
     let local_peer = swarm.local_peer_id().clone();
@@ -120,8 +132,15 @@ pub fn setup_libp2p_node() -> Result<
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
     let (peer_tx, peer_rx) = watch::channel(Vec::new());
-    println!("Libp2p gossip node started. Listening for messages...");
+    info!("Libp2p gossip node started. Listening for messages...");
     Ok((swarm, topic, peer_rx, peer_tx))
+}
+
+// Global node keypair set at startup by machine::main
+pub static NODE_KEYPAIR: OnceCell<Option<(Vec<u8>, Vec<u8>)>> = OnceCell::new();
+
+pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
+    let _ = NODE_KEYPAIR.set(pair);
 }
 
 pub async fn start_libp2p_node(
@@ -129,7 +148,7 @@ pub async fn start_libp2p_node(
     topic: gossipsub::IdentTopic,
     peer_tx: watch::Sender<Vec<String>>,
     mut control_rx: mpsc::UnboundedReceiver<Libp2pControl>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     use std::collections::HashMap;
     use tokio::time::Instant;
 
@@ -147,9 +166,9 @@ pub async fn start_libp2p_node(
             maybe_msg = control_rx.recv() => {
                 if let Some(msg) = maybe_msg {
                     control::handle_control_message(msg, &mut swarm, &topic, &mut pending_queries).await;
-                } else {
+                    } else {
                     // sender was dropped, exit loop
-                    println!("control channel closed");
+                    info!("control channel closed");
                     break;
                 }
             }
@@ -196,8 +215,12 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(event)) => {
                         behaviour::kademlia_event(event, None);
                     }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::KeyshareRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
+                        let local_peer = *swarm.local_peer_id();
+                        behaviour::keyshare_message(message, peer, &mut swarm, local_peer);
+                    }
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        println!("Local node is listening on {address}");
+                        info!("Local node is listening on {address}");
                     }
                     _ => {}
                 }
@@ -209,7 +232,7 @@ pub async fn start_libp2p_node(
                         continue;
                     }
                     if state.attempts >= 3 {
-                        println!("Removing non-responsive peer: {peer_id}");
+                        warn!("Removing non-responsive peer: {peer_id}");
                         swarm
                             .behaviour_mut()
                             .gossipsub
@@ -224,8 +247,8 @@ pub async fn start_libp2p_node(
                         let handshake_request = protocol::machine::build_handshake(0, 0, "TODO", &handshake_signature);
 
                         let request_id = swarm.behaviour_mut().handshake_rr.send_request(peer_id, handshake_request);
-                        println!("libp2p: sent handshake request to peer={} request_id={:?} attempt={}",
-                                peer_id, request_id, state.attempts + 1);
+            debug!("libp2p: sent handshake request to peer={} request_id={:?} attempt={}",
+                peer_id, request_id, state.attempts + 1);
 
                         state.attempts += 1;
                         state.last_attempt = Instant::now();

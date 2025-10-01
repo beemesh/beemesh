@@ -9,6 +9,7 @@ pub mod handshake_outbound_failure;
 pub mod handshake_message;
 pub mod mdns_discovered;
 pub mod mdns_expired;
+pub mod keyshare_message;
 
 pub use apply_inbound_failure::apply_inbound_failure;
 pub use apply_outbound_failure::apply_outbound_failure;
@@ -19,6 +20,7 @@ pub use gossipsub_unsubscribed::gossipsub_unsubscribed;
 pub use handshake_inbound_failure::handshake_inbound_failure;
 pub use handshake_outbound_failure::handshake_outbound_failure;
 pub use handshake_message::handshake_message_event;
+pub use keyshare_message::keyshare_message;
 use libp2p::{gossipsub, kad, mdns, request_response, swarm::NetworkBehaviour};
 pub use mdns_discovered::mdns_discovered;
 pub use mdns_expired::mdns_expired;
@@ -35,5 +37,6 @@ pub struct MyBehaviour {
     pub mdns: mdns::tokio::Behaviour,
     pub apply_rr: request_response::Behaviour<ApplyCodec>,
     pub handshake_rr: request_response::Behaviour<HandshakeCodec>,
+    pub keyshare_rr: request_response::Behaviour<ApplyCodec>,
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
 }

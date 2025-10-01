@@ -1,4 +1,5 @@
 use libp2p::{kad, PeerId};
+use log::{info, warn, debug};
 
 /// Handle Kademlia DHT events
 pub fn kademlia_event(event: kad::Event, peer_id: Option<PeerId>) {
@@ -13,7 +14,7 @@ pub fn kademlia_event(event: kad::Event, peer_id: Option<PeerId>) {
                 record,
                 peer: _,
             }))) => {
-                println!(
+                info!(
                     "DHT: Retrieved record with key: {:?} from query: {:?}",
                     record.key,
                     id
@@ -21,22 +22,22 @@ pub fn kademlia_event(event: kad::Event, peer_id: Option<PeerId>) {
                 // TODO: Process the retrieved AppliedManifest
             }
             kad::QueryResult::GetRecord(Err(e)) => {
-                println!("DHT: Failed to get record for query {:?}: {:?}", id, e);
+                warn!("DHT: Failed to get record for query {:?}: {:?}", id, e);
             }
             kad::QueryResult::PutRecord(Ok(kad::PutRecordOk { key })) => {
-                println!("DHT: Successfully stored record with key: {:?}", key);
+                info!("DHT: Successfully stored record with key: {:?}", key);
             }
             kad::QueryResult::PutRecord(Err(e)) => {
-                println!("DHT: Failed to store record: {:?}", e);
+                warn!("DHT: Failed to store record: {:?}", e);
             }
             kad::QueryResult::Bootstrap(Ok(_)) => {
-                println!("DHT: Bootstrap completed successfully");
+                info!("DHT: Bootstrap completed successfully");
             }
             kad::QueryResult::Bootstrap(Err(e)) => {
-                println!("DHT: Bootstrap failed: {:?}", e);
+                warn!("DHT: Bootstrap failed: {:?}", e);
             }
             _ => {
-                println!("DHT: Other query result: {:?}", result);
+                debug!("DHT: Other query result: {:?}", result);
             }
         },
         kad::Event::RoutingUpdated {
@@ -47,36 +48,36 @@ pub fn kademlia_event(event: kad::Event, peer_id: Option<PeerId>) {
             old_peer: _,
         } => {
             if is_new_peer {
-                println!(
+                info!(
                     "DHT: Added new peer {} with addresses: {:?}",
                     peer, addresses
                 );
             }
         }
         kad::Event::UnroutablePeer { peer } => {
-            println!("DHT: Peer {} is unroutable", peer);
+            warn!("DHT: Peer {} is unroutable", peer);
         }
         kad::Event::RoutablePeer { peer, address } => {
-            println!("DHT: Peer {} is routable at {}", peer, address);
+            info!("DHT: Peer {} is routable at {}", peer, address);
         }
         kad::Event::PendingRoutablePeer { peer, address } => {
-            println!("DHT: Peer {} is pending routable at {}", peer, address);
+            info!("DHT: Peer {} is pending routable at {}", peer, address);
         }
         kad::Event::InboundRequest { request } => {
             match request {
                 kad::InboundRequest::GetRecord { num_closer_peers, present_locally } => {
-                    println!("DHT: Received GetRecord request (closer_peers: {}, local: {})", num_closer_peers, present_locally);
+                    debug!("DHT: Received GetRecord request (closer_peers: {}, local: {})", num_closer_peers, present_locally);
                 }
                 kad::InboundRequest::PutRecord { source, connection: _, record } => {
-                    println!("DHT: Received PutRecord from {} for key: {:?}", source, record.as_ref().map(|r| &r.key));
+                    info!("DHT: Received PutRecord from {} for key: {:?}", source, record.as_ref().map(|r| &r.key));
                 }
                 _ => {
-                    println!("DHT: Other inbound request: {:?}", request);
+                    debug!("DHT: Other inbound request: {:?}", request);
                 }
             }
         }
         kad::Event::ModeChanged { new_mode } => {
-            println!("DHT: Mode changed to {:?}", new_mode);
+            info!("DHT: Mode changed to {:?}", new_mode);
         }
     }
 }

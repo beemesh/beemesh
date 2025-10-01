@@ -30,8 +30,8 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 * **Machine DHT (MDHT)**: node discovery, transient metadata, and winner leases.
 * **Pub/Sub Topics**:
 
-  * `scheduler-tasks` — task publication (write-once, best‑effort fanout)
-  * `scheduler-proposals` — bid publication
+  * `scheduler-tasks` — task publication (write-once, best‑effort fanout, gossipsub)
+  * `scheduler-proposals` — bid publication, direct response / request response to the task publisher
   * `scheduler-events` — confirmations (deployed, failed, preempted)
 * **Secure Streams**: bilateral encrypted channels for optional point‑to‑point negotiation.
 * **Runtime Adapter**: Podman executor (default) + pluggable interface for other runtimes.

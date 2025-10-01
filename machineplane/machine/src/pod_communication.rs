@@ -1,3 +1,4 @@
+use log::{debug, info, error};
 use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
 use serde_json;
 use libp2p::PeerId;
@@ -10,7 +11,7 @@ pub async fn send_apply_to_peer(
     manifest: &serde_json::Value,
     control_tx: &mpsc::UnboundedSender<crate::libp2p_beemesh::control::Libp2pControl>
 ) -> Result<(), String> {
-    println!("send_apply_to_peer: sending manifest to peer {}: {}", peer, manifest);
+    log::debug!("send_apply_to_peer: sending manifest to peer {}: {}", peer, manifest);
     
     // Parse the peer string into a PeerId
     let peer_id: PeerId = peer.parse()
@@ -39,11 +40,11 @@ pub async fn send_apply_to_peer(
     
     match response {
         Ok(msg) => {
-            println!("send_apply_to_peer: success - {}", msg);
+            log::info!("send_apply_to_peer: success - {}", msg);
             Ok(())
         }
         Err(err) => {
-            println!("send_apply_to_peer: error - {}", err);
+            log::error!("send_apply_to_peer: error - {}", err);
             Err(err)
         }
     }

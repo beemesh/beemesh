@@ -1,20 +1,15 @@
-use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
-use base64::{engine::general_purpose, Engine as _};
+use log::{info};
 use clap::{Parser, Subcommand};
 use dirs::home_dir;
 use reqwest;
-use saorsa_pqc::api::sig::{ml_dsa_65, MlDsaPublicKey, MlDsaSecretKey, MlDsaVariant};
-use sharks::{Sharks, Share};
 use rand::RngCore;
 use serde_json::Value as JsonValue;
 use serde_yaml;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-
-const KEY_DIR: &str = ".beemesh";
-const PUBKEY_FILE: &str = "pubkey.bin";
-const PRIVKEY_FILE: &str = "privkey.bin";
+use base64::Engine;
+use crypto::{ensure_keypair_on_disk, encrypt_manifest, split_symmetric_key, sign_envelope, KEY_DIR};
 
 #[derive(Parser, Debug)]
 #[command(name = "beemesh", about = "beemesh CLI")]
@@ -33,36 +28,11 @@ enum Commands {
     },
 }
 
-fn ensure_keypair() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    // returns (pubkey_bytes, privkey_bytes)
-    let home = home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
-    let dir = home.join(KEY_DIR);
-    if !dir.exists() {
-        fs::create_dir_all(&dir)?;
-    }
-
-    let pubpath = dir.join(PUBKEY_FILE);
-    let privpath = dir.join(PRIVKEY_FILE);
-    if pubpath.exists() && privpath.exists() {
-        let pk = fs::read(&pubpath)?;
-        let sk = fs::read(&privpath)?;
-        return Ok((pk, sk));
-    }
-
-    // generate new ML-DSA-65 keypair
-    let dsa = ml_dsa_65();
-    let (pubk, privk) = dsa.generate_keypair()?;
-    let pk_bytes = pubk.to_bytes();
-    let sk_bytes = privk.to_bytes();
-
-    fs::write(&pubpath, &pk_bytes)?;
-    fs::write(&privpath, &sk_bytes)?;
-
-    Ok((pk_bytes, sk_bytes))
-}
+// Key handling is delegated to the shared `crypto` crate.
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    env_logger::init();
     let cli = Cli::parse();
 
     match cli.command {
@@ -86,33 +56,15 @@ async fn apply_file(path: PathBuf) -> anyhow::Result<()> {
     };
 
     // ensure keypair
-    let (pk_bytes, sk_bytes) = ensure_keypair()?;
+    let (pk_bytes, sk_bytes) = ensure_keypair_on_disk()?;
 
-    // generate symmetric key
-    let mut sym = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut sym);
+    // encrypt manifest
+    let (ciphertext, nonce_bytes, sym, nonce) = encrypt_manifest(&manifest_json)?;
 
-    // encrypt manifest_json as bytes using AES-256-GCM
-    let cipher = Aes256Gcm::new_from_slice(&sym).map_err(|e| anyhow::anyhow!("invalid key length for AES-GCM: {}", e))?;
-    let mut nonce_bytes = [0u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let plaintext = serde_json::to_vec(&manifest_json)?;
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
-        .map_err(|e| anyhow::anyhow!("aes-gcm encrypt error: {}", e))?;
-
-    // split symmetric key into shares (n=3, k=2) using sharks
+    // split symmetric key into shares (n=3, k=2)
     let n = 3usize;
     let k = 2usize;
-    let sharks = Sharks(k as u8);
-    // dealer is an iterator of Share; take `n` shares
-    let dealer = sharks.dealer(&sym);
-    let shares: Vec<Share> = dealer.take(n).collect();
-    let mut shares_vec: Vec<Vec<u8>> = Vec::new();
-    for s in &shares {
-        shares_vec.push(Vec::from(s));
-    }
+    let shares_vec = split_symmetric_key(&sym, n, k);
 
     // store shares under ~/.beemesh/shares
     let home = home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
@@ -125,25 +77,37 @@ async fn apply_file(path: PathBuf) -> anyhow::Result<()> {
         fs::write(&fname, share)?;
     }
 
-    // build envelope
-    let envelope = serde_json::json!({
-        "payload": general_purpose::STANDARD.encode(&ciphertext),
-        "nonce": general_purpose::STANDARD.encode(&nonce_bytes),
+    // build manifest envelope (contains encrypted manifest payload to store in DHT)
+    let manifest_envelope = serde_json::json!({
+        "payload": base64::engine::general_purpose::STANDARD.encode(&ciphertext),
+        "nonce": base64::engine::general_purpose::STANDARD.encode(&nonce_bytes),
         "shares_meta": { "n": n, "k": k, "count": shares_vec.len() },
     });
 
-    // sign envelope using saorsa-pqc MlDsa (ML-DSA-65)
-    let dsa = ml_dsa_65();
-    let privk = MlDsaSecretKey::from_bytes(MlDsaVariant::MlDsa65, &sk_bytes)?;
-    let pubk = MlDsaPublicKey::from_bytes(MlDsaVariant::MlDsa65, &pk_bytes)?;
-    let envelope_bytes = serde_json::to_vec(&envelope)?;
-    let signature = dsa.sign(&privk, &envelope_bytes)?;
-    let sig_b64 = general_purpose::STANDARD.encode(&signature.to_bytes());
+    // sign manifest envelope
+    let manifest_envelope_bytes = serde_json::to_vec(&manifest_envelope)?;
+    let (manifest_sig_b64, manifest_pub_b64) = sign_envelope(&sk_bytes, &pk_bytes, &manifest_envelope_bytes)?;
+    let mut manifest_envelope_signed = manifest_envelope;
+    manifest_envelope_signed["sig"] = serde_json::Value::String(format!("ml-dsa-65:{}", manifest_sig_b64));
+    manifest_envelope_signed["pubkey"] = serde_json::Value::String(manifest_pub_b64.clone());
 
-    // final message
-    let mut final_msg = envelope;
-    final_msg["sig"] = serde_json::Value::String(format!("ml-dsa-65:{}", sig_b64));
-    final_msg["pubkey"] = serde_json::Value::String(general_purpose::STANDARD.encode(&pubk.to_bytes()));
+    // build shares envelope (contains the base64 shares for peers)
+    let shares_b64: Vec<String> = shares_vec.iter().map(|s| base64::engine::general_purpose::STANDARD.encode(s)).collect();
+    let shares_payload = serde_json::json!({
+        "shares": shares_b64,
+        "shares_meta": { "n": n, "k": k, "count": shares_vec.len() }
+    });
+    let shares_envelope_bytes = serde_json::to_vec(&shares_payload)?;
+    let (shares_sig_b64, shares_pub_b64) = sign_envelope(&sk_bytes, &pk_bytes, &shares_envelope_bytes)?;
+    let mut shares_envelope_signed = shares_payload;
+    shares_envelope_signed["sig"] = serde_json::Value::String(format!("ml-dsa-65:{}", shares_sig_b64));
+    shares_envelope_signed["pubkey"] = serde_json::Value::String(shares_pub_b64);
+
+    // wrapper message containing both envelopes
+    let final_msg = serde_json::json!({
+        "manifest_envelope": manifest_envelope_signed,
+        "shares_envelope": shares_envelope_signed,
+    });
 
     // hardcoded tenant for now
     let tenant = "00000000-0000-0000-0000-000000000000";
@@ -161,13 +125,13 @@ async fn apply_file(path: PathBuf) -> anyhow::Result<()> {
         .await?;
     let status = resp.status();
     let body = resp.text().await?;
-    println!("API response: {}\n{}", status, body);
+    log::info!("API response: {}\n{}", status, body);
 
     if !status.is_success() {
         anyhow::bail!("apply failed: {}", status);
     }
 
-    println!("Apply succeeded");
+    log::info!("Apply succeeded");
 
     Ok(())
 }

@@ -2,6 +2,7 @@ use libp2p::{kad, Swarm};
 use protocol::machine::{AppliedManifest, root_as_applied_manifest, build_applied_manifest, SignatureScheme, OperationType};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use log::{info, debug};
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 
@@ -163,7 +164,7 @@ impl DhtManager {
 
         match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
             Ok(query_id) => {
-                println!("DHT: Initiated store operation for manifest {} (query_id: {:?})", manifest_id, query_id);
+                info!("DHT: Initiated store operation for manifest {} (query_id: {:?})", manifest_id, query_id);
                 self.pending_queries.insert(
                     query_id,
                     DhtQueryContext::StoreManifest { reply_tx },
@@ -184,7 +185,7 @@ impl DhtManager {
         let record_key = Self::manifest_key(&id);
         let query_id = swarm.behaviour_mut().kademlia.get_record(record_key);
         
-        println!("DHT: Initiated get operation for manifest {} (query_id: {:?})", id, query_id);
+    info!("DHT: Initiated get operation for manifest {} (query_id: {:?})", id, query_id);
         
         self.pending_queries.insert(
             query_id,

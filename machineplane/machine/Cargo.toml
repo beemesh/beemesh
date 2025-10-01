@@ -20,3 +20,9 @@ uuid = { version = "1", features = ["v4"] }
 flatbuffers = "25.2.10"
 base64 = "0.21"
 async-trait = "0.1"
+crypto = { path = "../crypto" }
+log = "0.4"
+env_logger = "0.10"
+saorsa-pqc = "0.3"
+dirs = "4.0"
+anyhow = "1.0"

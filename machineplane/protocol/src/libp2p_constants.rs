@@ -3,6 +3,12 @@
 /// Ident topic used for gossipsub in the beemesh cluster.
 pub const BEEMESH_CLUSTER: &str = "beemesh-cluster";
 
+/// Protocol name for request-response RPCs (ApplyRequest/ApplyResponse).
+pub const SCHEDULER_TASKS_TOPIC: &str = "scheduler-tasks";
+
+/// Topic used for scheduler events
+pub const SCHEDULER_EVENTS_TOPIC: &str = "scheduler-events";
+
 /// Prefix used for handshake messages exchanged on the gossip topic.
 pub const HANDSHAKE_PREFIX: &str = "beemesh-handshake";
 

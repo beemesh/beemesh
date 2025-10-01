@@ -1,6 +1,7 @@
 use libp2p::request_response;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use log::{info, warn};
 
 /// Store an applied manifest in the DHT after successful deployment
 fn store_applied_manifest_in_dht(
@@ -84,9 +85,9 @@ fn store_applied_manifest_in_dht(
 
         let query_id = swarm.behaviour_mut().kademlia.put_record(record, libp2p::kad::Quorum::One);
         
-        println!("DHT: Storing applied manifest {} (query_id: {:?})", manifest_id, query_id);
+        info!("DHT: Storing applied manifest {} (query_id: {:?})", manifest_id, query_id);
     } else {
-        println!("DHT: Cannot store manifest - missing required fields");
+        warn!("DHT: Cannot store manifest - missing required fields");
     }
 }
 
@@ -98,12 +99,12 @@ pub fn apply_message(
 ) {
     match message {
         request_response::Message::Request { request, channel, .. } => {
-            println!("libp2p: received apply request from peer={}", peer);
+            info!("libp2p: received apply request from peer={}", peer);
 
             // Parse the FlatBuffer apply request
             match protocol::machine::root_as_apply_request(&request) {
                 Ok(apply_req) => {
-                    println!("libp2p: apply request - tenant={:?} operation_id={:?} replicas={}",
+                    info!("libp2p: apply request - tenant={:?} operation_id={:?} replicas={}",
                         apply_req.tenant(), apply_req.operation_id(), apply_req.replicas());
 
                     // In a real implementation, you would:
@@ -136,10 +137,10 @@ pub fn apply_message(
 
                     // Send the response back
                     let _ = swarm.behaviour_mut().apply_rr.send_response(channel, response);
-                    println!("libp2p: sent apply response to peer={}", peer);
+                    info!("libp2p: sent apply response to peer={}", peer);
                 }
                 Err(e) => {
-                    println!("libp2p: failed to parse apply request: {:?}", e);
+                    warn!("libp2p: failed to parse apply request: {:?}", e);
                     let error_response = protocol::machine::build_apply_response(
                         false,
                         "unknown",
@@ -150,16 +151,16 @@ pub fn apply_message(
             }
         }
         request_response::Message::Response { response, .. } => {
-            println!("libp2p: received apply response from peer={}", peer);
+            info!("libp2p: received apply response from peer={}", peer);
 
             // Parse the response
             match protocol::machine::root_as_apply_response(&response) {
                 Ok(apply_resp) => {
-                    println!("libp2p: apply response - ok={} operation_id={:?} message={:?}",
+                    info!("libp2p: apply response - ok={} operation_id={:?} message={:?}",
                         apply_resp.ok(), apply_resp.operation_id(), apply_resp.message());
                 }
                 Err(e) => {
-                    println!("libp2p: failed to parse apply response: {:?}", e);
+                    warn!("libp2p: failed to parse apply response: {:?}", e);
                 }
             }
         }

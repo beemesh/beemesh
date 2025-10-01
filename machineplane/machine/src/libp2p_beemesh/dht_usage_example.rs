@@ -19,7 +19,8 @@
 //     let local_peer_id = *swarm.local_peer_id();
 //     tokio::spawn(async move {
 //         if let Err(e) = start_libp2p_node(swarm, topic, peer_tx, control_rx).await {
-//             eprintln!("libp2p node error: {}", e);
+//             // use structured logging instead of stderr prints
+//             // error!("libp2p node error: {}", e);
 //         }
 //     });
 
@@ -73,7 +74,7 @@
 //         "Deployment".to_string(),        // manifest kind
 //     ).await?;
 
-//     println!("Stored manifest with ID: {}", manifest_id);
+//     // info!("Stored manifest with ID: {}", manifest_id);
 
 //     // 7. Example: Retrieve the manifest from the DHT
 //     match get_manifest_from_dht(&control_tx, manifest_id.clone()).await? {
@@ -81,20 +82,20 @@
 //             // Parse the retrieved manifest
 //             match protocol::machine::root_as_applied_manifest(&manifest_bytes) {
 //                 Ok(applied_manifest) => {
-//                     println!("Retrieved manifest:");
-//                     println!("  ID: {:?}", applied_manifest.id());
-//                     println!("  Tenant: {:?}", applied_manifest.tenant());
-//                     println!("  Kind: {:?}", applied_manifest.manifest_kind());
-//                     println!("  Origin Peer: {:?}", applied_manifest.origin_peer());
-//                     println!("  Timestamp: {}", applied_manifest.timestamp());
+//                     // info!("Retrieved manifest:");
+//                     // info!("  ID: {:?}", applied_manifest.id());
+//                     // info!("  Tenant: {:?}", applied_manifest.tenant());
+//                     // info!("  Kind: {:?}", applied_manifest.manifest_kind());
+//                     // info!("  Origin Peer: {:?}", applied_manifest.origin_peer());
+//                     // info!("  Timestamp: {}", applied_manifest.timestamp());
 //                 }
 //                 Err(e) => {
-//                     println!("Failed to parse retrieved manifest: {:?}", e);
+//                     // warn!("Failed to parse retrieved manifest: {:?}", e);
 //                 }
 //             }
 //         }
 //         None => {
-//             println!("Manifest {} not found in DHT", manifest_id);
+//             // warn!("Manifest {} not found in DHT", manifest_id);
 //         }
 //     }
 
@@ -103,22 +104,22 @@
 
 // /// Example of how manifests are automatically stored when received via apply requests
 // pub async fn example_automatic_dht_storage() {
-//     println!("=== Automatic DHT Storage Example ===");
-//     println!("When a peer receives an ApplyRequest:");
-//     println!("1. The manifest is validated and deployed locally");
-//     println!("2. If deployment succeeds, the applied manifest is automatically stored in DHT");
-//     println!("3. Other peers can query the DHT to see what workloads are deployed");
-//     println!("4. The DHT acts as a decentralized registry of all applied manifests");
-    
-//     println!("\n=== DHT Key Structure ===");
-//     println!("Manifest records: manifest:<sha256-id>");
-//     println!("Tenant indexes: tenant-index:<tenant-name>");
-//     println!("Peer indexes: peer-index:<peer-id>");
-    
-//     println!("\n=== Benefits ===");
-//     println!("- Decentralized: No single point of failure");
-//     println!("- Discoverable: Any peer can query for deployed manifests");
-//     println!("- Scalable: Distributed across all mesh participants");
-//     println!("- Resilient: Multiple replicas across the network");
-//     println!("- Content-addressable: Manifests can be found by content hash");
+//     // info!("=== Automatic DHT Storage Example ===");
+//     // info!("When a peer receives an ApplyRequest:");
+//     // info!("1. The manifest is validated and deployed locally");
+//     // info!("2. If deployment succeeds, the applied manifest is automatically stored in DHT");
+//     // info!("3. Other peers can query the DHT to see what workloads are deployed");
+//     // info!("4. The DHT acts as a decentralized registry of all applied manifests");
+
+//     // info!("\n=== DHT Key Structure ===");
+//     // info!("Manifest records: manifest:<sha256-id>");
+//     // info!("Tenant indexes: tenant-index:<tenant-name>");
+//     // info!("Peer indexes: peer-index:<peer-id>");
+
+//     // info!("\n=== Benefits ===");
+//     // info!("- Decentralized: No single point of failure");
+//     // info!("- Discoverable: Any peer can query for deployed manifests");
+//     // info!("- Scalable: Distributed across all mesh participants");
+//     // info!("- Resilient: Multiple replicas across the network");
+//     // info!("- Content-addressable: Manifests can be found by content hash");
 // }

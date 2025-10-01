@@ -1,3 +1,4 @@
+use log::{info, debug, error};
 use tokio::time::Instant;
 use std::time::Duration;
 use libp2p::request_response;
@@ -10,12 +11,12 @@ pub fn handshake_request<F>(
 ) where
     F: FnOnce(Vec<u8>),
 {
-    println!("libp2p: received handshake request from peer={}", peer);
+    log::info!("libp2p: received handshake request from peer={}", peer);
 
     // Parse the FlatBuffer handshake request
     match protocol::machine::root_as_handshake(&request) {
         Ok(handshake_req) => {
-            println!("libp2p: handshake request - signature={:?}", handshake_req.signature());
+            log::debug!("libp2p: handshake request - signature={:?}", handshake_req.signature());
 
             // Mark this peer as confirmed
             let state = handshake_states.entry(peer.clone()).or_insert(super::super::HandshakeState {
@@ -30,10 +31,10 @@ pub fn handshake_request<F>(
 
             // Send the response back via closure
             send_response(response);
-            println!("libp2p: sent handshake response to peer={}", peer);
+            log::info!("libp2p: sent handshake response to peer={}", peer);
         }
         Err(e) => {
-            println!("libp2p: failed to parse handshake request: {:?}", e);
+            log::error!("libp2p: failed to parse handshake request: {:?}", e);
             // Send empty response on parse error
             let error_response = protocol::machine::build_handshake(0, 0, "TODO", "TODO");
             send_response(error_response);
@@ -46,12 +47,12 @@ pub fn handshake_response(
     peer: libp2p::PeerId,
     handshake_states: &mut std::collections::HashMap<libp2p::PeerId, super::super::HandshakeState>,
 ) {
-    println!("libp2p: received handshake response from peer={}", peer);
+    log::info!("libp2p: received handshake response from peer={}", peer);
 
     // Parse the response
     match protocol::machine::root_as_handshake(&response) {
         Ok(handshake_resp) => {
-            println!("libp2p: handshake response - signature={:?}", handshake_resp.signature());
+            log::debug!("libp2p: handshake response - signature={:?}", handshake_resp.signature());
 
             // Mark this peer as confirmed
             let state = handshake_states.entry(peer.clone()).or_insert(super::super::HandshakeState {
@@ -62,7 +63,7 @@ pub fn handshake_response(
             state.confirmed = true;
         }
         Err(e) => {
-            println!("libp2p: failed to parse handshake response: {:?}", e);
+            log::error!("libp2p: failed to parse handshake response: {:?}", e);
         }
     }
 }

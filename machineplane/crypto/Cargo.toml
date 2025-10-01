@@ -1,8 +1,8 @@
 [package]
-name = "cli"
+name = "crypto"
 version = "0.1.0"
 edition = "2021"
-description = "Command-line interface for beemesh"
+description = "Crypto parts of Beemesh"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -19,10 +19,7 @@ aes-gcm = "0.10"
 sharks = "0.4"
 kyber-rust = "0.2"
 saorsa-pqc = "0.3"
-crypto = { path = "../crypto" }
 log = "0.4"
-env_logger = "0.10"
+zeroize = "1.5"
 
-[[bin]]
-name = "beectl"
-path = "src/main.rs"
+ 

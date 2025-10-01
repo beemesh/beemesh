@@ -10,6 +10,7 @@ use protocol::libp2p_constants::{
 use serde::{Serialize};
 use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
+use log::{info, debug};
 
 #[derive(Serialize)]
 pub struct NodesResponse {
@@ -38,6 +39,7 @@ pub fn build_router(
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/tenant/{tenant}/apply", post(apply_manifest))
+        .route("/tenant/{tenant}/distribute_shares", post(distribute_shares))
         .route("/tenant/{tenant}/nodes", get(get_nodes))
         // state
         .with_state(state)
@@ -48,11 +50,115 @@ pub async fn apply_manifest(
     State(state): State<RestState>,
     Json(manifest): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    println!("tenant: {:?}", tenant);
-    /*println!(
-        "apply_manifest received: {}",
-        serde_json::to_string_pretty(&manifest).unwrap_or_default()
-    );*/
+    debug!("tenant: {:?}", tenant);
+
+    // The CLI now sends a wrapper containing two envelopes: "manifest_envelope" and "shares_envelope".
+    // Try to decode that wrapper first.
+    let manifest = if let Some(wrapper) = manifest.get("manifest_envelope") {
+        // parse manifest_envelope as Envelope Value and verify
+        match serde_json::from_value::<protocol::json::Envelope>(wrapper.clone()) {
+            Ok(env) => {
+                if env.sig.is_some() && env.pubkey.is_some() {
+                    match env
+                        .to_value()
+                        .and_then(|v| crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&v).map(|(p, _pub, _sig)| p))
+                    {
+                        Ok(payload_bytes) => match std::str::from_utf8(&payload_bytes) {
+                            Ok(s) => match serde_json::from_str::<serde_json::Value>(s) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    log::warn!("apply_manifest: envelope payload not JSON: {:?}", e);
+                                    return Json(serde_json::json!({
+                                        "ok": false,
+                                        "error": "envelope payload not JSON; decryption required on server"
+                                    }));
+                                }
+                            },
+                            Err(_) => {
+                                return Json(serde_json::json!({
+                                    "ok": false,
+                                    "error": "envelope payload not valid UTF-8; decryption required"
+                                }));
+                            }
+                        },
+                        Err(e) => {
+                            log::warn!("apply_manifest: envelope verification failed: {:?}", e);
+                            return Json(serde_json::json!({
+                                "ok": false,
+                                "error": "envelope verification failed"
+                            }));
+                        }
+                    }
+                } else {
+                    return Json(serde_json::json!({"ok": false, "error": "manifest_envelope missing signature"}));
+                }
+            }
+            Err(e) => {
+                log::warn!("apply_manifest: manifest_envelope not parseable as Envelope: {:?}", e);
+                return Json(serde_json::json!({"ok": false, "error": "invalid manifest_envelope"}));
+            }
+        }
+    } else if manifest.get("sig").is_some() && manifest.get("pubkey").is_some() {
+        // older single-envelope format
+        match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&manifest) {
+            Ok((payload_bytes, _pubkey_s, _sig_s)) => {
+                match std::str::from_utf8(&payload_bytes) {
+                    Ok(s) => match serde_json::from_str::<serde_json::Value>(s) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::warn!("apply_manifest: envelope payload not JSON: {:?}", e);
+                            return Json(serde_json::json!({
+                                "ok": false,
+                                "error": "envelope payload not JSON; decryption required on server"
+                            }));
+                        }
+                    },
+                    Err(_) => {
+                        return Json(serde_json::json!({
+                            "ok": false,
+                            "error": "envelope payload not valid UTF-8; decryption required"
+                        }));
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("apply_manifest: envelope verification failed: {:?}", e);
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "envelope verification failed"
+                }));
+            }
+        }
+    } else {
+        // Raw manifest JSON
+        manifest
+    };
+
+    // If a shares_envelope was provided, parse and verify it for bookkeeping/forwarding
+    if let Some(wrapper) = manifest.get("shares_envelope") {
+        match serde_json::from_value::<protocol::json::Envelope>(wrapper.clone()) {
+            Ok(sh_env) => {
+                if sh_env.sig.is_some() && sh_env.pubkey.is_some() {
+                    match sh_env.to_value().and_then(|v| crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&v)) {
+                        Ok((_payload_bytes, _pub, _sig)) => {
+                            // payload here is the shares payload (json with base64 shares). We don't
+                            // need to decode the shares at this layer; pod_communication or DHT storage
+                            // can consume the shares_envelope directly if needed. For now we just log.
+                            debug!("apply_manifest: received verified shares_envelope");
+                        }
+                        Err(e) => {
+                            log::warn!("apply_manifest: shares_envelope verification failed: {:?}", e);
+                        }
+                    }
+                } else {
+                    log::warn!("apply_manifest: shares_envelope missing signature/pubkey");
+                }
+            }
+            Err(e) => {
+                log::warn!("apply_manifest: shares_envelope not parseable as Envelope: {:?}", e);
+            }
+        }
+    }
 
     // determine desired replica count from manifest; check top-level `replicas` or `spec.replicas`
     let replicas = manifest
@@ -75,7 +181,7 @@ pub async fn apply_manifest(
         10u64 * 1024 * 1024 * 1024, // storage_bytes (10GB)
         replicas as u32,          // replicas
     );
-    println!("apply_manifest: request_id={}, replicas={} payload_bytes={}", request_id, replicas, capacity_fb.len());
+    info!("apply_manifest: request_id={}, replicas={} payload_bytes={}", request_id, replicas, capacity_fb.len());
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
     let _ = state
         .control_tx
@@ -104,7 +210,7 @@ pub async fn apply_manifest(
         }
     }
 
-    println!("apply_manifest: collected {} responders", responders.len());
+    info!("apply_manifest: collected {} responders", responders.len());
 
     let mut per_peer = serde_json::Map::new();
 
@@ -142,4 +248,72 @@ pub async fn apply_manifest(
         "assigned_peers": assigned,
         "per_peer": serde_json::Value::Object(per_peer),
     }))
+}
+
+#[derive(serde::Deserialize)]
+struct ShareTarget {
+    peer_id: String,
+    /// Arbitrary JSON payload (the CLI should have encrypted the share for the recipient)
+    payload: serde_json::Value,
+}
+
+pub async fn distribute_shares(
+    Path(_tenant): Path<String>,
+    State(state): State<RestState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    // Expect a signed shares_envelope and a list of targets
+    let shares_env_val = match body.get("shares_envelope") {
+        Some(v) => v.clone(),
+        None => return Json(serde_json::json!({"ok": false, "error": "missing shares_envelope"})),
+    };
+
+    // Verify the shares envelope signature
+    let shares_env = match serde_json::from_value::<protocol::json::Envelope>(shares_env_val.clone()) {
+        Ok(env) => env,
+        Err(e) => {
+            log::warn!("distribute_shares: shares_envelope not parseable as Envelope: {:?}", e);
+            return Json(serde_json::json!({"ok": false, "error": "invalid shares_envelope"}));
+        }
+    };
+
+    if shares_env.sig.is_none() || shares_env.pubkey.is_none() {
+        return Json(serde_json::json!({"ok": false, "error": "shares_envelope missing signature"}));
+    }
+
+    if let Err(e) = shares_env.to_value().and_then(|v| crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&v)) {
+        log::warn!("distribute_shares: shares_envelope verification failed: {:?}", e);
+        return Json(serde_json::json!({"ok": false, "error": "shares_envelope verification failed"}));
+    }
+
+    // Parse targets
+    let mut results = serde_json::Map::new();
+    if let Some(targets_val) = body.get("targets") {
+        if let Ok(targets) = serde_json::from_value::<Vec<ShareTarget>>(targets_val.clone()) {
+            for t in targets {
+                // parse peer id
+                match t.peer_id.parse::<libp2p::PeerId>() {
+                    Ok(peer_id) => {
+                        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
+                        let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
+                            peer_id,
+                            share_payload: t.payload.clone(),
+                            reply_tx: tx,
+                        });
+                        // For now we don't wait on reply channel; assume success
+                        results.insert(t.peer_id.clone(), serde_json::Value::String("dispatched".to_string()));
+                    }
+                    Err(e) => {
+                        results.insert(t.peer_id.clone(), serde_json::Value::String(format!("invalid peer id: {}", e)));
+                    }
+                }
+            }
+        } else {
+            return Json(serde_json::json!({"ok": false, "error": "invalid targets"}));
+        }
+    } else {
+        return Json(serde_json::json!({"ok": false, "error": "missing targets"}));
+    }
+
+    Json(serde_json::json!({"ok": true, "results": serde_json::Value::Object(results)}))
 }
