@@ -16,7 +16,6 @@ rand = "0.8"
 base64 = "0.21"
 dirs = "4.0"
 aes-gcm = "0.10"
-sharks = "0.4"
 kyber-rust = "0.2"
 saorsa-pqc = "0.3"
 crypto = { path = "../crypto" }

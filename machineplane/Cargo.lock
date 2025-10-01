@@ -54,12 +54,6 @@ dependencies = [
 
 [[package]]
 name = "ahash"
-version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0453232ace82dee0dd0b4c87a59bd90f7b53b314f3e0f61fe2ee7c8a16482289"
-
-[[package]]
-name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
@@ -417,6 +411,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
 
 [[package]]
+name = "blahaj"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5106bf2680d585dc5f29711b8aa5dde353180b8e14af89b7f0424f760c84e7ce"
+dependencies = [
+ "hashbrown 0.15.5",
+ "rand 0.8.5",
+ "zeroize",
+]
+
+[[package]]
 name = "blake2"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -596,7 +601,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sharks",
  "tokio",
 ]
 
@@ -714,6 +718,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "base64 0.21.7",
+ "blahaj",
  "clap",
  "dirs",
  "kyber-rust",
@@ -724,7 +729,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sharks",
  "tokio",
  "zeroize",
 ]
@@ -1372,20 +1376,11 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7afe4a420e3fe79967a00898cc1f4db7c8a49a9333a29f8a4bd76a253d5cd04"
-dependencies = [
- "ahash 0.4.8",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
 ]
 
 [[package]]
@@ -3702,16 +3697,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
-]
-
-[[package]]
-name = "sharks"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcaed91ca635500985e0c9c09d9a0935df6e48846a6694b62fefa9923ba8497f"
-dependencies = [
- "hashbrown 0.9.1",
- "rand 0.8.5",
 ]
 
 [[package]]

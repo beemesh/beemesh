@@ -3,14 +3,13 @@ use std::sync::{Once, Mutex};
 use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
 use base64::{engine::general_purpose, Engine as _};
 use rand::RngCore;
-use sharks::{Sharks, Share};
+use blahaj::{Sharks, Share};
 use saorsa_pqc::api::sig::{ml_dsa_65, MlDsaPublicKey, MlDsaSecretKey, MlDsaVariant};
 use saorsa_pqc::ApiMlDsaSignature;
 // KEM API from saorsa_pqc
 use saorsa_pqc::api::kem::{ml_kem_512, MlKemPublicKey, MlKemSecretKey, MlKemCiphertext, MlKemVariant};
 use zeroize::Zeroizing;
-// sharks crate unused now (kept in Cargo.toml for future)
-// ...existing code...
+
 use dirs::home_dir;
 
 pub const KEY_DIR: &str = ".beemesh";
@@ -166,15 +165,12 @@ pub fn encrypt_manifest(manifest_json: &serde_json::Value) -> anyhow::Result<(Ve
 }
 
 pub fn split_symmetric_key(sym: &[u8; 32], n: usize, k: usize) -> Vec<Vec<u8>> {
-	// Use sharks Shamir secret sharing. `k` is the threshold, `n` is total shares to produce.
-	// Sharks expects the threshold as its tuple param: Sharks(k)
+	assert!(k >= 1 && k <= 255, "invalid threshold");
+	assert!(n >= 1 && n <= 255, "invalid share count");
 	let sharks = Sharks(k as u8);
-	// dealer produces an iterator of Share objects from the secret bytes
 	let dealer = sharks.dealer(&sym[..]);
-	// collect n shares
 	let shares: Vec<Share> = dealer.take(n).collect();
-	// convert each Share into Vec<u8> using the provided From<&Share> implementation
-	shares.iter().map(|s| Vec::from(s)).collect()
+	shares.into_iter().map(|s| Vec::from(&s)).collect()
 }
 
 pub fn sign_envelope(sk_bytes: &[u8], pk_bytes: &[u8], envelope_bytes: &[u8]) -> anyhow::Result<(String, String)> {
@@ -214,15 +210,17 @@ pub fn verify_envelope(pub_bytes: &[u8], envelope_bytes: &[u8], sig_bytes: &[u8]
 // in-memory only and zeroize as appropriate.
 
 pub fn recover_symmetric_key(shares_bytes: &[Vec<u8>], k: usize) -> anyhow::Result<[u8; 32]> {
-	// Convert incoming byte slices to sharks::Share instances
-	let mut shares: Vec<Share> = Vec::with_capacity(shares_bytes.len());
-	for b in shares_bytes {
+	if shares_bytes.len() < k {
+		anyhow::bail!("need at least k shares to recover");
+	}
+	let mut shares: Vec<Share> = Vec::with_capacity(k);
+	for b in shares_bytes.iter().take(k) {
 		let s = Share::try_from(b.as_slice()).map_err(|e| anyhow::anyhow!("invalid share bytes: {}", e))?;
 		shares.push(s);
 	}
 
 	let sharks = Sharks(k as u8);
-	let recovered = sharks.recover(&shares).map_err(|e| anyhow::anyhow!("sharks recover failed: {:?}", e))?;
+	let recovered = sharks.recover(shares.as_slice()).map_err(|e| anyhow::anyhow!("blahaj recover failed: {:?}", e))?;
 	if recovered.len() != 32 {
 		anyhow::bail!("recovered secret length != 32: {}", recovered.len());
 	}
@@ -274,7 +272,7 @@ mod tests {
 
 		// 2) Negative check: signatures generated for key A MUST NOT verify under key B
 		let (pub_a, sk_a) = ensure_keypair_ephemeral().expect("keygen a");
-	let (_pub_b, _sk_b) = ensure_keypair_ephemeral().expect("keygen b");
+		let (_pub_b, _sk_b) = ensure_keypair_ephemeral().expect("keygen b");
 		let (sig_b64_a, _pub_b64_a) = sign_envelope(&sk_a, &pub_a, payload).expect("sign with a failed");
 		let mut sig_bytes_a = general_purpose::STANDARD.decode(&sig_b64_a).expect("decode sig a");
 		// flip a byte in the signature
