@@ -101,8 +101,31 @@ pub fn apply_message(
         request_response::Message::Request { request, channel, .. } => {
             info!("libp2p: received apply request from peer={}", peer);
 
+            // First, attempt to verify request as an Envelope (JSON or FlatBuffer)
+            let effective_request = match serde_json::from_slice::<serde_json::Value>(&request) {
+                Ok(val) => {
+                    match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&val) {
+                        Ok((payload_bytes, _pub, _sig)) => payload_bytes,
+                        Err(e) => {
+                            if crate::libp2p_beemesh::security::require_signed_messages() {
+                                warn!("rejecting unsigned/invalid apply request: {:?}", e);
+                                let error_response = protocol::machine::build_apply_response(
+                                    false,
+                                    "unknown",
+                                    "unsigned or invalid envelope",
+                                );
+                                let _ = swarm.behaviour_mut().apply_rr.send_response(channel, error_response);
+                                return;
+                            }
+                            request.clone()
+                        }
+                    }
+                }
+                Err(_) => request.clone(),
+            };
+
             // Parse the FlatBuffer apply request
-            match protocol::machine::root_as_apply_request(&request) {
+            match protocol::machine::root_as_apply_request(&effective_request) {
                 Ok(apply_req) => {
                     info!("libp2p: apply request - tenant={:?} operation_id={:?} replicas={}",
                         apply_req.tenant(), apply_req.operation_id(), apply_req.replicas());

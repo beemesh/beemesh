@@ -13,8 +13,28 @@ pub fn handshake_request<F>(
 {
     log::info!("libp2p: received handshake request from peer={}", peer);
 
+    // If the request might be an Envelope (JSON or FlatBuffer), try to verify and extract inner bytes
+    let effective_request = match serde_json::from_slice::<serde_json::Value>(&request) {
+        Ok(val) => {
+            match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&val) {
+                Ok((payload_bytes, _pub, _sig)) => payload_bytes,
+                Err(e) => {
+                    if crate::libp2p_beemesh::security::require_signed_messages() {
+                        log::error!("rejecting unsigned/invalid handshake request: {:?}", e);
+                        // Send an empty error response
+                        let error_response = protocol::machine::build_handshake(0, 0, "", "");
+                        send_response(error_response);
+                        return;
+                    }
+                    request.clone()
+                }
+            }
+        }
+        Err(_) => request.clone(),
+    };
+
     // Parse the FlatBuffer handshake request
-    match protocol::machine::root_as_handshake(&request) {
+    match protocol::machine::root_as_handshake(&effective_request) {
         Ok(handshake_req) => {
             log::debug!("libp2p: handshake request - signature={:?}", handshake_req.signature());
 

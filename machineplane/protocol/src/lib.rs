@@ -82,6 +82,18 @@ mod generated {
         )]
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/handshake_generated.rs"));
     }
+
+    pub mod generated_envelope {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/envelope_generated.rs"));
+    }
 }
 
 pub mod machine {
@@ -95,12 +107,17 @@ pub mod machine {
     pub use crate::generated::generated_apply_request::beemesh::machine::{ ApplyRequest, root_as_apply_request };
     pub use crate::generated::generated_apply_response::beemesh::machine::{ ApplyResponse, root_as_apply_response };
     pub use crate::generated::generated_handshake::beemesh::machine::{ Handshake, root_as_handshake };
+    pub use crate::generated::generated_envelope::beemesh::machine::{ Envelope as FbEnvelope, root_as_envelope };
+    // Also export Args and helper finish function for builders/tests
+    pub use crate::generated::generated_envelope::beemesh::machine::{ EnvelopeArgs, finish_envelope_buffer };
     
     // AppliedManifest for DHT storage
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/applied_manifest_generated.rs"));
     pub use self::beemesh::machine::{AppliedManifest, root_as_applied_manifest, AppliedManifestArgs, SignatureScheme, OperationType, KeyValue, KeyValueArgs};
 
     use flatbuffers::FlatBufferBuilder;
+    use base64::engine::general_purpose;
+    use base64::Engine as _;
 
     // Macro to generate simple flatbuffer builder functions.
     // Usage:
@@ -196,6 +213,102 @@ pub mod machine {
         [ok: bool],
         [operation_id: &str, message: &str]
     );
+
+    // Helpers for Envelope flatbuffer canonicalization and building.
+    pub fn build_envelope_canonical(
+        payload: &[u8],
+        payload_type: &str,
+        nonce: &str,
+        ts: u64,
+        alg: &str,
+    ) -> Vec<u8> {
+        // Build an Envelope with empty sig/pubkey (canonical bytes to sign)
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let payload_vec = fbb.create_vector(payload);
+        let payload_type_off = fbb.create_string(payload_type);
+        let nonce_off = fbb.create_string(nonce);
+        let alg_off = fbb.create_string(alg);
+        let sig_off = fbb.create_string("");
+        let pubkey_off = fbb.create_string("");
+        let peer_id_off = fbb.create_string("");
+
+        let mut args = crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
+        args.payload = Some(payload_vec);
+        args.payload_type = Some(payload_type_off);
+        args.nonce = Some(nonce_off);
+        args.ts = ts;
+        args.alg = Some(alg_off);
+        args.sig = Some(sig_off);
+        args.pubkey = Some(pubkey_off);
+        args.peer_id = Some(peer_id_off);
+
+        let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(&mut fbb, &args);
+        crate::machine::finish_envelope_buffer(&mut fbb, env_off);
+        fbb.finished_data().to_vec()
+    }
+
+    pub fn build_envelope_signed(
+        payload: &[u8],
+        payload_type: &str,
+        nonce: &str,
+        ts: u64,
+        alg: &str,
+        sig_prefix: &str,
+        sig_b64: &str,
+        pubkey_b64: &str,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let payload_vec = fbb.create_vector(payload);
+        let payload_type_off = fbb.create_string(payload_type);
+        let nonce_off = fbb.create_string(nonce);
+        let alg_off = fbb.create_string(alg);
+        let sig_full = fbb.create_string(&format!("{}:{}", sig_prefix, sig_b64));
+        let pubkey_off = fbb.create_string(pubkey_b64);
+        let peer_id_off = fbb.create_string("");
+
+        let mut args = crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
+        args.payload = Some(payload_vec);
+        args.payload_type = Some(payload_type_off);
+        args.nonce = Some(nonce_off);
+        args.ts = ts;
+        args.alg = Some(alg_off);
+        args.sig = Some(sig_full);
+        args.pubkey = Some(pubkey_off);
+        args.peer_id = Some(peer_id_off);
+
+        let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(&mut fbb, &args);
+        crate::machine::finish_envelope_buffer(&mut fbb, env_off);
+        fbb.finished_data().to_vec()
+    }
+
+    /// Parse a FlatBuffer Envelope (raw bytes) and return the canonical bytes used for
+    /// signature verification together with the decoded signature and pubkey bytes and
+    /// the original sig/pub strings. This centralizes the prefix parsing logic (e.g.
+    /// handling "ml-dsa-65:BASE64") so callers can use a single trusted implementation.
+    pub fn fb_envelope_extract_sig_pub(buf: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, String, String)> {
+        let fb_env = crate::machine::root_as_envelope(buf).map_err(|e| anyhow::anyhow!("failed to parse envelope flatbuffer: {:?}", e))?;
+
+        let payload_vec = fb_env.payload().map(|b| b.iter().collect::<Vec<u8>>()).unwrap_or_default();
+        let payload_type = fb_env.payload_type().unwrap_or("");
+        let nonce = fb_env.nonce().unwrap_or("");
+        let ts = fb_env.ts();
+        let alg = fb_env.alg().unwrap_or("");
+
+        let canonical = crate::machine::build_envelope_canonical(&payload_vec, payload_type, nonce, ts, alg);
+
+        let sig_field = fb_env.sig().unwrap_or("").to_string();
+        let pubkey_field = fb_env.pubkey().unwrap_or("").to_string();
+
+        // Extract base64 portion of signature (after possible prefix)
+        let sig_b64 = sig_field.splitn(2, ':').nth(if sig_field.contains(':') {1} else {0}).unwrap_or(&sig_field);
+        let sig_bytes = base64::engine::general_purpose::STANDARD.decode(sig_b64)
+            .map_err(|e| anyhow::anyhow!("failed to base64-decode signature: {}", e))?;
+
+        let pub_bytes = base64::engine::general_purpose::STANDARD.decode(&pubkey_field)
+            .map_err(|e| anyhow::anyhow!("failed to base64-decode pubkey: {}", e))?;
+
+        Ok((canonical, sig_bytes, pub_bytes, sig_field, pubkey_field))
+    }
 
     // Custom handshake builder since it only has string fields
     fb_builder!(build_handshake,

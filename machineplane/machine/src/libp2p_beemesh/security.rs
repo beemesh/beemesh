@@ -16,6 +16,14 @@ use crypto;
 /// LRU cache, sharded maps, or a persistent store for high-throughput nodes.
 static NONCE_STORE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
+/// Toggle to require signed messages. Reads env var BEE_MESH_REQUIRE_SIGNED=true/1
+// Previously this was controlled by the BEE_MESH_REQUIRE_SIGNED env var.
+// Signature verification is required unconditionally to ensure messages
+// are always authenticated and cannot be silently accepted.
+pub fn require_signed_messages() -> bool {
+    true
+}
+
 fn nonce_store() -> &'static Mutex<HashMap<String, Instant>> {
     NONCE_STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -49,89 +57,131 @@ fn prune_nonces(max_age: Duration) {
 pub fn verify_envelope_and_check_nonce(
     envelope: &Value,
 ) -> anyhow::Result<(Vec<u8>, String, String)> {
-    // Must be an object
-    let obj = envelope
-        .as_object()
-        .context("envelope is not a JSON object")?;
+    // Try JSON envelope first (backwards compatible)
+    if let Some(obj) = envelope.as_object() {
+        if obj.contains_key("sig") && obj.contains_key("pubkey") {
+            // Extract sig and pubkey fields
+            let sig_value = obj.get("sig").context("envelope missing 'sig' field")?;
+            let pub_value = obj.get("pubkey").context("envelope missing 'pubkey' field")?;
 
-    // Extract sig and pubkey fields
-    let sig_value = obj.get("sig").context("envelope missing 'sig' field")?;
-    let pub_value = obj.get("pubkey").context("envelope missing 'pubkey' field")?;
+            let sig_s = sig_value.as_str().context("'sig' is not a string")?;
+            let pub_b64 = pub_value.as_str().context("'pubkey' is not a string")?;
 
-    let sig_s = sig_value.as_str().context("'sig' is not a string")?;
-    let pub_b64 = pub_value.as_str().context("'pubkey' is not a string")?;
+            // Signature string may have a scheme prefix like "ml-dsa-65:BASE64", handle that
+            let sig_b64 = sig_s
+                .splitn(2, ':')
+                .nth(if sig_s.contains(':') { 1 } else { 0 })
+                .unwrap_or(sig_s);
 
-    // Signature string may have a scheme prefix like "ml-dsa-65:BASE64", handle that
-    let sig_b64 = sig_s
-        .splitn(2, ':')
-        .nth(if sig_s.contains(':') { 1 } else { 0 })
-        .unwrap_or(sig_s);
+            let sig_bytes = general_purpose::STANDARD
+                .decode(sig_b64)
+                .context("failed to base64-decode signature")?;
+            let pub_bytes = general_purpose::STANDARD
+                .decode(pub_b64)
+                .context("failed to base64-decode pubkey")?;
 
-    let sig_bytes = general_purpose::STANDARD
-        .decode(sig_b64)
-        .context("failed to base64-decode signature")?;
-    let pub_bytes = general_purpose::STANDARD
-        .decode(pub_b64)
-        .context("failed to base64-decode pubkey")?;
+            // Build a new Value that excludes sig and pubkey for verification (the CLI signed this envelope)
+            let mut envelope_no_sig = serde_json::Map::new();
+            for (k, v) in obj.iter() {
+                if k == "sig" || k == "pubkey" {
+                    continue;
+                }
+                envelope_no_sig.insert(k.clone(), v.clone());
+            }
+            let envelope_no_sig_value = Value::Object(envelope_no_sig);
+            let envelope_bytes = serde_json::to_vec(&envelope_no_sig_value)
+                .context("failed to serialize envelope for verification")?;
 
-    // Build a new Value that excludes sig and pubkey for verification (the CLI signed this envelope)
-    let mut envelope_no_sig = serde_json::Map::new();
-    for (k, v) in obj.iter() {
-        if k == "sig" || k == "pubkey" {
-            continue;
+            // Verify signature using crypto helper
+            crypto::verify_envelope(&pub_bytes, &envelope_bytes, &sig_bytes)
+                .context("signature verification failed")?;
+
+            // Extract nonce and check replay
+            let nonce_val = envelope
+                .get("nonce")
+                .context("envelope missing 'nonce' field for replay protection")?;
+            let nonce_str = if nonce_val.is_string() {
+                nonce_val.as_str().unwrap().to_string()
+            } else {
+                return Err(anyhow::anyhow!("envelope 'nonce' must be a string"));
+            };
+
+            // Nonce window
+            let nonce_window = Duration::from_secs(300); // 5 minutes
+
+            {
+                let mut store = nonce_store().lock().unwrap();
+
+                // Prune expired entries opportunistically
+                let now = Instant::now();
+                store.retain(|_, &mut t| now.duration_since(t) <= nonce_window);
+
+                if store.contains_key(&nonce_str) {
+                    return Err(anyhow::anyhow!("replay detected: nonce already seen"));
+                }
+
+                store.insert(nonce_str, Instant::now());
+            }
+
+            // Return the decoded payload bytes (ciphertext) so the caller can decrypt as needed.
+            let payload_val = envelope
+                .get("payload")
+                .context("envelope missing 'payload' field")?;
+            let payload_b64 = payload_val
+                .as_str()
+                .context("'payload' field is not a base64 string")?;
+            let payload_bytes = general_purpose::STANDARD
+                .decode(payload_b64)
+                .context("failed to base64-decode payload")?;
+
+            // Return payload bytes plus original pubkey and signature strings so callers can
+            // propagate them into AppliedManifest records.
+            return Ok((payload_bytes, pub_b64.to_string(), sig_s.to_string()));
         }
-        envelope_no_sig.insert(k.clone(), v.clone());
     }
-    let envelope_no_sig_value = Value::Object(envelope_no_sig);
-    let envelope_bytes = serde_json::to_vec(&envelope_no_sig_value)
-        .context("failed to serialize envelope for verification")?;
 
-    // Verify signature using crypto helper
-    crypto::verify_envelope(&pub_bytes, &envelope_bytes, &sig_bytes)
-        .context("signature verification failed")?;
+    // If not JSON, maybe it's a FlatBuffer Envelope: attempt to parse and verify.
+    // We try to interpret the provided Value as a base64 string of bytes or an
+    // object containing raw bytes (caller should pass Value::String or similar).
+    // For simplicity, if the envelope Value is a string containing base64, decode
+    // and try to parse as a FlatBuffer Envelope.
+    if let Some(s) = envelope.as_str() {
+        let buf = general_purpose::STANDARD
+            .decode(s)
+            .context("failed to base64-decode input when expecting flatbuffer bytes string")?;
 
-    // Extract nonce and check replay
-    let nonce_val = envelope
-        .get("nonce")
-        .context("envelope missing 'nonce' field for replay protection")?;
-    let nonce_str = if nonce_val.is_string() {
-        nonce_val.as_str().unwrap().to_string()
-    } else {
-        // If it's base64 bytes as array, accept string or number forms—require string for simplicity
-        return Err(anyhow::anyhow!("envelope 'nonce' must be a string"));
-    };
+        // Try to parse as Envelope flatbuffer using the protocol helper which returns
+        // canonical bytes and decoded signature/pubkey.
+    if let Ok((canonical, sig_bytes, pub_bytes, sig_field, pubkey_field)) = protocol::machine::fb_envelope_extract_sig_pub(&buf) {
+            // Verify
+            crypto::verify_envelope(&pub_bytes, &canonical, &sig_bytes)
+                .context("signature verification failed for flatbuffer envelope")?;
 
-    // Nonce window
-    let nonce_window = Duration::from_secs(300); // 5 minutes
+            // Extract nonce from the parsed envelope by re-parsing the envelope root
+            if let Ok(fb_env) = protocol::machine::root_as_envelope(&buf) {
+                let nonce = fb_env.nonce().unwrap_or("").to_string();
+                let nonce_window = Duration::from_secs(300);
+                {
+                    let mut store = nonce_store().lock().unwrap();
+                    let now = Instant::now();
+                    store.retain(|_, &mut t| now.duration_since(t) <= nonce_window);
+                    if store.contains_key(&nonce) {
+                        return Err(anyhow::anyhow!("replay detected: nonce already seen"));
+                    }
+                    store.insert(nonce, Instant::now());
+                }
+            }
 
-    {
-        let mut store = nonce_store().lock().unwrap();
-
-        // Prune expired entries opportunistically
-        let now = Instant::now();
-        store.retain(|_, &mut t| now.duration_since(t) <= nonce_window);
-
-        if store.contains_key(&nonce_str) {
-            return Err(anyhow::anyhow!("replay detected: nonce already seen"));
+            // Finally return the inner payload bytes and original strings
+            // Note: we need to parse the payload bytes from the envelope body
+            if let Ok(fb_env2) = protocol::machine::root_as_envelope(&buf) {
+                let payload_vec = fb_env2.payload().map(|b| b.iter().collect::<Vec<u8>>()).unwrap_or_default();
+                return Ok((payload_vec, pubkey_field, sig_field));
+            }
         }
-
-        store.insert(nonce_str, Instant::now());
     }
 
-    // Return the decoded payload bytes (ciphertext) so the caller can decrypt as needed.
-    let payload_val = envelope
-        .get("payload")
-        .context("envelope missing 'payload' field")?;
-    let payload_b64 = payload_val
-        .as_str()
-        .context("'payload' field is not a base64 string")?;
-    let payload_bytes = general_purpose::STANDARD
-        .decode(payload_b64)
-        .context("failed to base64-decode payload")?;
-
-    // Return payload bytes plus original pubkey and signature strings so callers can
-    // propagate them into AppliedManifest records.
-    Ok((payload_bytes, pub_b64.to_string(), sig_s.to_string()))
+    Err(anyhow::anyhow!("envelope format not recognized"))
 }
 
 #[cfg(test)]

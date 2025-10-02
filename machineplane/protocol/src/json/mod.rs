@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use base64::engine::general_purpose;
 use base64::Engine as _;
+use serde_json_canonicalizer::to_vec as jcs_to_vec;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SharesMeta {
@@ -18,12 +19,25 @@ pub struct Envelope {
     pub nonce: String,
     pub shares_meta: SharesMeta,
 
+    /// Millisecond epoch timestamp
+    #[serde(default)]
+    pub ts: Option<u64>,
+
+    /// Signature algorithm identifier, e.g. "ml-dsa-65"
+    #[serde(default)]
+    pub alg: Option<String>,
+
     /// Optional signature (may be absent for unsigned / already-decrypted payloads)
+    /// For compatibility with existing code the sig may be prefixed with "ml-dsa-65:BASE64"
     #[serde(default)]
     pub sig: Option<String>,
     /// Optional public key (base64)
     #[serde(default)]
     pub pubkey: Option<String>,
+
+    /// Optional peer id (libp2p)
+    #[serde(default)]
+    pub peer_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -63,4 +77,24 @@ impl Envelope {
         let v = serde_json::to_value(self).map_err(|e| anyhow::anyhow!(e))?;
         Ok(v)
     }
+
+    /// Prepare a JSON value for signature verification by removing signature/pubkey
+    /// This mirrors the behavior of signing the payload without the sig fields.
+    pub fn to_value_for_verification(&self) -> anyhow::Result<Value> {
+        let mut v = self.to_value()?;
+        if let Value::Object(ref mut map) = v {
+            map.remove("sig");
+            map.remove("pubkey");
+        }
+        Ok(v)
+    }
+}
+
+/// Produce a canonical JSON representation with deterministic key ordering.
+/// This implements a simple canonicalization by recursively sorting object keys
+/// and serializing without extra whitespace. It's not a full JCS implementation
+/// but sufficient for deterministic signing within this project.
+pub fn canonicalize_json_value(v: &Value) -> anyhow::Result<Vec<u8>> {
+    let bytes = jcs_to_vec(v).map_err(|e| anyhow::anyhow!("canonicalize failed: {}", e))?;
+    Ok(bytes)
 }

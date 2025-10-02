@@ -103,6 +103,15 @@ pub fn setup_libp2p_node()
                 request_response::Config::default(),
             );
 
+            // Create the request-response behavior for scheduler (capacity/proposals)
+            let scheduler_rr = request_response::Behaviour::new(
+                std::iter::once((
+                    "/beemesh/scheduler-tasks/1.0.0",
+                    request_response::ProtocolSupport::Full,
+                )),
+                request_response::Config::default(),
+            );
+
             // Create Kademlia DHT behavior
             let store = kad::store::MemoryStore::new(key.public().to_peer_id());
             let kademlia = kad::Behaviour::new(key.public().to_peer_id(), store);
@@ -113,6 +122,7 @@ pub fn setup_libp2p_node()
                 apply_rr,
                 handshake_rr,
                 keyshare_rr,
+                scheduler_rr,
                 kademlia,
             })
         })?
@@ -218,6 +228,10 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::KeyshareRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         let local_peer = *swarm.local_peer_id();
                         behaviour::keyshare_message(message, peer, &mut swarm, local_peer);
+                    }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::SchedulerRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
+                        let local_peer = *swarm.local_peer_id();
+                        behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         info!("Local node is listening on {address}");

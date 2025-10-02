@@ -21,7 +21,7 @@ pub async fn handle_query_capacity_with_payload(
     // Parse the provided payload as a CapacityRequest FlatBuffer and rebuild it into a TopicMessage wrapper
     match protocol::machine::root_as_capacity_request(&payload) {
         Ok(cap_req) => {
-            // Rebuild a CapacityRequest flatbuffer embedding the request_id, and publish it directly (no wrapper)
+            // Rebuild a CapacityRequest flatbuffer embedding the request_id.
             let mut fbb = flatbuffers::FlatBufferBuilder::new();
             let req_id_off = fbb.create_string(&request_id);
             let cpu = cap_req.cpu_milli();
@@ -38,8 +38,18 @@ pub async fn handle_query_capacity_with_payload(
             let cap_off = protocol::machine::CapacityRequest::create(&mut fbb, &cap_args);
             protocol::machine::finish_capacity_request_buffer(&mut fbb, cap_off);
             let finished = fbb.finished_data().to_vec();
-            let res = swarm.behaviour_mut().gossipsub.publish(topic.clone(), finished.as_slice());
-            log::info!("libp2p: published capreq request_id={} publish_res={:?}", request_id, res);
+            // Send the capacity request as a request-response to all known peers.
+            // Use the scheduler request-response behaviour we wired as `/beemesh/scheduler-tasks/1.0.0`.
+            let mut sent = 0usize;
+            // Collect peers first to avoid simultaneous immutable + mutable borrows of swarm
+            let peers: Vec<libp2p::PeerId> = swarm.behaviour().gossipsub.all_peers().map(|(p, _)| p.clone()).collect();
+            for peer in peers.iter() {
+                let req_clone = finished.clone();
+                let req_id = swarm.behaviour_mut().scheduler_rr.send_request(&peer, req_clone);
+                log::debug!("libp2p: sent scheduler request to peer={} request_id={:?}", peer, req_id);
+                sent += 1;
+            }
+            log::info!("libp2p: broadcasted capreq request_id={} to {} peers", request_id, sent);
 
             // Also notify local pending senders directly so the originator is always considered
             // a potential responder. This ensures single-node operation and makes the
@@ -54,4 +64,10 @@ pub async fn handle_query_capacity_with_payload(
             log::error!("libp2p: failed to parse provided capacity payload: {:?}", e);
         }
     }
+}
+
+/// Dummy capacity check that always returns true for now.
+fn has_free_capacity_dummy() -> bool {
+    // TODO: replace with real resource accounting checks
+    true
 }

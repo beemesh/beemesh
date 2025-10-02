@@ -9,6 +9,9 @@ pub const SCHEDULER_TASKS_TOPIC: &str = "scheduler-tasks";
 /// Topic used for scheduler events
 pub const SCHEDULER_EVENTS_TOPIC: &str = "scheduler-events";
 
+/// Topic used for scheduler proposals / capacity requests
+pub const SCHEDULER_PROPOSALS_TOPIC: &str = "scheduler-proposal";
+
 /// Prefix used for handshake messages exchanged on the gossip topic.
 pub const HANDSHAKE_PREFIX: &str = "beemesh-handshake";
 

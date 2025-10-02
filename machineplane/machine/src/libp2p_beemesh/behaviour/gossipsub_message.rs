@@ -61,12 +61,13 @@ pub fn gossipsub_message(
         return;
     }
 
-    // First, try to parse an envelope (JSON) with signature and payload and verify it.
-    // We must keep ownership of the decoded payload bytes alive for downstream parsing,
-    // so store them in `owned_payload` when verification succeeds.
+    // First, try to parse/verify an envelope (JSON or FlatBuffer). Keep ownership
+    // of the decoded payload bytes alive for downstream parsing.
     let mut owned_payload: Option<Vec<u8>> = None;
     let mut _owner_pubkey: Option<String> = None;
     let mut _owner_sig: Option<String> = None;
+
+    // Try JSON envelope path first
     if let Ok(text) = std::str::from_utf8(&message.data) {
         if let Ok(env_val) = serde_json::from_str::<serde_json::Value>(text) {
             match verify_envelope_and_check_nonce(&env_val) {
@@ -76,7 +77,29 @@ pub fn gossipsub_message(
                     _owner_sig = Some(sig_s);
                 }
                 Err(e) => {
-                    log::warn!("gossipsub: envelope verification failed from {}: {:?}", peer_id, e);
+                    log::warn!("gossipsub: JSON envelope verification failed from {}: {:?}", peer_id, e);
+                    return;
+                }
+            }
+        }
+    }
+
+    // If not JSON-enveloped, the message might itself be a signed FlatBuffer Envelope
+    if owned_payload.is_none() {
+        // Try to parse message.data as a flatbuffer Envelope (direct bytes)
+        if let Ok(fb_env) = protocol::machine::root_as_envelope(&message.data) {
+            // Reconstruct canonical bytes and verify via security helper which also checks replay
+            // For convenience, we encode the flatbuffer bytes as base64 String and call the helper
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&message.data);
+            let val = serde_json::Value::String(b64);
+            match verify_envelope_and_check_nonce(&val) {
+                Ok((inner_bytes, pubkey_s, sig_s)) => {
+                    owned_payload = Some(inner_bytes);
+                    _owner_pubkey = Some(pubkey_s);
+                    _owner_sig = Some(sig_s);
+                }
+                Err(e) => {
+                    log::warn!("gossipsub: flatbuffer envelope verification failed from {}: {:?}", peer_id, e);
                     return;
                 }
             }
