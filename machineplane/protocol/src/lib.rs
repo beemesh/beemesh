@@ -111,12 +111,31 @@ pub mod machine {
     // Also export Args and helper finish function for builders/tests
     pub use crate::generated::generated_envelope::beemesh::machine::{ EnvelopeArgs, finish_envelope_buffer };
     
-    // AppliedManifest for DHT storage
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/applied_manifest_generated.rs"));
-    pub use self::beemesh::machine::{AppliedManifest, root_as_applied_manifest, AppliedManifestArgs, SignatureScheme, OperationType, KeyValue, KeyValueArgs};
+    // AppliedManifest for DHT storage (generated). Wrap include in a module with
+    // liberal allow attributes so generated code doesn't emit warnings.
+    #[allow(
+        dead_code,
+        non_camel_case_types,
+        non_snake_case,
+        unused_imports,
+        unused_variables,
+        mismatched_lifetime_syntaxes,
+    )]
+    pub mod generated_applied_manifest {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/applied_manifest_generated.rs"));
+    }
+
+    pub use crate::machine::generated_applied_manifest::beemesh::machine::{
+        AppliedManifest,
+        root_as_applied_manifest,
+        AppliedManifestArgs,
+        SignatureScheme,
+        OperationType,
+        KeyValue,
+        KeyValueArgs,
+    };
 
     use flatbuffers::FlatBufferBuilder;
-    use base64::engine::general_purpose;
     use base64::Engine as _;
 
     // Macro to generate simple flatbuffer builder functions.

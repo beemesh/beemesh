@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 use libp2p::{kad, Swarm};
 use protocol::machine::{AppliedManifest, root_as_applied_manifest, build_applied_manifest, SignatureScheme, OperationType};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use log::{info, debug};
+use log::info;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 

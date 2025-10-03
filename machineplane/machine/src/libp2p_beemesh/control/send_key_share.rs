@@ -1,6 +1,7 @@
 use libp2p::{PeerId, Swarm};
 use tokio::sync::mpsc;
-use log::info;
+use log::{info, warn};
+use base64::Engine;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 
@@ -10,10 +11,101 @@ pub async fn handle_send_key_share(
     reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     swarm: &mut Swarm<MyBehaviour>,
 ) {
-    info!("libp2p: control SendKeyShare for peer={}", peer_id);
+    warn!("libp2p: control SendKeyShare for peer={}", peer_id);
+
+    // Check if this is a self-send - handle locally instead of using RequestResponse
+    if peer_id == *swarm.local_peer_id() {
+        warn!("libp2p: handling self-send locally for peer {}", peer_id);
+        
+        // Handle the keyshare locally without going through RequestResponse
+        // This is the same logic as in keyshare_message.rs but without the channel response
+        match serde_json::to_vec(&share_payload) {
+            Ok(request_bytes) => {
+                warn!("libp2p: processing self-send keyshare payload size={}", request_bytes.len());
+                
+                // Extract and process the share (same as keyshare_message fallback logic)
+                if let Some(share_val) = share_payload.get("share").and_then(|v| v.as_str()) {
+                    match base64::engine::general_purpose::STANDARD.decode(share_val) {
+                        Ok(payload_bytes) => {
+                            match crypto::encrypt_share_for_keystore(&payload_bytes) {
+                                Ok((blob, cid)) => {
+                                    match crate::libp2p_beemesh::open_keystore() {
+                                        Ok(ks) => {
+                                            if let Err(e) = ks.put(&cid, &blob, Some("keyshare")) {
+                                                warn!("keystore put failed for cid {}: {:?}", cid, e);
+                                            } else {
+                                                warn!("keystore: stored self-send keyshare cid={}", cid);
+                                                
+                                                // Announce the provider (same as remote case)
+                                                let (reply_tx_inner, _rx) = tokio::sync::mpsc::unbounded_channel();
+                                                let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { 
+                                                    cid: cid.clone(), 
+                                                    ttl_ms: 3000, 
+                                                    reply_tx: reply_tx_inner 
+                                                };
+                                                crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                            }
+                                        }
+                                        Err(e) => warn!("could not open keystore for self-send: {:?}", e),
+                                    }
+                                }
+                                Err(e) => warn!("failed to encrypt share for keystore (self-send): {:?}", e),
+                            }
+                        }
+                        Err(e) => warn!("failed to base64-decode self-send share: {:?}", e),
+                    }
+                } else {
+                    warn!("self-send keyshare missing 'share' field");
+                }
+            }
+            Err(e) => warn!("failed to serialize self-send payload: {:?}", e),
+        }
+        
+        let _ = reply_tx.send(Ok(()));
+        return;
+    }
+
+    // Check current connections for debugging
+    let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
+    warn!("libp2p: current connected peers: {:?}", connected_peers);
+
+    // Check connection status
+    warn!("libp2p: peer {} connection status: connected={}", peer_id, swarm.is_connected(&peer_id));
+
+    // Try to establish connection first
+    if !swarm.is_connected(&peer_id) {
+        warn!("libp2p: peer {} not connected, attempting to dial", peer_id);
+        match swarm.dial(peer_id) {
+            Ok(_) => {
+                warn!("libp2p: dial initiated for peer {}", peer_id);
+            }
+            Err(e) => {
+                warn!("libp2p: failed to dial peer {}: {:?}", peer_id, e);
+                let _ = reply_tx.send(Err(format!("dial failed: {:?}", e)));
+                return;
+            }
+        }
+        
+        // Give more time for the connection to establish, retry a few times
+        for attempt in 1..=3 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if swarm.is_connected(&peer_id) {
+                warn!("libp2p: peer {} connected after attempt {}", peer_id, attempt);
+                break;
+            }
+            warn!("libp2p: peer {} still not connected after attempt {}", peer_id, attempt);
+        }
+        
+        if !swarm.is_connected(&peer_id) {
+            warn!("libp2p: peer {} still not connected after all attempts", peer_id);
+            let _ = reply_tx.send(Err(format!("connection timeout after dial")));
+            return;
+        }
+    }
 
     // Deliver the share payload using the dedicated keyshare request-response behaviour.
     let request_bytes = serde_json::to_vec(&share_payload).unwrap_or_default();
+    warn!("libp2p: SendKeyShare payload json={} bytes_len={}", match serde_json::to_string(&share_payload) { Ok(s) => s, Err(_) => "<serialize-failed>".to_string() }, request_bytes.len());
     let request_id = swarm.behaviour_mut().keyshare_rr.send_request(&peer_id, request_bytes);
     info!("libp2p: sent keyshare to peer={} request_id={:?}", peer_id, request_id);
 

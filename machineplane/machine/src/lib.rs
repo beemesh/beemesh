@@ -1,4 +1,4 @@
-use log::{info, error};
+// logging macros are used in submodules; keep root lean
 use std::io::Write;
 use clap::Parser;
 
@@ -55,6 +55,21 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // initialize PQC once at process startup; fail early if it doesn't initialize
     crypto::ensure_pqc_init().map_err(|e| anyhow::anyhow!("pqc initialization failed: {}", e))?;
+
+    // Propagate ephemeral mode to subcomponents via env var so lower-level
+    // handlers (e.g., keyshare processing) can open in-memory keystore without
+    // requiring global config plumbing.
+    if cli.ephemeral {
+        std::env::set_var("BEEMESH_KEYSTORE_EPHEMERAL", "1");
+        // In ephemeral mode, create a per-node shared keystore so all components
+        // within this node process share the same keystore instance
+        let shared_name = format!("node_{}", cli.api_port);
+        std::env::set_var("BEEMESH_KEYSTORE_SHARED_NAME", &shared_name);
+        // Also set in libp2p module for use by keyshare processing
+        libp2p_beemesh::set_keystore_shared_name(Some(shared_name));
+    } else {
+        libp2p_beemesh::set_keystore_shared_name(None);
+    }
 
     let _keypair = if cli.ephemeral {
         let kp = crypto::ensure_keypair_ephemeral().ok();
@@ -144,7 +159,12 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
     let libp2p_handle = tokio::spawn(async move {
         // hold on to the sender for the lifetime of this task
         let _keeper = control_tx_for_libp2p;
-        if let Err(e) = libp2p_beemesh::start_libp2p_node(swarm, topic, peer_tx, control_rx).await {
+        let keystore_shared_name = if cli.ephemeral {
+            Some(format!("node_{}", cli.api_port))
+        } else {
+            None
+        };
+        if let Err(e) = libp2p_beemesh::start_libp2p_node(swarm, topic, peer_tx, control_rx, keystore_shared_name).await {
             log::error!("libp2p node error: {}", e);
         }
     });
@@ -153,7 +173,12 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // rest api server
     if !cli.disable_rest_api {
-        let app = restapi::build_router(peer_rx, control_tx.clone());
+        let shared_name = if cli.ephemeral {
+            Some(format!("node_{}", cli.api_port))
+        } else {
+            None
+        };
+        let app = restapi::build_router(peer_rx, control_tx.clone(), shared_name);
 
         // Public TCP server
         let bind_addr = format!("{}:{}", cli.api_host, cli.api_port);

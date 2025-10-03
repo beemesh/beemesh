@@ -22,7 +22,7 @@ async fn test_run_host_application() {
         3000,
         false,
         false,
-        Some("/tmp/beemesh_test_sock1.sock".to_string()),
+        None,
         None,
     );
     let cli2 = make_test_cli(

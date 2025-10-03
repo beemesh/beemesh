@@ -1,34 +1,36 @@
+use anyhow::Result;
 use futures::stream::StreamExt;
 use libp2p::{
-    gossipsub, kad, mdns, noise, request_response,
-    swarm::{SwarmEvent},
-    tcp, yamux, PeerId, Swarm,
+    gossipsub, kad, mdns, noise, request_response, swarm::SwarmEvent, tcp, yamux, PeerId, Swarm,
 };
+use log::{debug, info, warn};
+use once_cell::sync::OnceCell;
 use std::collections::HashMap as StdHashMap;
+use std::sync::RwLock;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     time::Duration,
 };
-use anyhow::Result;
-use log::{info, warn, debug};
 use tokio::sync::{mpsc, watch};
-use once_cell::sync::OnceCell;
 
 use protocol::libp2p_constants::BEEMESH_CLUSTER;
 
 mod request_response_codec;
 pub use request_response_codec::{ApplyCodec, HandshakeCodec};
 
-use crate::libp2p_beemesh::{behaviour::{MyBehaviour, MyBehaviourEvent}, control::Libp2pControl};
+use crate::libp2p_beemesh::{
+    behaviour::{MyBehaviour, MyBehaviourEvent},
+    control::Libp2pControl,
+};
 
-pub mod control;
 mod behaviour;
-pub mod dht_manager;
+pub mod control;
 pub mod dht_helpers;
-pub mod security;
+pub mod dht_manager;
 #[allow(dead_code)]
 pub mod dht_usage_example;
+pub mod security;
 
 // Handshake state used by the handshake behaviour handlers
 #[derive(Debug)]
@@ -38,13 +40,12 @@ pub struct HandshakeState {
     pub confirmed: bool,
 }
 
-pub fn setup_libp2p_node()
-    -> Result<(
-        Swarm<MyBehaviour>,
-        gossipsub::IdentTopic,
-        watch::Receiver<Vec<String>>,
-        watch::Sender<Vec<String>>,
-    )> {
+pub fn setup_libp2p_node() -> Result<(
+    Swarm<MyBehaviour>,
+    gossipsub::IdentTopic,
+    watch::Receiver<Vec<String>>,
+    watch::Sender<Vec<String>>,
+)> {
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(tcp::Config::default(), noise::Config::new, || {
@@ -112,9 +113,22 @@ pub fn setup_libp2p_node()
                 request_response::Config::default(),
             );
 
-            // Create Kademlia DHT behavior
+            // Create Kademlia DHT behavior with configuration suitable for small networks
             let store = kad::store::MemoryStore::new(key.public().to_peer_id());
-            let kademlia = kad::Behaviour::new(key.public().to_peer_id(), store);
+            let mut kademlia_config = kad::Config::default();
+
+            // Configure for small test networks
+            if std::env::var("BEEMESH_TEST_MODE").is_ok() {}
+
+            kademlia_config.set_replication_factor(std::num::NonZeroUsize::new(1).unwrap()); // Minimum replication
+            kademlia_config.set_max_packet_size(1024 * 1024); // Allow larger packets
+
+            // Configure timeouts and parallelism for small networks
+            kademlia_config.set_parallelism(std::num::NonZeroUsize::new(1).unwrap()); // Only 1 parallel query
+            kademlia_config.set_query_timeout(std::time::Duration::from_secs(10)); // Longer timeout
+
+            let kademlia =
+                kad::Behaviour::with_config(key.public().to_peer_id(), store, kademlia_config);
 
             Ok(MyBehaviour {
                 gossipsub,
@@ -140,6 +154,8 @@ pub fn setup_libp2p_node()
 
     swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    // Also listen on localhost for in-process testing
+    swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
 
     let (peer_tx, peer_rx) = watch::channel(Vec::new());
     info!("Libp2p gossip node started. Listening for messages...");
@@ -148,9 +164,35 @@ pub fn setup_libp2p_node()
 
 // Global node keypair set at startup by machine::main
 pub static NODE_KEYPAIR: OnceCell<Option<(Vec<u8>, Vec<u8>)>> = OnceCell::new();
+// Global shared name for keystore set at startup by machine::main
+pub static KEYSTORE_SHARED_NAME: OnceCell<Option<String>> = OnceCell::new();
 
 pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
     let _ = NODE_KEYPAIR.set(pair);
+}
+
+pub fn set_keystore_shared_name(shared_name: Option<String>) {
+    let _ = KEYSTORE_SHARED_NAME.set(shared_name);
+}
+
+pub fn open_keystore() -> anyhow::Result<crypto::Keystore> {
+    if let Some(shared_name_opt) = KEYSTORE_SHARED_NAME.get() {
+        if let Some(shared_name) = shared_name_opt {
+            crypto::open_keystore_with_shared_name(shared_name)
+        } else {
+            crypto::open_keystore_default()
+        }
+    } else {
+        crypto::open_keystore_default()
+    }
+}
+
+pub fn open_keystore_with_name(shared_name: &Option<String>) -> anyhow::Result<crypto::Keystore> {
+    if let Some(name) = shared_name {
+        crypto::open_keystore_with_shared_name(name)
+    } else {
+        crypto::open_keystore_default()
+    }
 }
 
 pub async fn start_libp2p_node(
@@ -158,6 +200,7 @@ pub async fn start_libp2p_node(
     topic: gossipsub::IdentTopic,
     peer_tx: watch::Sender<Vec<String>>,
     mut control_rx: mpsc::UnboundedReceiver<Libp2pControl>,
+    keystore_shared_name: Option<String>,
 ) -> Result<()> {
     use std::collections::HashMap;
     use tokio::time::Instant;
@@ -168,6 +211,7 @@ pub async fn start_libp2p_node(
 
     let mut handshake_states: HashMap<PeerId, HandshakeState> = HashMap::new();
     let mut handshake_interval = tokio::time::interval(Duration::from_secs(1));
+    let mut renew_interval = tokio::time::interval(Duration::from_millis(500));
     //let mut mesh_alive_interval = tokio::time::interval(Duration::from_secs(1));
 
     loop {
@@ -176,9 +220,10 @@ pub async fn start_libp2p_node(
             maybe_msg = control_rx.recv() => {
                 if let Some(msg) = maybe_msg {
                     control::handle_control_message(msg, &mut swarm, &topic, &mut pending_queries).await;
-                    } else {
-                    // sender was dropped, exit loop
-                    info!("control channel closed");
+                } else {
+                    // sender was dropped, withdraw provider announces and exit loop
+                    info!("control channel closed; withdrawing provider announcements");
+                    control::withdraw_all_providers(&mut swarm);
                     break;
                 }
             }
@@ -233,8 +278,21 @@ pub async fn start_libp2p_node(
                         let local_peer = *swarm.local_peer_id();
                         behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);
                     }
+                    SwarmEvent::ConnectionEstablished { peer_id, connection_id: _, endpoint, num_established: _, concurrent_dial_errors: _, established_in: _ } => {
+                        info!("DHT: Connection established with peer {}, adding to Kademlia", peer_id);
+                        // Add the connected peer to Kademlia DHT for provider announcements
+                        // Use the connection endpoint address for Kademlia
+                        let addr = endpoint.get_remote_address();
+                        swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, connection_id: _, endpoint: _, num_established, cause: _ } => {
+                        if num_established == 0 {
+                            info!("DHT: All connections to peer {} closed, removing from Kademlia", peer_id);
+                            swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
+                        }
+                    }
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        info!("Local node is listening on {address}");
+                        warn!("Local node is listening on {address}");
                     }
                     _ => {}
                 }
@@ -274,6 +332,12 @@ pub async fn start_libp2p_node(
                 // Update peer list in channel after handshake changes
                 let all_peers: Vec<String> = swarm.behaviour().gossipsub.all_peers().map(|(p, _topics)| p.to_string()).collect();
                 let _ = peer_tx.send(all_peers);
+            }
+            _ = renew_interval.tick() => {
+                // Drain any enqueued control messages produced by behaviours (e.g. AnnounceProvider)
+                control::drain_enqueued_controls(&mut swarm, &topic, &mut pending_queries).await;
+                // renew any due provider announcements
+                control::renew_due_providers(&mut swarm);
             }
             /*_ = mesh_alive_interval.tick() => {
                 // Periodically publish a 'mesh-alive' message to the topic

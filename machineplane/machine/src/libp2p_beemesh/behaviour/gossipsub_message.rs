@@ -15,7 +15,7 @@ pub fn gossipsub_message(
     // First try CapacityRequest
     if let Ok(cap_req) = protocol::machine::root_as_capacity_request(&message.data) {
         let orig_request_id = cap_req.request_id().unwrap_or("").to_string();
-    log::info!("libp2p: received capreq id={} from peer={} payload_bytes={}", orig_request_id, peer_id, message.data.len());
+        log::info!("libp2p: received capreq id={} from peer={} payload_bytes={}", orig_request_id, peer_id, message.data.len());
         // Build a capacity reply and publish it (include request_id inside the reply)
         let mut fbb = flatbuffers::FlatBufferBuilder::new();
         let req_id_off = fbb.create_string(&orig_request_id);
@@ -87,7 +87,7 @@ pub fn gossipsub_message(
     // If not JSON-enveloped, the message might itself be a signed FlatBuffer Envelope
     if owned_payload.is_none() {
         // Try to parse message.data as a flatbuffer Envelope (direct bytes)
-        if let Ok(fb_env) = protocol::machine::root_as_envelope(&message.data) {
+    if let Ok(_fb_env) = protocol::machine::root_as_envelope(&message.data) {
             // Reconstruct canonical bytes and verify via security helper which also checks replay
             // For convenience, we encode the flatbuffer bytes as base64 String and call the helper
             let b64 = base64::engine::general_purpose::STANDARD.encode(&message.data);

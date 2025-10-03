@@ -25,7 +25,9 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Apply { file } => apply_file(file).await?,
+        Commands::Apply { file } => {
+            let _task_id = apply_file(file).await?;
+        }
     }
 
     Ok(())

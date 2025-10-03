@@ -98,3 +98,63 @@ pub fn canonicalize_json_value(v: &Value) -> anyhow::Result<Vec<u8>> {
     let bytes = jcs_to_vec(v).map_err(|e| anyhow::anyhow!("canonicalize failed: {}", e))?;
     Ok(bytes)
 }
+
+// -- Task / REST API types -------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TaskCreateRequest {
+    pub manifest: serde_json::Value,
+    #[serde(default)]
+    pub replicas: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TaskCreateResponse {
+    pub ok: bool,
+    pub task_id: String,
+    pub selection_window_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DistributeSharesRequest {
+    #[serde(default)]
+    pub shares_envelope: Option<serde_json::Value>,
+    // per-target payloads (peer id + optional payload)
+    pub targets: Vec<ShareTarget>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DistributeSharesResponse {
+    pub ok: bool,
+    pub results: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AssignRequest {
+    #[serde(default)]
+    pub chosen_peers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AssignResponse {
+    pub ok: bool,
+    pub task_id: String,
+    pub assigned_peers: Vec<String>,
+    pub per_peer: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TaskStatusResponse {
+    pub task_id: String,
+    pub state: String,
+    pub assigned_peers: Vec<String>,
+    pub shares_distributed: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ShareTarget {
+    pub peer_id: String,
+    /// Arbitrary JSON payload (the CLI should have encrypted the share for the recipient)
+    pub payload: serde_json::Value,
+}
+

@@ -2,12 +2,11 @@
 
 
 // @generated
-
-use core::mem;
-use core::cmp::Ordering;
+use core::mem as _;
+use core::cmp::Ordering as _;
 
 extern crate flatbuffers;
-use self::flatbuffers::{EndianScalar, Follow};
+use self::flatbuffers::{EndianScalar as _, Follow as _};
 
 #[allow(unused_imports, dead_code)]
 pub mod beemesh {

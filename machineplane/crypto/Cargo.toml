@@ -22,4 +22,9 @@ saorsa-pqc = "0.3"
 log = "0.4"
 zeroize = "1.5"
 
+# SQLite keystore support
+rusqlite = "0.37.0"
+sha2 = "0.10"
+hex = "0.4"
+
  

@@ -17,19 +17,31 @@ pub async fn send_apply_to_peer(
     let peer_id: PeerId = peer.parse()
         .map_err(|e| format!("invalid peer ID '{}': {}", peer, e))?;
     
+    // Build an ApplyRequest flatbuffer using helpers
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let manifest_json = manifest.to_string();
+    let local_peer = "".to_string();
+    let apply_fb = protocol::machine::build_apply_request(
+        1, // replicas (best-effort)
+        "default",
+        &operation_id,
+        &manifest_json,
+        &local_peer,
+    );
+
     // Create a channel to receive the response
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
-    
-    // Send the apply request via libp2p
+
+    // Send the apply request via libp2p (flatbuffer bytes)
     let control_msg = crate::libp2p_beemesh::control::Libp2pControl::SendApplyRequest {
         peer_id,
-        manifest: manifest.clone(),
+        manifest: apply_fb,
         reply_tx,
     };
-    
+
     control_tx.send(control_msg)
         .map_err(|e| format!("failed to send control message: {}", e))?;
-    
+
     // Wait for the response with a timeout
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(REQUEST_RESPONSE_TIMEOUT_SECS),
@@ -37,7 +49,7 @@ pub async fn send_apply_to_peer(
     ).await
     .map_err(|_| "timeout waiting for apply response".to_string())?
     .ok_or_else(|| "control channel closed".to_string())?;
-    
+
     match response {
         Ok(msg) => {
             log::info!("send_apply_to_peer: success - {}", msg);

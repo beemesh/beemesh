@@ -11,7 +11,7 @@ pub async fn handle_query_capacity_with_payload(
     reply_tx: mpsc::UnboundedSender<String>,
     payload: Vec<u8>,
     swarm: &mut Swarm<MyBehaviour>,
-    topic: &gossipsub::IdentTopic,
+    _topic: &gossipsub::IdentTopic,
     pending_queries: &mut StdHashMap<String, Vec<mpsc::UnboundedSender<String>>>,
 ) {
     // register the reply channel so incoming reply messages can be forwarded
@@ -66,7 +66,8 @@ pub async fn handle_query_capacity_with_payload(
     }
 }
 
-/// Dummy capacity check that always returns true for now.
+// Dummy capacity check that always returns true for now.
+#[allow(dead_code)]
 fn has_free_capacity_dummy() -> bool {
     // TODO: replace with real resource accounting checks
     true

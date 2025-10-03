@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use base64::Engine;
 use crypto::{ensure_keypair_on_disk, encrypt_manifest, split_symmetric_key, sign_envelope, KEY_DIR};
 
-pub async fn apply_file(path: PathBuf) -> anyhow::Result<()> {
+pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     if !path.exists() {
         anyhow::bail!("file not found: {}", path.display());
     }
@@ -58,20 +58,28 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<()> {
     manifest_envelope_signed["sig"] = serde_json::Value::String(format!("ml-dsa-65:{}", manifest_sig_b64));
     manifest_envelope_signed["pubkey"] = serde_json::Value::String(manifest_pub_b64.clone());
 
-    // build shares envelope (contains the base64 shares for peers)
+    // build shares envelope (contains the base64 shares for peers) in Envelope shape
     let shares_b64: Vec<String> = shares_vec.iter().map(|s| base64::engine::general_purpose::STANDARD.encode(s)).collect();
     let shares_payload = serde_json::json!({
         "shares": shares_b64,
         "shares_meta": { "n": n, "k": k, "count": shares_vec.len() }
     });
-    let shares_envelope_bytes = serde_json::to_vec(&shares_payload)?;
+    let shares_payload_bytes = serde_json::to_vec(&shares_payload)?;
+    // envelope expects a base64 payload and a nonce field
+    let shares_nonce_bytes: [u8; 16] = rand::random();
+    let shares_envelope = serde_json::json!({
+        "payload": base64::engine::general_purpose::STANDARD.encode(&shares_payload_bytes),
+        "nonce": base64::engine::general_purpose::STANDARD.encode(&shares_nonce_bytes),
+        "shares_meta": { "n": n, "k": k, "count": shares_vec.len() }
+    });
+    let shares_envelope_bytes = serde_json::to_vec(&shares_envelope)?;
     let (shares_sig_b64, shares_pub_b64) = sign_envelope(&sk_bytes, &pk_bytes, &shares_envelope_bytes)?;
-    let mut shares_envelope_signed = shares_payload;
+    let mut shares_envelope_signed = shares_envelope;
     shares_envelope_signed["sig"] = serde_json::Value::String(format!("ml-dsa-65:{}", shares_sig_b64));
     shares_envelope_signed["pubkey"] = serde_json::Value::String(shares_pub_b64);
 
     // wrapper message containing both envelopes
-    let final_msg = serde_json::json!({
+    let _final_msg = serde_json::json!({
         "manifest_envelope": manifest_envelope_signed,
         "shares_envelope": shares_envelope_signed,
     });
@@ -81,24 +89,82 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<()> {
 
     // API base URL can be overridden with BEEMESH_API env var
     let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
-    let url = format!("{}/tenant/{}/apply", base.trim_end_matches('/'), tenant);
-
     let client = reqwest::Client::new();
+
+    // 1) Create task (store manifest in task store)
+    let create_url = format!("{}/tenant/{}/tasks", base.trim_end_matches('/'), tenant);
+    let create_body = serde_json::json!({ "manifest": manifest_envelope_signed });
     let resp = client
-        .post(&url)
+        .post(&create_url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(final_msg.to_string())
+        .body(create_body.to_string())
         .send()
         .await?;
     let status = resp.status();
+    let body_text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("create_task failed: {} {}", status, body_text);
+    }
+    let body_json: serde_json::Value = serde_json::from_str(&body_text)?;
+    let task_id = body_json.get("task_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("no task_id in response"))?.to_string();
+    info!("Created task {}", task_id);
+
+    // 2) Query candidates for the required replicas
+    let candidates_url = format!("{}/tenant/{}/tasks/{}/candidates", base.trim_end_matches('/'), tenant, task_id);
+    let resp = client.get(&candidates_url).send().await?;
+    let status = resp.status();
+    let body_text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("candidates request failed: {} {}", status, body_text);
+    }
+    let cand_json: serde_json::Value = serde_json::from_str(&body_text)?;
+    let responders = cand_json.get("responders").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let peers: Vec<String> = responders.into_iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+    info!("Candidates: {:?}", peers);
+
+    // 3) Distribute shares to the responders (build targets)
+    let mut targets: Vec<serde_json::Value> = Vec::new();
+    // For simplicity, send shares to all responders found
+    for (i, peer) in peers.iter().enumerate() {
+        // read local share file created earlier
+        let share_path = home.join(KEY_DIR).join("shares").join(format!("share-{}.bin", i + 1));
+        if share_path.exists() {
+            let share_bytes = tokio::fs::read(&share_path).await?;
+            let share_b64 = base64::engine::general_purpose::STANDARD.encode(&share_bytes);
+            let target = serde_json::json!({ "peer_id": peer, "payload": { "share": share_b64 } });
+            targets.push(target);
+        } else {
+            log::warn!("missing local share file: {}", share_path.display());
+        }
+    }
+
+    let dist_url = format!("{}/tenant/{}/tasks/{}/distribute_shares", base.trim_end_matches('/'), tenant, task_id);
+    let dist_body = serde_json::json!({ "shares_envelope": shares_envelope_signed, "targets": targets });
+    let resp = client.post(&dist_url).header(reqwest::header::CONTENT_TYPE, "application/json").body(dist_body.to_string()).send().await?;
+    let status = resp.status();
+    let body_text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("distribute_shares failed: {} {}", status, body_text);
+    }
+    let dist_resp: serde_json::Value = serde_json::from_str(&body_text)?;
+    info!("Distribute shares response: {:?}", dist_resp);
+
+    // 4) Assign task to replicas
+    // Determine replicas desired from manifest
+    let replicas = manifest_json.get("replicas").and_then(|v| v.as_u64()).or_else(|| manifest_json.get("spec").and_then(|s| s.get("replicas").and_then(|r| r.as_u64()))).unwrap_or(1) as usize;
+    let chosen_peers: Vec<String> = peers.into_iter().take(replicas).collect();
+    let assign_url = format!("{}/tenant/{}/tasks/{}/assign", base.trim_end_matches('/'), tenant, task_id);
+    let assign_body = serde_json::json!({ "chosen_peers": chosen_peers });
+    let resp = client.post(&assign_url).header(reqwest::header::CONTENT_TYPE, "application/json").body(assign_body.to_string()).send().await?;
+    let status = resp.status();
     let body = resp.text().await?;
-    info!("API response: {}\n{}", status, body);
+    info!("Assign response: {}\n{}", status, body);
 
     if !status.is_success() {
-        anyhow::bail!("apply failed: {}", status);
+        anyhow::bail!("assign failed: {}", status);
     }
 
     info!("Apply succeeded");
 
-    Ok(())
+    Ok(task_id)
 }

@@ -1,8 +1,9 @@
 use libp2p::{kad, PeerId};
 use log::{info, warn, debug};
+use crate::libp2p_beemesh::control;
 
 /// Handle Kademlia DHT events
-pub fn kademlia_event(event: kad::Event, peer_id: Option<PeerId>) {
+pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
     match event {
         kad::Event::OutboundQueryProgressed {
             id,
@@ -19,13 +20,20 @@ pub fn kademlia_event(event: kad::Event, peer_id: Option<PeerId>) {
                     record.key,
                     id
                 );
-                // TODO: Process the retrieved AppliedManifest
+                // If there is a pending control query waiting for this kademlia QueryId, reply with bytes
+                if let Some(tx) = control::take_pending_kad_query(&id) {
+                    let _ = tx.send(Ok(Some(record.value.clone())));
+                }
             }
             kad::QueryResult::GetRecord(Err(e)) => {
                 warn!("DHT: Failed to get record for query {:?}: {:?}", id, e);
+                if let Some(tx) = control::take_pending_kad_query(&id) {
+                    let _ = tx.send(Err(format!("kademlia get_record error: {:?}", e)));
+                }
             }
             kad::QueryResult::PutRecord(Ok(kad::PutRecordOk { key })) => {
                 info!("DHT: Successfully stored record with key: {:?}", key);
+                // If there is a pending control sender for this put (unlikely), we could reply here.
             }
             kad::QueryResult::PutRecord(Err(e)) => {
                 warn!("DHT: Failed to store record: {:?}", e);
