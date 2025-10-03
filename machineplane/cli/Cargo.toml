@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Command-line interface for beemesh"
 
+[lib]
+name = "cli"
+path = "src/lib.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
