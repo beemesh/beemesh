@@ -13,8 +13,21 @@ pub async fn handle_send_apply_request(
 ) {
     info!("libp2p: control SendApplyRequest received for peer={}", peer_id);
 
-    // Create apply request FlatBuffer
-    // If caller already provided a flatbuffer, forward it directly via request-response
+    // Check if this is a self-send - handle locally instead of using RequestResponse
+    if peer_id == *swarm.local_peer_id() {
+        info!("libp2p: handling self-apply locally for peer {}", peer_id);
+        
+        // Handle the apply request locally without going through RequestResponse
+        // This processes the manifest directly and triggers decryption
+        crate::libp2p_beemesh::behaviour::apply_message::process_self_apply_request(
+            &manifest, swarm
+        );
+        
+        let _ = reply_tx.send(Ok(format!("Apply request handled locally for {}", peer_id)));
+        return;
+    }
+
+    // For remote peers, use the normal RequestResponse protocol
     let request_id = swarm.behaviour_mut().apply_rr.send_request(&peer_id, manifest);
     info!("libp2p: sent apply request to peer={} request_id={:?}", peer_id, request_id);
 

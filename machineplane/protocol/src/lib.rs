@@ -94,6 +94,17 @@ mod generated {
         )]
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/envelope_generated.rs"));
     }
+    pub mod generated_keyshare_request {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/keyshare_request_generated.rs"));
+    }
 }
 
 pub mod machine {
@@ -108,6 +119,8 @@ pub mod machine {
     pub use crate::generated::generated_apply_response::beemesh::machine::{ ApplyResponse, root_as_apply_response };
     pub use crate::generated::generated_handshake::beemesh::machine::{ Handshake, root_as_handshake };
     pub use crate::generated::generated_envelope::beemesh::machine::{ Envelope as FbEnvelope, root_as_envelope };
+    pub use crate::generated::generated_keyshare_response::beemesh::machine::{ KeyShareResponse, root_as_key_share_response };
+    pub use crate::generated::generated_keyshare_request::beemesh::machine::{ KeyShareRequest, root_as_key_share_request };
     // Also export Args and helper finish function for builders/tests
     pub use crate::generated::generated_envelope::beemesh::machine::{ EnvelopeArgs, finish_envelope_buffer };
     
@@ -138,100 +151,107 @@ pub mod machine {
     use flatbuffers::FlatBufferBuilder;
     use base64::Engine as _;
 
-    // Macro to generate simple flatbuffer builder functions.
-    // Usage:
-    // fb_builder!(fn_name, fb_mod_path, FBType, FBArgsType, [field1:ty, field2:ty => string, ...]);
-    // - fields marked with `=> string` will be converted with `fbb.create_string` and wrapped in `Some(...)`.
-    macro_rules! fb_builder {
-        // Variant with vector-of-strings support
-        ($fn_name:ident, $args_path:path, $type_path:path,
-         [ $( $pname:ident : $pty:ty ),* $(,)? ],
-         [ $( $sname:ident : $sty:ty ),* $(,)? ],
-         [ $( $vname:ident : $vty:ty ),* $(,)? ]
-        ) => {
-            pub fn $fn_name( $( $pname : $pty ),* , $( $sname : $sty ),* , $( $vname : $vty ),* ) -> Vec<u8> {
-                let mut fbb = FlatBufferBuilder::with_capacity(256);
-                $( let $sname = fbb.create_string($sname); )*
-                // build vectors of string offsets for each vec field
-                $(
-                    let $vname = {
-                        let mut tmp_vec: Vec<flatbuffers::WIPOffset<&str>> = Vec::with_capacity($vname.len());
-                        for &s in $vname.iter() {
-                            tmp_vec.push(fbb.create_string(s));
-                        }
-                        fbb.create_vector(&tmp_vec)
-                    };
-                )*
-                let mut args: $args_path = Default::default();
-                $( args.$pname = $pname; )*
-                $( args.$sname = Some($sname); )*
-                $( args.$vname = Some($vname); )*
-                let off = <$type_path>::create(&mut fbb, &args);
-                fbb.finish(off, None);
-                fbb.finished_data().to_vec()
-            }
-        };
-
-        // Backwards-compatible variant without vector fields
-        ($fn_name:ident, $args_path:path, $type_path:path,
-         [ $( $pname:ident : $pty:ty ),* $(,)? ],
-         [ $( $sname:ident : $sty:ty ),* $(,)? ]
-        ) => {
-            pub fn $fn_name( $( $pname : $pty ),* , $( $sname : $sty ),* ) -> Vec<u8> {
-                let mut fbb = FlatBufferBuilder::with_capacity(128);
-                $( let $sname = fbb.create_string($sname); )*
-                let mut args: $args_path = Default::default();
-                $( args.$pname = $pname; )*
-                $( args.$sname = Some($sname); )*
-                let off = <$type_path>::create(&mut fbb, &args);
-                fbb.finish(off, None);
-                fbb.finished_data().to_vec()
-            }
-        };
+    // Manual builder functions for commonly used flatbuffers
+    pub fn build_health(ok: bool, status: &str) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(128);
+        let status_off = fbb.create_string(status);
+        let mut args: crate::generated::generated_health::beemesh::machine::HealthArgs = Default::default();
+        args.ok = ok;
+        args.status = Some(status_off);
+        let off = crate::generated::generated_health::beemesh::machine::Health::create(&mut fbb, &args);
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
     }
 
-    fb_builder!(build_health,
-        crate::generated::generated_health::beemesh::machine::HealthArgs,
-        crate::generated::generated_health::beemesh::machine::Health,
-        [ok: bool],
-        [status: &str]
-    );
+    pub fn build_capacity_request(cpu_milli: u32, memory_bytes: u64, storage_bytes: u64, replicas: u32) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(128);
+        let mut args: crate::generated::generated_capacity_request::beemesh::machine::CapacityRequestArgs = Default::default();
+        args.cpu_milli = cpu_milli;
+        args.memory_bytes = memory_bytes;
+        args.storage_bytes = storage_bytes;
+        args.replicas = replicas;
+        let off = crate::generated::generated_capacity_request::beemesh::machine::CapacityRequest::create(&mut fbb, &args);
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
 
-    fb_builder!(build_capacity_request,
-        crate::generated::generated_capacity_request::beemesh::machine::CapacityRequestArgs,
-        crate::generated::generated_capacity_request::beemesh::machine::CapacityRequest,
-        [cpu_milli: u32, memory_bytes: u64, storage_bytes: u64, replicas: u32],
-        []
-    );
+    pub fn build_capacity_reply(ok: bool, cpu_available_milli: u32, memory_available_bytes: u64, storage_available_bytes: u64, request_id: &str, node_id: &str, region: &str, capabilities: &[&str]) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let req_off = fbb.create_string(request_id);
+        let node_off = fbb.create_string(node_id);
+        let region_off = fbb.create_string(region);
+        let mut caps_vec: Vec<flatbuffers::WIPOffset<&str>> = Vec::with_capacity(capabilities.len());
+        for &c in capabilities.iter() { caps_vec.push(fbb.create_string(c)); }
+        let caps_off = fbb.create_vector(&caps_vec);
+        let mut args: crate::generated::generated_capacity_reply::beemesh::machine::CapacityReplyArgs = Default::default();
+        args.ok = ok;
+        args.cpu_available_milli = cpu_available_milli;
+        args.memory_available_bytes = memory_available_bytes;
+        args.storage_available_bytes = storage_available_bytes;
+        args.request_id = Some(req_off);
+        args.node_id = Some(node_off);
+        args.region = Some(region_off);
+        args.capabilities = Some(caps_off);
+        let off = crate::generated::generated_capacity_reply::beemesh::machine::CapacityReply::create(&mut fbb, &args);
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
 
-    fb_builder!(build_capacity_reply,
-        crate::generated::generated_capacity_reply::beemesh::machine::CapacityReplyArgs,
-        crate::generated::generated_capacity_reply::beemesh::machine::CapacityReply,
-        [ok: bool, cpu_available_milli: u32, memory_available_bytes: u64, storage_available_bytes: u64],
-        [request_id: &str, node_id: &str, region: &str],
-        [capabilities: &[&str]]
-    );
+    pub fn build_apply_request(replicas: u32, tenant: &str, operation_id: &str, manifest_json: &str, origin_peer: &str) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let tenant_off = fbb.create_string(tenant);
+        let op_off = fbb.create_string(operation_id);
+        let manifest_off = fbb.create_string(manifest_json);
+        let origin_off = fbb.create_string(origin_peer);
+        let mut args: crate::generated::generated_apply_request::beemesh::machine::ApplyRequestArgs = Default::default();
+        args.replicas = replicas;
+        args.tenant = Some(tenant_off);
+        args.operation_id = Some(op_off);
+        args.manifest_json = Some(manifest_off);
+        args.origin_peer = Some(origin_off);
+        let off = crate::generated::generated_apply_request::beemesh::machine::ApplyRequest::create(&mut fbb, &args);
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
 
-    fb_builder!(build_apply_request,
-        crate::generated::generated_apply_request::beemesh::machine::ApplyRequestArgs,
-        crate::generated::generated_apply_request::beemesh::machine::ApplyRequest,
-        [replicas: u32],
-        [tenant: &str, operation_id: &str, manifest_json: &str, origin_peer: &str]
-    );
+    pub fn build_apply_response(ok: bool, operation_id: &str, message: &str) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(128);
+        let op_off = fbb.create_string(operation_id);
+        let msg_off = fbb.create_string(message);
+        let mut args: crate::generated::generated_apply_response::beemesh::machine::ApplyResponseArgs = Default::default();
+        args.ok = ok;
+        args.operation_id = Some(op_off);
+        args.message = Some(msg_off);
+        let off = crate::generated::generated_apply_response::beemesh::machine::ApplyResponse::create(&mut fbb, &args);
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
 
-    fb_builder!(build_apply_response,
-        crate::generated::generated_apply_response::beemesh::machine::ApplyResponseArgs,
-        crate::generated::generated_apply_response::beemesh::machine::ApplyResponse,
-        [ok: bool],
-        [operation_id: &str, message: &str]
-    );
+    pub fn build_keyshare_response(ok: bool, operation_id: &str, message: &str) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(128);
+        let op_off = fbb.create_string(operation_id);
+        let msg_off = fbb.create_string(message);
+        let mut args: crate::generated::generated_keyshare_response::beemesh::machine::KeyShareResponseArgs = Default::default();
+        args.ok = ok;
+        args.operation_id = Some(op_off);
+        args.message = Some(msg_off);
+        let off = crate::generated::generated_keyshare_response::beemesh::machine::KeyShareResponse::create(&mut fbb, &args);
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
 
-    fb_builder!(build_keyshare_response,
-        crate::generated::generated_keyshare_response::beemesh::machine::KeyShareResponseArgs,
-        crate::generated::generated_keyshare_response::beemesh::machine::KeyShareResponse,
-        [ok: bool],
-        [operation_id: &str, message: &str]
-    );
+    // KeyShareRequest builder (manifest_id, capability)
+    pub fn build_keyshare_request(manifest_id: &str, capability: &str) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(128);
+        let mid = fbb.create_string(manifest_id);
+        let cap = fbb.create_string(capability);
+        let mut args: crate::generated::generated_keyshare_request::beemesh::machine::KeyShareRequestArgs = Default::default();
+        args.manifest_id = Some(mid);
+        args.capability = Some(cap);
+        let off = crate::generated::generated_keyshare_request::beemesh::machine::KeyShareRequest::create(&mut fbb, &args);
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
 
     // Helpers for Envelope flatbuffer canonicalization and building.
     pub fn build_envelope_canonical(
@@ -330,12 +350,19 @@ pub mod machine {
     }
 
     // Custom handshake builder since it only has string fields
-    fb_builder!(build_handshake,
-        crate::generated::generated_handshake::beemesh::machine::HandshakeArgs,
-        crate::generated::generated_handshake::beemesh::machine::Handshake,
-        [nonce: u32, timestamp: u64],
-        [protocol_version: &str, signature: &str]
-    );
+    pub fn build_handshake(nonce: u32, timestamp: u64, protocol_version: &str, signature: &str) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(128);
+        let proto = fbb.create_string(protocol_version);
+        let sig = fbb.create_string(signature);
+        let mut args: crate::generated::generated_handshake::beemesh::machine::HandshakeArgs = Default::default();
+        args.nonce = nonce;
+        args.timestamp = timestamp;
+        args.protocol_version = Some(proto);
+        args.signature = Some(sig);
+        let off = crate::generated::generated_handshake::beemesh::machine::Handshake::create(&mut fbb, &args);
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
 
     // Custom builder for AppliedManifest with byte vectors and custom types
     pub fn build_applied_manifest(

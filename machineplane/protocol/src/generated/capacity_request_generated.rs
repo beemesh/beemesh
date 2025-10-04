@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for CapacityRequest<'a> {
   type Inner = CapacityRequest<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -242,14 +242,14 @@ pub fn size_prefixed_root_as_capacity_request_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `CapacityRequest`.
 pub unsafe fn root_as_capacity_request_unchecked(buf: &[u8]) -> CapacityRequest {
-  unsafe { flatbuffers::root_unchecked::<CapacityRequest>(buf) }
+  flatbuffers::root_unchecked::<CapacityRequest>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed CapacityRequest and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `CapacityRequest`.
 pub unsafe fn size_prefixed_root_as_capacity_request_unchecked(buf: &[u8]) -> CapacityRequest {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<CapacityRequest>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<CapacityRequest>(buf)
 }
 #[inline]
 pub fn finish_capacity_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

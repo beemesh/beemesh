@@ -151,6 +151,9 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // control channel for libp2p (from REST handlers to libp2p task)
     let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel::<libp2p_beemesh::control::Libp2pControl>();
+    
+    // Set the global control sender for distributed operations
+    libp2p_beemesh::set_control_sender(control_tx.clone());
 
     // Keep the sender side alive by moving one clone into the libp2p task.
     // If we don't keep a sender alive outside this function, the receiver will see

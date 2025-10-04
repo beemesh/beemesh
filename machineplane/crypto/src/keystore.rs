@@ -98,6 +98,18 @@ impl Keystore {
         }
         Ok(out)
     }
+
+    /// Find CID for a share with the given manifest_id in its metadata
+    pub fn find_cid_for_manifest(&self, manifest_id: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare("SELECT cid FROM shares WHERE meta = ?1")?;
+        let mut rows = stmt.query([manifest_id])?;
+        if let Some(row) = rows.next()? {
+            let cid: String = row.get(0)?;
+            Ok(Some(cid))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]

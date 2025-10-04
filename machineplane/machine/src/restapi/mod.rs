@@ -11,6 +11,7 @@ use serde::{Serialize};
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
+use once_cell::sync::Lazy;
 use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
 use log::{info, debug, warn};
@@ -36,6 +37,41 @@ pub struct RestState {
     pub shared_name: Option<String>,
 }
 
+// Global in-memory store of decrypted manifests for debugging / tests.
+// Keyed by manifest_id -> decrypted manifest JSON/value.
+static DECRYPTED_MANIFESTS: Lazy<tokio::sync::RwLock<HashMap<String, serde_json::Value>>> = Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
+
+// Global mapping of operation_id -> manifest_cid to ensure consistent manifest ID usage across REST API and apply processing
+static OPERATION_MANIFEST_MAPPING: Lazy<tokio::sync::RwLock<HashMap<String, String>>> = Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
+
+/// Store a decrypted manifest (async). Called by libp2p background tasks after successful decryption.
+pub async fn store_decrypted_manifest(manifest_id: &str, value: serde_json::Value) {
+    let mut map = DECRYPTED_MANIFESTS.write().await;
+    map.insert(manifest_id.to_string(), value.clone());
+    log::warn!("store_decrypted_manifest: stored manifest_id='{}' value_preview='{}'", 
+               manifest_id, 
+               serde_json::to_string(&value).unwrap_or("(invalid)".to_string()).chars().take(100).collect::<String>());
+}
+
+/// Store the mapping of operation_id -> manifest_cid for consistent manifest ID usage
+pub async fn store_operation_manifest_mapping(operation_id: &str, manifest_cid: &str) {
+    let mut map = OPERATION_MANIFEST_MAPPING.write().await;
+    map.insert(operation_id.to_string(), manifest_cid.to_string());
+    log::info!("store_operation_manifest_mapping: operation_id={} -> manifest_cid={}", operation_id, manifest_cid);
+}
+
+/// Get the manifest_cid for a given operation_id
+pub async fn get_manifest_cid_for_operation(operation_id: &str) -> Option<String> {
+    let map = OPERATION_MANIFEST_MAPPING.read().await;
+    map.get(operation_id).cloned()
+}
+
+/// Return all decrypted manifests as a JSON object.
+pub async fn get_decrypted_manifests_map() -> serde_json::Value {
+    let map = DECRYPTED_MANIFESTS.read().await;
+    serde_json::to_value(map.clone()).unwrap_or(serde_json::json!({}))
+}
+
 pub fn build_router(
     peer_rx: watch::Receiver<Vec<String>>,
     control_tx: mpsc::UnboundedSender<crate::libp2p_beemesh::control::Libp2pControl>,
@@ -49,6 +85,7 @@ pub fn build_router(
     };
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/debug/decrypted_manifests", get(debug_decrypted_manifests))
         .route("/debug/keystore/shares", get(debug_keystore_shares))
         .route("/debug/dht/active_announces", get(debug_active_announces))
         .route("/debug/dht/manifest/{manifest_id}", get(debug_get_manifest))
@@ -448,6 +485,12 @@ async fn debug_keystore_shares(State(state): State<RestState>) -> Json<serde_jso
     }
 }
 
+// Debug: return the decrypted manifests collected by this node (for testing)
+async fn debug_decrypted_manifests(State(_state): State<RestState>) -> Json<serde_json::Value> {
+    let data = get_decrypted_manifests_map().await;
+    Json(serde_json::json!({"ok": true, "decrypted_manifests": data}))
+}
+
 // Debug: return the active announces (provider CIDs) tracked by the control module
 async fn debug_active_announces(State(_state): State<RestState>) -> Json<serde_json::Value> {
     // access the static ACTIVE_ANNOUNCES in control module
@@ -528,20 +571,28 @@ async fn get_task_manifest_id(Path((_tenant, task_id)): Path<(String, String)>, 
         None => return Json(serde_json::json!({"ok": false, "error": "task not found"})),
     };
 
-    let tenant = _tenant;
     let operation_id = match task.last_operation_id {
         Some(o) => o,
         None => return Json(serde_json::json!({"ok": false, "error": "operation_id not set yet"})),
     };
 
-    // serialize manifest JSON to string
-    let manifest_json = task.manifest.to_string();
-
-    let mut hasher = DefaultHasher::new();
-    tenant.hash(&mut hasher);
-    operation_id.hash(&mut hasher);
-    manifest_json.hash(&mut hasher);
-    let manifest_id = format!("{:x}", hasher.finish());
+    // Use stored manifest_cid instead of recalculating
+    let manifest_id = match get_manifest_cid_for_operation(&operation_id).await {
+        Some(cid) => {
+            log::info!("get_task_manifest_id: returning stored manifest_cid={} for operation_id={}", cid, operation_id);
+            cid
+        },
+        None => {
+            // Fallback to task record manifest_cid if available
+            if let Some(cid) = &task.manifest_cid {
+                log::warn!("get_task_manifest_id: using task.manifest_cid={} for operation_id={}", cid, operation_id);
+                cid.clone()
+            } else {
+                log::error!("get_task_manifest_id: no manifest_cid found for operation_id={}", operation_id);
+                return Json(serde_json::json!({"ok": false, "error": "manifest_cid not found"}));
+            }
+        }
+    };
 
     Json(serde_json::json!({"ok": true, "manifest_id": manifest_id}))
 }
@@ -602,10 +653,27 @@ pub async fn distribute_shares(
         match t.peer_id.parse::<libp2p::PeerId>() {
             Ok(peer_id) => {
                 let payload = t.payload.clone();
+                // Attach manifest_id to the payload if we can determine it from task record
+                let mut payload_with_mid = payload.clone();
+                if let Some(manifest_cid) = &task_record.manifest_cid {
+                    payload_with_mid["manifest_id"] = serde_json::Value::String(manifest_cid.clone());
+                } else if let Some(opid) = &task_record.last_operation_id {
+                    // fall back to computing manifest id using tenant + operation_id + manifest_json
+                    let tenant = _tenant.clone();
+                    let manifest_json = task_record.manifest.to_string();
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    tenant.hash(&mut hasher);
+                    opid.hash(&mut hasher);
+                    manifest_json.hash(&mut hasher);
+                    let manifest_id = format!("{:x}", hasher.finish());
+                    payload_with_mid["manifest_id"] = serde_json::Value::String(manifest_id);
+                }
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
                 let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
                     peer_id,
-                    share_payload: payload,
+                    share_payload: payload_with_mid,
                     reply_tx: tx,
                 });
                 // wait for an ack from libp2p control layer (bounded)
@@ -710,13 +778,20 @@ pub async fn assign_task(
                     let mut store = state.task_store.write().await;
                     if let Some(r) = store.get_mut(&task_id) {
                         r.last_operation_id = Some(operation_id.clone());
+                        // Store the mapping of operation_id -> manifest_cid for consistent apply processing
+                        if let Some(manifest_cid) = &r.manifest_cid {
+                            store_operation_manifest_mapping(&operation_id, manifest_cid).await;
+                            log::info!("assign_task: stored operation_id={} -> manifest_cid={}", operation_id, manifest_cid);
+                        } else {
+                            log::warn!("assign_task: no manifest_cid available for task {}", task_id);
+                        }
                     }
                 }
                 let manifest_json = task.manifest.to_string();
                 let local_peer = state.peer_rx.borrow().get(0).cloned().unwrap_or_else(|| "".to_string());
                 let apply_fb = protocol::machine::build_apply_request(
                     replicas as u32,
-                    "default",
+                    &_tenant,
                     &operation_id,
                     &manifest_json,
                     &local_peer,

@@ -262,6 +262,15 @@ pub fn encrypt_manifest(manifest_json: &serde_json::Value) -> anyhow::Result<(Ve
 	Ok((ciphertext, nonce_bytes.to_vec(), sym, nonce_bytes))
 }
 
+/// Decrypt a manifest ciphertext produced by `encrypt_manifest` using the symmetric key and nonce.
+pub fn decrypt_manifest(sym: &[u8; 32], nonce_bytes: &[u8], ciphertext: &[u8]) -> anyhow::Result<Vec<u8>> {
+	let cipher = Aes256Gcm::new_from_slice(&sym[..]).map_err(|e| anyhow::anyhow!("invalid key length for AES-GCM: {}", e))?;
+	if nonce_bytes.len() != 12 { anyhow::bail!("invalid nonce length: {}", nonce_bytes.len()); }
+	let nonce = Nonce::from_slice(nonce_bytes);
+	let plain = cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|e| anyhow::anyhow!("aes-gcm decrypt error: {}", e))?;
+	Ok(plain)
+}
+
 pub fn split_symmetric_key(sym: &[u8; 32], n: usize, k: usize) -> Vec<Vec<u8>> {
 	assert!(k >= 1 && k <= 255, "invalid threshold");
 	assert!(n >= 1 && n <= 255, "invalid share count");

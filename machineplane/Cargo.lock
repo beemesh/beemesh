@@ -1890,6 +1890,7 @@ dependencies = [
  "machine",
  "reqwest",
  "serde_json",
+ "serde_yaml",
  "tokio",
 ]
 
@@ -2461,6 +2462,7 @@ dependencies = [
  "saorsa-pqc",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
  "tokio-stream",
  "tracing-subscriber",

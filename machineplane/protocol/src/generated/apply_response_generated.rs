@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for ApplyResponse<'a> {
   type Inner = ApplyResponse<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -208,14 +208,14 @@ pub fn size_prefixed_root_as_apply_response_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `ApplyResponse`.
 pub unsafe fn root_as_apply_response_unchecked(buf: &[u8]) -> ApplyResponse {
-  unsafe { flatbuffers::root_unchecked::<ApplyResponse>(buf) }
+  flatbuffers::root_unchecked::<ApplyResponse>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed ApplyResponse and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `ApplyResponse`.
 pub unsafe fn size_prefixed_root_as_apply_response_unchecked(buf: &[u8]) -> ApplyResponse {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<ApplyResponse>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<ApplyResponse>(buf)
 }
 #[inline]
 pub fn finish_apply_response_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

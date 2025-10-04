@@ -60,7 +60,7 @@ async fn test_apply_functionality() {
     // Call the apply function
     // Resolve manifest path relative to this test crate's manifest dir so it's robust under cargo test
     let manifest_path = PathBuf::from(format!("{}/sample_manifests/nginx", env!("CARGO_MANIFEST_DIR")));
-    let _task_id = cli::apply_file(manifest_path.clone()).await.expect("apply failed");
+    let task_id = cli::apply_file(manifest_path.clone()).await.expect("apply failed");
 
     // Wait a short while for keyshare distribution and DHT activity
     sleep(Duration::from_secs(2)).await;
@@ -203,6 +203,62 @@ async fn test_apply_functionality() {
             println!("✓ Manifest found in DHT - cross-node queries working!");
         } else {
             println!("⚠ Manifest not accessible via cross-node DHT queries");
+        }
+
+        // New: verify decrypted manifest via REST debug endpoint
+        // Read expected manifest JSON (same parsing logic as CLI)
+        let expected_manifest_json: serde_json::Value = {
+            let contents = tokio::fs::read_to_string(&manifest_path).await.expect("could not read manifest file");
+            match serde_yaml::from_str(&contents) {
+                Ok(v) => v,
+                Err(_) => serde_json::json!({ "raw": contents }),
+            }
+        };
+
+        // Get manifest_id from the node that holds the task (use first node with tasks)
+        if !nodes_with_tasks.is_empty() {
+            let node_port = nodes_with_tasks[0];
+            let mid_resp = client.get(&format!("http://127.0.0.1:{}/tenant/{}/tasks/{}/manifest_id", node_port, TENANT, task_id)).send().await.expect("manifest_id request failed");
+            let mid_json: serde_json::Value = mid_resp.json().await.expect("manifest_id parse failed");
+            let manifest_id = mid_json.get("manifest_id").and_then(|v| v.as_str()).expect("no manifest_id returned").to_string();
+
+                        // Poll /debug/decrypted_manifests until the manifest_id appears and matches expected
+            let mut found = false;
+            for _ in 0..30 {
+                let resp = client.get(&format!("http://127.0.0.1:{}/debug/decrypted_manifests", node_port)).send().await;
+                if let Ok(r) = resp {
+                    if let Ok(j) = r.json::<serde_json::Value>().await {
+                        // The debug endpoint returns {"ok": true, "decrypted_manifests": {...}}
+                        if let Some(decrypted_manifests) = j.get("decrypted_manifests") {
+                            if let Some(entry) = decrypted_manifests.get(&manifest_id) {
+                                println!("Found decrypted manifest for {} on node {}: {}", manifest_id, node_port, entry);
+                                // compare equality
+                                if entry == &expected_manifest_json {
+                                    found = true;
+                                    break;
+                                } else {
+                                    println!("Decrypted manifest does not match expected.");
+                                    println!("GOT (pretty-printed):\n{}", serde_json::to_string_pretty(entry).unwrap_or_else(|_| format!("{:?}", entry)));
+                                    println!("EXPECTED (pretty-printed):\n{}", serde_json::to_string_pretty(&expected_manifest_json).unwrap_or_else(|_| format!("{:?}", expected_manifest_json)));
+                                    println!("GOT (debug): {:?}", entry);
+                                    println!("EXPECTED (debug): {:?}", expected_manifest_json);
+                                    // mismatch -> log and break early
+                                    log::warn!("Test failure: decrypted manifest mismatch for {} on node {}", manifest_id, node_port);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                sleep(Duration::from_millis(500)).await;
+            }
+
+            if !found {
+                log::warn!("Test failure: decrypted manifest for {} did not appear or did not match expected on node {}", manifest_id, node_port);
+            }
+            assert!(found, "decrypted manifest for {} did not appear or did not match expected", manifest_id);
+        } else {
+            panic!("no node reported the task; cannot verify decrypted manifest");
         }
         
         // For now, the core functionality (keystore sharing) is working correctly as verified above

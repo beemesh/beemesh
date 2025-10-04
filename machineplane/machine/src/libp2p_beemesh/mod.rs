@@ -16,6 +16,9 @@ use tokio::sync::{mpsc, watch};
 
 use protocol::libp2p_constants::BEEMESH_CLUSTER;
 
+// Global control sender for distributed operations
+static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
+
 mod request_response_codec;
 pub use request_response_codec::{ApplyCodec, HandshakeCodec};
 
@@ -195,6 +198,16 @@ pub fn open_keystore_with_name(shared_name: &Option<String>) -> anyhow::Result<c
     }
 }
 
+/// Set the global control sender for distributed operations
+pub fn set_control_sender(sender: mpsc::UnboundedSender<control::Libp2pControl>) {
+    let _ = CONTROL_SENDER.set(sender);
+}
+
+/// Get the global control sender for distributed operations
+pub fn get_control_sender() -> Option<&'static mpsc::UnboundedSender<control::Libp2pControl>> {
+    CONTROL_SENDER.get()
+}
+
 pub async fn start_libp2p_node(
     mut swarm: Swarm<MyBehaviour>,
     topic: gossipsub::IdentTopic,
@@ -279,7 +292,7 @@ pub async fn start_libp2p_node(
                         behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id: _, endpoint, num_established: _, concurrent_dial_errors: _, established_in: _ } => {
-                        info!("DHT: Connection established with peer {}, adding to Kademlia", peer_id);
+                        //info!("DHT: Connection established with peer {}, adding to Kademlia", peer_id);
                         // Add the connected peer to Kademlia DHT for provider announcements
                         // Use the connection endpoint address for Kademlia
                         let addr = endpoint.get_remote_address();
@@ -292,7 +305,7 @@ pub async fn start_libp2p_node(
                         }
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        warn!("Local node is listening on {address}");
+                        debug!("Local node is listening on {address}");
                     }
                     _ => {}
                 }

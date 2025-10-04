@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for CapacityReply<'a> {
   type Inner = CapacityReply<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -293,14 +293,14 @@ pub fn size_prefixed_root_as_capacity_reply_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `CapacityReply`.
 pub unsafe fn root_as_capacity_reply_unchecked(buf: &[u8]) -> CapacityReply {
-  unsafe { flatbuffers::root_unchecked::<CapacityReply>(buf) }
+  flatbuffers::root_unchecked::<CapacityReply>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed CapacityReply and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `CapacityReply`.
 pub unsafe fn size_prefixed_root_as_capacity_reply_unchecked(buf: &[u8]) -> CapacityReply {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<CapacityReply>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<CapacityReply>(buf)
 }
 #[inline]
 pub fn finish_capacity_reply_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

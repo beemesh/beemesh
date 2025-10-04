@@ -25,6 +25,18 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
                     let _ = tx.send(Ok(Some(record.value.clone())));
                 }
             }
+            kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { key: _key, providers })) => {
+                info!("DHT: Found providers for query {:?}: {:?}", id, providers);
+                if let Some(tx) = control::take_pending_providers_query(&id) {
+                    let _ = tx.send(providers.into_iter().collect());
+                }
+            }
+            kad::QueryResult::GetProviders(Err(e)) => {
+                warn!("DHT: Failed to get providers for query {:?}: {:?}", id, e);
+                if let Some(tx) = control::take_pending_providers_query(&id) {
+                    let _ = tx.send(Vec::new()); // Send empty vector on error
+                }
+            }
             kad::QueryResult::GetRecord(Err(e)) => {
                 warn!("DHT: Failed to get record for query {:?}: {:?}", id, e);
                 if let Some(tx) = control::take_pending_kad_query(&id) {
@@ -36,16 +48,22 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
                 // If there is a pending control sender for this put (unlikely), we could reply here.
             }
             kad::QueryResult::PutRecord(Err(e)) => {
-                warn!("DHT: Failed to store record: {:?}", e);
+                debug!("DHT: Failed to store record: {:?}", e);
             }
             kad::QueryResult::Bootstrap(Ok(_)) => {
-                info!("DHT: Bootstrap completed successfully");
+                //info!("DHT: Bootstrap completed successfully");
             }
             kad::QueryResult::Bootstrap(Err(e)) => {
                 warn!("DHT: Bootstrap failed: {:?}", e);
             }
+            kad::QueryResult::StartProviding(Ok(_)) => {
+                debug!("DHT: Successfully started providing for query {:?}", id);
+            }
+            kad::QueryResult::StartProviding(Err(e)) => {
+                warn!("DHT: Failed to start providing for query {:?}: {:?}", id, e);
+            }
             _ => {
-                debug!("DHT: Other query result: {:?}", result);
+                info!("DHT: Other query result: {:?}", result);
             }
         },
         kad::Event::RoutingUpdated {
@@ -56,10 +74,10 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
             old_peer: _,
         } => {
             if is_new_peer {
-                info!(
+                /*info!(
                     "DHT: Added new peer {} with addresses: {:?}",
                     peer, addresses
-                );
+                );*/
             }
         }
         kad::Event::UnroutablePeer { peer } => {

@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for Health<'a> {
   type Inner = Health<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -191,14 +191,14 @@ pub fn size_prefixed_root_as_health_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `Health`.
 pub unsafe fn root_as_health_unchecked(buf: &[u8]) -> Health {
-  unsafe { flatbuffers::root_unchecked::<Health>(buf) }
+  flatbuffers::root_unchecked::<Health>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed Health and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `Health`.
 pub unsafe fn size_prefixed_root_as_health_unchecked(buf: &[u8]) -> Health {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<Health>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<Health>(buf)
 }
 #[inline]
 pub fn finish_health_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

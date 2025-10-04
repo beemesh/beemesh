@@ -9,7 +9,7 @@ pub fn mdns_discovered(
     use libp2p::multiaddr::{Multiaddr, Protocol};
     
     for (peer_id, multiaddr) in list {
-        log::warn!("mDNS discovered peer {} at {}", peer_id, multiaddr);
+        log::debug!("mDNS discovered peer {} at {}", peer_id, multiaddr);
         
         // Add the peer to gossipsub mesh
         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
@@ -33,7 +33,7 @@ pub fn mdns_discovered(
         if is_external_ip && port.is_some() {
             let localhost_addr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", port.unwrap(), peer_id);
             if let Ok(localhost_multiaddr) = localhost_addr.parse::<Multiaddr>() {
-                log::warn!("Adding localhost address for in-process testing: {}", localhost_multiaddr);
+                log::debug!("Adding localhost address for in-process testing: {}", localhost_multiaddr);
                 swarm.add_peer_address(peer_id, localhost_multiaddr);
             }
         }

@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for KeyShareResponse<'a> {
   type Inner = KeyShareResponse<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -208,14 +208,14 @@ pub fn size_prefixed_root_as_key_share_response_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `KeyShareResponse`.
 pub unsafe fn root_as_key_share_response_unchecked(buf: &[u8]) -> KeyShareResponse {
-  unsafe { flatbuffers::root_unchecked::<KeyShareResponse>(buf) }
+  flatbuffers::root_unchecked::<KeyShareResponse>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed KeyShareResponse and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `KeyShareResponse`.
 pub unsafe fn size_prefixed_root_as_key_share_response_unchecked(buf: &[u8]) -> KeyShareResponse {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<KeyShareResponse>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<KeyShareResponse>(buf)
 }
 #[inline]
 pub fn finish_key_share_response_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

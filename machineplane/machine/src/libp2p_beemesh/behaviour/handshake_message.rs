@@ -11,7 +11,7 @@ pub fn handshake_request<F>(
 ) where
     F: FnOnce(Vec<u8>),
 {
-    log::info!("libp2p: received handshake request from peer={}", peer);
+    //log::info!("libp2p: received handshake request from peer={}", peer);
 
     // If the request might be an Envelope (JSON or FlatBuffer), try to verify and extract inner bytes
     let effective_request = match serde_json::from_slice::<serde_json::Value>(&request) {
@@ -36,7 +36,7 @@ pub fn handshake_request<F>(
     // Parse the FlatBuffer handshake request
     match protocol::machine::root_as_handshake(&effective_request) {
         Ok(handshake_req) => {
-            log::debug!("libp2p: handshake request - signature={:?}", handshake_req.signature());
+            //debug!("libp2p: handshake request - signature={:?}", handshake_req.signature());
 
             // Mark this peer as confirmed
             let state = handshake_states.entry(peer.clone()).or_insert(super::super::HandshakeState {
@@ -51,7 +51,7 @@ pub fn handshake_request<F>(
 
             // Send the response back via closure
             send_response(response);
-            log::info!("libp2p: sent handshake response to peer={}", peer);
+            //log::info!("libp2p: sent handshake response to peer={}", peer);
         }
         Err(e) => {
             log::error!("libp2p: failed to parse handshake request: {:?}", e);
@@ -67,12 +67,12 @@ pub fn handshake_response(
     peer: libp2p::PeerId,
     handshake_states: &mut std::collections::HashMap<libp2p::PeerId, super::super::HandshakeState>,
 ) {
-    log::info!("libp2p: received handshake response from peer={}", peer);
+    //log::info!("libp2p: received handshake response from peer={}", peer);
 
     // Parse the response
     match protocol::machine::root_as_handshake(&response) {
         Ok(handshake_resp) => {
-            log::debug!("libp2p: handshake response - signature={:?}", handshake_resp.signature());
+            //log::debug!("libp2p: handshake response - signature={:?}", handshake_resp.signature());
 
             // Mark this peer as confirmed
             let state = handshake_states.entry(peer.clone()).or_insert(super::super::HandshakeState {
