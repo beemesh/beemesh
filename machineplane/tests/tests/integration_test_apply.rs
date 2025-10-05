@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use tokio::time::sleep;
 
 mod test_utils;
-use test_utils::{make_test_cli, start_nodes_as_processes};
+use test_utils::{make_test_cli, start_nodes_as_processes, setup_cleanup_hook};
 
 pub const TENANT: &str = "00000000-0000-0000-0000-000000000000";
 
 #[tokio::test]
 async fn test_apply_functionality() {
-    // Initialize logger once (tests may run multiple times in same process)
+    // Setup cleanup hook and initialize logger
+    setup_cleanup_hook();
     let _ = env_logger::try_init();
     
     // Set test mode for DHT configuration

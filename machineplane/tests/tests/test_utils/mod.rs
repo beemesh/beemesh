@@ -3,6 +3,9 @@ use tokio::time::sleep;
 use machine::{start_machine, Cli};
 use tokio::task::JoinHandle;
 use tokio::process::{Child, Command};
+use std::sync::Once;
+
+static CLEANUP_HOOK_INIT: Once = Once::new();
 
 pub struct NodeGuard {
     pub handles: Vec<JoinHandle<()>>, // spawned background tasks for in-process nodes
@@ -20,6 +23,25 @@ impl NodeGuard {
         for mut process in self.processes.drain(..) {
             let _ = process.kill().await;
         }
+    }
+}
+
+impl Drop for NodeGuard {
+    fn drop(&mut self) {
+        eprintln!("NodeGuard::drop() - Running emergency cleanup");
+        
+        // Abort async handles (synchronous)
+        for handle in self.handles.drain(..) {
+            let _ = handle.abort();
+        }
+        
+        // Kill processes synchronously (best effort)
+        for mut process in self.processes.drain(..) {
+            let _ = process.start_kill();
+        }
+        
+        // System-level cleanup using shell commands
+        global_cleanup();
     }
 }
 
@@ -108,4 +130,55 @@ pub async fn start_nodes(clis: Vec<Cli>, startup_delay: Duration) -> NodeGuard {
         sleep(startup_delay).await;
     }
     guard
+}
+
+/// Setup global panic hook for test cleanup. Call this at the beginning of each test.
+pub fn setup_cleanup_hook() {
+    CLEANUP_HOOK_INIT.call_once(|| {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // Run cleanup before original panic handling
+            eprintln!("Test panic detected, running global cleanup...");
+            global_cleanup();
+            default_hook(info);
+        }));
+    });
+}
+
+/// Global cleanup function that runs system commands to clean up test artifacts
+pub fn global_cleanup() {
+    eprintln!("Running global cleanup: pkill + rm commands");
+    
+    // Kill any remaining machine processes - be more specific about the pattern
+    let pkill_result = std::process::Command::new("pkill")
+        .args(["-f", "target/debug/machine"])
+        .output();
+    
+    match pkill_result {
+        Ok(output) => {
+            if !output.stdout.is_empty() {
+                eprintln!("pkill stdout: {}", String::from_utf8_lossy(&output.stdout));
+            }
+            if !output.stderr.is_empty() {
+                eprintln!("pkill stderr: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        Err(e) => eprintln!("pkill command failed: {}", e),
+    }
+    
+    // Remove keystore temporary files
+    let rm_result = std::process::Command::new("sh")
+        .args(["-c", "rm -f /tmp/beemesh_keystore_*"])
+        .output();
+    
+    match rm_result {
+        Ok(output) => {
+            if !output.stderr.is_empty() {
+                eprintln!("rm stderr: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        Err(e) => eprintln!("rm command failed: {}", e),
+    }
+    
+    eprintln!("Global cleanup completed");
 }

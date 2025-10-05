@@ -2,8 +2,12 @@ use std::sync::{Arc, Mutex};
 use tokio;
 use env_logger;
 
+mod test_utils;
+use test_utils::setup_cleanup_hook;
+
 #[tokio::test]
 async fn test_keystore_shared_across_threads() {
+    setup_cleanup_hook();
     let _ = env_logger::try_init();
     
     // Set the environment variables

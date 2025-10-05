@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 mod test_utils;
-use test_utils::{make_test_cli, start_nodes};
+use test_utils::{make_test_cli, start_nodes, setup_cleanup_hook};
 
 pub const TENANT: &str = "00000000-0000-0000-0000-000000000000";
 
@@ -14,7 +14,8 @@ pub const TENANT: &str = "00000000-0000-0000-0000-000000000000";
 
 #[tokio::test]
 async fn test_run_host_application() {
-    // Initialize logger once (tests may run multiple times in same process)
+    // Setup cleanup hook and initialize logger
+    setup_cleanup_hook();
     let _ = env_logger::try_init();
 
     // start three nodes using the reusable helper (first node runs REST+machine, others disabled APIs)
