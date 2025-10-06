@@ -129,8 +129,11 @@ async fn in_process_apply_decrypt_flow_ephemeral_keys() {
         while let Some(msg) = ctrl_rx.recv().await {
             match msg {
                 Libp2pControl::FindManifestHolders { manifest_id: _mid, reply_tx } => {
-                    // Reply with the local peer as a provider (so fetch attempts will be made)
-                    let _ = reply_tx.send(vec![local_peerid.clone()]);
+                    // Return a provider list that includes a remote (fake) peer id so the
+                    // code takes the remote-fetch path (which triggers the FetchKeyshare control message).
+                    // Also include the local peer id as a fallback.
+                    let fake_peer = libp2p::PeerId::random();
+                    let _ = reply_tx.send(vec![fake_peer.clone(), local_peerid.clone()]);
                 }
                 Libp2pControl::FetchKeyshare { peer_id: _peer, request_fb: _req, reply_tx } => {
                     // Build a KeyShareResponse containing the base64-encoded remote share and return it
@@ -193,7 +196,7 @@ async fn in_process_apply_decrypt_flow_ephemeral_keys() {
                         found = true;
                         break;
                     } else {
-                        eprintln!("decrypted manifest mismatch:\nexpected={}\nactual={}", e_str, a_str);
+                        eprintln!("decrypted manifest mismatch: expected {} got {}", e_str, a_str);
                     }
                 }
             }
