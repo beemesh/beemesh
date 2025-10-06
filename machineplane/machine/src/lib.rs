@@ -3,9 +3,9 @@ use std::io::Write;
 use clap::Parser;
 
 mod hostapi;
-mod libp2p_beemesh;
+pub mod libp2p_beemesh;
 mod pod_communication;
-mod restapi;
+pub mod restapi;
 
 /// beemesh Host Agent
 #[derive(Parser, Debug)]

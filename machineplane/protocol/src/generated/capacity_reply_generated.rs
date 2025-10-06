@@ -46,10 +46,11 @@ impl<'a> CapacityReply<'a> {
   pub const VT_OK: flatbuffers::VOffsetT = 6;
   pub const VT_NODE_ID: flatbuffers::VOffsetT = 8;
   pub const VT_REGION: flatbuffers::VOffsetT = 10;
-  pub const VT_CAPABILITIES: flatbuffers::VOffsetT = 12;
-  pub const VT_CPU_AVAILABLE_MILLI: flatbuffers::VOffsetT = 14;
-  pub const VT_MEMORY_AVAILABLE_BYTES: flatbuffers::VOffsetT = 16;
-  pub const VT_STORAGE_AVAILABLE_BYTES: flatbuffers::VOffsetT = 18;
+  pub const VT_KEM_PUBKEY: flatbuffers::VOffsetT = 12;
+  pub const VT_CAPABILITIES: flatbuffers::VOffsetT = 14;
+  pub const VT_CPU_AVAILABLE_MILLI: flatbuffers::VOffsetT = 16;
+  pub const VT_MEMORY_AVAILABLE_BYTES: flatbuffers::VOffsetT = 18;
+  pub const VT_STORAGE_AVAILABLE_BYTES: flatbuffers::VOffsetT = 20;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -65,6 +66,7 @@ impl<'a> CapacityReply<'a> {
     builder.add_memory_available_bytes(args.memory_available_bytes);
     builder.add_cpu_available_milli(args.cpu_available_milli);
     if let Some(x) = args.capabilities { builder.add_capabilities(x); }
+    if let Some(x) = args.kem_pubkey { builder.add_kem_pubkey(x); }
     if let Some(x) = args.region { builder.add_region(x); }
     if let Some(x) = args.node_id { builder.add_node_id(x); }
     if let Some(x) = args.request_id { builder.add_request_id(x); }
@@ -100,6 +102,13 @@ impl<'a> CapacityReply<'a> {
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(CapacityReply::VT_REGION, None)}
+  }
+  #[inline]
+  pub fn kem_pubkey(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(CapacityReply::VT_KEM_PUBKEY, None)}
   }
   #[inline]
   pub fn capabilities(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>> {
@@ -142,6 +151,7 @@ impl flatbuffers::Verifiable for CapacityReply<'_> {
      .visit_field::<bool>("ok", Self::VT_OK, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("node_id", Self::VT_NODE_ID, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("region", Self::VT_REGION, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("kem_pubkey", Self::VT_KEM_PUBKEY, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<&'_ str>>>>("capabilities", Self::VT_CAPABILITIES, false)?
      .visit_field::<u32>("cpu_available_milli", Self::VT_CPU_AVAILABLE_MILLI, false)?
      .visit_field::<u64>("memory_available_bytes", Self::VT_MEMORY_AVAILABLE_BYTES, false)?
@@ -155,6 +165,7 @@ pub struct CapacityReplyArgs<'a> {
     pub ok: bool,
     pub node_id: Option<flatbuffers::WIPOffset<&'a str>>,
     pub region: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub kem_pubkey: Option<flatbuffers::WIPOffset<&'a str>>,
     pub capabilities: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>>,
     pub cpu_available_milli: u32,
     pub memory_available_bytes: u64,
@@ -168,6 +179,7 @@ impl<'a> Default for CapacityReplyArgs<'a> {
       ok: false,
       node_id: None,
       region: None,
+      kem_pubkey: None,
       capabilities: None,
       cpu_available_milli: 0,
       memory_available_bytes: 0,
@@ -196,6 +208,10 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> CapacityReplyBuilder<'a, 'b, A>
   #[inline]
   pub fn add_region(&mut self, region: flatbuffers::WIPOffset<&'b  str>) {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(CapacityReply::VT_REGION, region);
+  }
+  #[inline]
+  pub fn add_kem_pubkey(&mut self, kem_pubkey: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(CapacityReply::VT_KEM_PUBKEY, kem_pubkey);
   }
   #[inline]
   pub fn add_capabilities(&mut self, capabilities: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<&'b  str>>>) {
@@ -235,6 +251,7 @@ impl core::fmt::Debug for CapacityReply<'_> {
       ds.field("ok", &self.ok());
       ds.field("node_id", &self.node_id());
       ds.field("region", &self.region());
+      ds.field("kem_pubkey", &self.kem_pubkey());
       ds.field("capabilities", &self.capabilities());
       ds.field("cpu_available_milli", &self.cpu_available_milli());
       ds.field("memory_available_bytes", &self.memory_available_bytes());

@@ -17,31 +17,25 @@ pub fn gossipsub_message(
         let orig_request_id = cap_req.request_id().unwrap_or("").to_string();
         log::info!("libp2p: received capreq id={} from peer={} payload_bytes={}", orig_request_id, peer_id, message.data.len());
         // Build a capacity reply and publish it (include request_id inside the reply)
-        let mut fbb = flatbuffers::FlatBufferBuilder::new();
-        let req_id_off = fbb.create_string(&orig_request_id);
-        let node_id_off = fbb.create_string(&peer_id.to_string());
-        let region_off = fbb.create_string("local");
-        // capabilities vector
-        let caps_vec = {
-            let mut tmp: Vec<flatbuffers::WIPOffset<&str>> = Vec::new();
-            tmp.push(fbb.create_string("default"));
-            fbb.create_vector(&tmp)
+        // Build capacity reply via helper and include our local KEM pubkey if available
+        let kem_b64 = match crypto::ensure_kem_keypair_on_disk() {
+            Ok((pubb, _)) => Some(base64::engine::general_purpose::STANDARD.encode(&pubb)),
+            Err(_) => None,
         };
-        let reply_args = protocol::machine::CapacityReplyArgs {
-            request_id: Some(req_id_off),
-            ok: true,
-            node_id: Some(node_id_off),
-            region: Some(region_off),
-            capabilities: Some(caps_vec),
-            cpu_available_milli: 1000u32,
-            memory_available_bytes: 1024u64 * 1024 * 512,
-            storage_available_bytes: 1024u64 * 1024 * 1024,
-        };
-        let reply_off = protocol::machine::CapacityReply::create(&mut fbb, &reply_args);
-        protocol::machine::finish_capacity_reply_buffer(&mut fbb, reply_off);
-        let finished = fbb.finished_data().to_vec();
-        // Wrap the reply into a signed envelope: { payload: base64(payload), sig: "ml-dsa-65:<b64>", pubkey: <b64> }
-    let envelope_bytes = if let Some((pk_bytes, sk_bytes)) = NODE_KEYPAIR.get().and_then(|o| o.as_ref()) {
+        let finished = protocol::machine::build_capacity_reply(
+            true,
+            1000u32,
+            1024u64 * 1024 * 512,
+            1024u64 * 1024 * 1024,
+            &orig_request_id,
+            &peer_id.to_string(),
+            "local",
+            kem_b64.as_deref(),
+            &["default"],
+        );
+
+        // Wrap the reply into a signed envelope and publish
+        let envelope_bytes = if let Some((pk_bytes, sk_bytes)) = NODE_KEYPAIR.get().and_then(|o| o.as_ref()) {
             match crypto::sign_envelope(sk_bytes, pk_bytes, &finished) {
                 Ok((sig_b64, pub_b64)) => {
                     let env = serde_json::json!({
@@ -115,6 +109,18 @@ pub fn gossipsub_message(
     if let Ok(cap_reply) = protocol::machine::root_as_capacity_reply(effective_data) {
         let request_part = cap_reply.request_id().unwrap_or("").to_string();
     log::info!("libp2p: received capreply for id={} from peer={}", request_part, peer_id);
+        // If the reply contains a kem_pubkey, decode and insert into behaviour cache
+        if let Some(kem_b64) = cap_reply.kem_pubkey() {
+            match base64::engine::general_purpose::STANDARD.decode(kem_b64) {
+                Ok(kem_bytes) => {
+                    let mut map = crate::libp2p_beemesh::PEER_KEM_PUBKEYS.write().unwrap();
+                    map.insert(peer_id.clone(), kem_bytes);
+                }
+                Err(e) => {
+                    log::warn!("failed to decode kem_pubkey from {}: {:?}", peer_id, e);
+                }
+            }
+        }
         if let Some(senders) = pending_queries.get_mut(&request_part) {
             for tx in senders.iter() {
                 let _ = tx.send(peer_id.to_string());

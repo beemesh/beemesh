@@ -209,11 +209,12 @@ pub mod machine {
         fbb.finished_data().to_vec()
     }
 
-    pub fn build_capacity_reply(ok: bool, cpu_available_milli: u32, memory_available_bytes: u64, storage_available_bytes: u64, request_id: &str, node_id: &str, region: &str, capabilities: &[&str]) -> Vec<u8> {
+    pub fn build_capacity_reply(ok: bool, cpu_available_milli: u32, memory_available_bytes: u64, storage_available_bytes: u64, request_id: &str, node_id: &str, region: &str, kem_pubkey: Option<&str>, capabilities: &[&str]) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(256);
         let req_off = fbb.create_string(request_id);
         let node_off = fbb.create_string(node_id);
         let region_off = fbb.create_string(region);
+        let kem_off = kem_pubkey.map(|s| fbb.create_string(s));
         let mut caps_vec: Vec<flatbuffers::WIPOffset<&str>> = Vec::with_capacity(capabilities.len());
         for &c in capabilities.iter() { caps_vec.push(fbb.create_string(c)); }
         let caps_off = fbb.create_vector(&caps_vec);
@@ -225,6 +226,7 @@ pub mod machine {
         args.request_id = Some(req_off);
         args.node_id = Some(node_off);
         args.region = Some(region_off);
+        if let Some(k) = kem_off { args.kem_pubkey = Some(k); }
         args.capabilities = Some(caps_off);
         let off = crate::generated::generated_capacity_reply::beemesh::machine::CapacityReply::create(&mut fbb, &args);
         fbb.finish(off, None);

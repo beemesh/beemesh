@@ -1,4 +1,5 @@
 use log::{info, warn};
+use base64::Engine;
 use libp2p::request_response;
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
@@ -39,29 +40,22 @@ pub fn scheduler_message(
                     // Dummy capacity check - always true for now
                     let has_capacity = true;
 
-                    // build CapacityReply
-                    let mut fbb = flatbuffers::FlatBufferBuilder::new();
-                    let req_id_off = fbb.create_string(orig_request_id);
-                    let node_id_off = fbb.create_string(&local_peer.to_string());
-                    let region_off = fbb.create_string("local");
-                    let caps_vec = {
-                        let mut tmp: Vec<flatbuffers::WIPOffset<&str>> = Vec::new();
-                        tmp.push(fbb.create_string("default"));
-                        fbb.create_vector(&tmp)
+                    // build CapacityReply using protocol helper and include local KEM pubkey if available
+                    let kem_b64 = match crypto::ensure_kem_keypair_on_disk() {
+                        Ok((pubb, _priv)) => Some(base64::engine::general_purpose::STANDARD.encode(&pubb)),
+                        Err(_) => None,
                     };
-                    let reply_args = protocol::machine::CapacityReplyArgs {
-                        request_id: Some(req_id_off),
-                        ok: has_capacity,
-                        node_id: Some(node_id_off),
-                        region: Some(region_off),
-                        capabilities: Some(caps_vec),
-                        cpu_available_milli: 1000u32,
-                        memory_available_bytes: 1024u64 * 1024 * 512,
-                        storage_available_bytes: 1024u64 * 1024 * 1024,
-                    };
-                    let reply_off = protocol::machine::CapacityReply::create(&mut fbb, &reply_args);
-                    protocol::machine::finish_capacity_reply_buffer(&mut fbb, reply_off);
-                    let finished = fbb.finished_data().to_vec();
+                    let finished = protocol::machine::build_capacity_reply(
+                        has_capacity,
+                        1000u32,
+                        1024u64 * 1024 * 512,
+                        1024u64 * 1024 * 1024,
+                        orig_request_id,
+                        &local_peer.to_string(),
+                        "local",
+                        kem_b64.as_deref(),
+                        &["default"],
+                    );
 
                     // Send response via request-response
                     let _ = swarm.behaviour_mut().scheduler_rr.send_response(channel, finished);
@@ -78,6 +72,18 @@ pub fn scheduler_message(
                 let request_part = cap_reply.request_id().unwrap_or("").to_string();
                 info!("libp2p: scheduler reply ok={} from {} for request_id={}",
                     cap_reply.ok(), peer, request_part);
+                // If the reply contains a kem_pubkey, decode it and store in global cache
+                if let Some(kem_b64) = cap_reply.kem_pubkey() {
+                    match base64::engine::general_purpose::STANDARD.decode(kem_b64) {
+                        Ok(kem_bytes) => {
+                            let mut map = crate::libp2p_beemesh::PEER_KEM_PUBKEYS.write().unwrap();
+                            map.insert(peer.clone(), kem_bytes);
+                        }
+                        Err(e) => {
+                            warn!("failed to decode kem_pubkey from {}: {:?}", peer, e);
+                        }
+                    }
+                }
                 if let Some(senders) = pending_queries.get_mut(&request_part) {
                     for tx in senders.iter() {
                         let _ = tx.send(peer.to_string());

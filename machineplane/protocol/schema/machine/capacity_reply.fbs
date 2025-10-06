@@ -6,6 +6,7 @@ table CapacityReply {
   ok:bool;
   node_id:string;
   region:string;
+  kem_pubkey:string; // optional base64-encoded KEM public key for node
   capabilities:[string];
   cpu_available_milli:uint32;
   memory_available_bytes:ulong;

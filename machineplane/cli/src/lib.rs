@@ -26,7 +26,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let (pk_bytes, sk_bytes) = ensure_keypair_on_disk()?;
 
     // encrypt manifest
-    let (ciphertext, nonce_bytes, sym, nonce) = encrypt_manifest(&manifest_json)?;
+    let (ciphertext, nonce_bytes, sym, _nonce) = encrypt_manifest(&manifest_json)?;
 
     // split symmetric key into shares (n=3, k=2)
     let n = 3usize;
@@ -87,13 +87,30 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     // hardcoded tenant for now
     let tenant = "00000000-0000-0000-0000-000000000000";
 
+    // Calculate manifest_id deterministically using the same method as the machine
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let manifest_envelope_signed_str = serde_json::to_string(&manifest_envelope_signed)?;
+    let manifest_id = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        tenant.hash(&mut hasher);
+        operation_id.hash(&mut hasher);
+        manifest_envelope_signed_str.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    };
+
     // API base URL can be overridden with BEEMESH_API env var
     let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
     let client = reqwest::Client::new();
 
     // 1) Create task (store manifest in task store)
     let create_url = format!("{}/tenant/{}/tasks", base.trim_end_matches('/'), tenant);
-    let create_body = serde_json::json!({ "manifest": manifest_envelope_signed });
+    let create_body = serde_json::json!({ 
+        "manifest": manifest_envelope_signed, 
+        "manifest_id": manifest_id.clone(),
+        "operation_id": operation_id.clone()
+    });
     let resp = client
         .post(&create_url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -106,11 +123,11 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         anyhow::bail!("create_task failed: {} {}", status, body_text);
     }
     let body_json: serde_json::Value = serde_json::from_str(&body_text)?;
-    let task_id = body_json.get("task_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("no task_id in response"))?.to_string();
-    info!("Created task {}", task_id);
+    let returned_manifest_id = body_json.get("manifest_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("no manifest_id in response"))?.to_string();
+    info!("Created task with manifest_id {}", returned_manifest_id);
 
     // 2) Query candidates for the required replicas
-    let candidates_url = format!("{}/tenant/{}/tasks/{}/candidates", base.trim_end_matches('/'), tenant, task_id);
+    let candidates_url = format!("{}/tenant/{}/tasks/{}/candidates", base.trim_end_matches('/'), tenant, manifest_id);
     let resp = client.get(&candidates_url).send().await?;
     let status = resp.status();
     let body_text = resp.text().await?;
@@ -138,7 +155,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         }
     }
 
-    let dist_url = format!("{}/tenant/{}/tasks/{}/distribute_shares", base.trim_end_matches('/'), tenant, task_id);
+    let dist_url = format!("{}/tenant/{}/tasks/{}/distribute_shares", base.trim_end_matches('/'), tenant, manifest_id);
     let dist_body = serde_json::json!({ "shares_envelope": shares_envelope_signed, "targets": targets });
     let resp = client.post(&dist_url).header(reqwest::header::CONTENT_TYPE, "application/json").body(dist_body.to_string()).send().await?;
     let status = resp.status();
@@ -149,11 +166,15 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let dist_resp: serde_json::Value = serde_json::from_str(&body_text)?;
     info!("Distribute shares response: {:?}", dist_resp);
 
-    // 4) Assign task to replicas
+    // 4) Distribute capability tokens to authorize share fetching
+    let capability_resp = distribute_capability_tokens(&client, &base, tenant, &manifest_id, &peers, &pk_bytes, &sk_bytes).await?;
+    info!("Distribute capabilities response: {:?}", capability_resp);
+
+    // 5) Assign task to replicas
     // Determine replicas desired from manifest
     let replicas = manifest_json.get("replicas").and_then(|v| v.as_u64()).or_else(|| manifest_json.get("spec").and_then(|s| s.get("replicas").and_then(|r| r.as_u64()))).unwrap_or(1) as usize;
     let chosen_peers: Vec<String> = peers.into_iter().take(replicas).collect();
-    let assign_url = format!("{}/tenant/{}/tasks/{}/assign", base.trim_end_matches('/'), tenant, task_id);
+    let assign_url = format!("{}/tenant/{}/tasks/{}/assign", base.trim_end_matches('/'), tenant, manifest_id);
     let assign_body = serde_json::json!({ "chosen_peers": chosen_peers });
     let resp = client.post(&assign_url).header(reqwest::header::CONTENT_TYPE, "application/json").body(assign_body.to_string()).send().await?;
     let status = resp.status();
@@ -166,5 +187,82 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
     info!("Apply succeeded");
 
-    Ok(task_id)
+    Ok(manifest_id)
+}
+
+/// Create and distribute capability tokens to peers to enable keyshare fetches
+async fn distribute_capability_tokens(
+    client: &reqwest::Client,
+    base: &str,
+    tenant: &str,
+    task_id: &str,
+    peers: &[String],
+    pk_bytes: &[u8],
+    sk_bytes: &[u8],
+) -> anyhow::Result<serde_json::Value> {
+    // Get manifest_id from the task
+    let mid_resp = client.get(&format!("{}/tenant/{}/tasks/{}/manifest_id", base.trim_end_matches('/'), tenant, task_id)).send().await?;
+    let mid_status = mid_resp.status();
+    let mid_body_text = mid_resp.text().await?;
+    if !mid_status.is_success() {
+        anyhow::bail!("get manifest_id failed: {} {}", mid_status, mid_body_text);
+    }
+    let mid_json: serde_json::Value = serde_json::from_str(&mid_body_text)?;
+    let manifest_id = mid_json.get("manifest_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("no manifest_id in response"))?.to_string();
+
+    // Get current timestamp
+    let ts_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    // Create capability tokens for each peer
+    let mut targets: Vec<serde_json::Value> = Vec::new();
+    
+    for peer_id in peers {
+        // Create capability token payload
+        let token_obj = serde_json::json!({
+            "task_id": manifest_id,
+            "issuer": "cli", // CLI acts as the issuer
+            "required_quorum": 1,
+            "caveats": { "authorized_peer": peer_id },
+            "ts": ts_millis,
+        });
+        let token_bytes = serde_json::to_vec(&token_obj)?;
+        
+        // Create capability envelope
+        let cap_nonce_bytes: [u8; 16] = rand::random();
+        let mut env_map = serde_json::Map::new();
+        env_map.insert("payload".to_string(), serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(&token_bytes)));
+        env_map.insert("manifest_id".to_string(), serde_json::Value::String(manifest_id.clone()));
+        env_map.insert("type".to_string(), serde_json::Value::String("capability".to_string()));
+        env_map.insert("nonce".to_string(), serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(&cap_nonce_bytes)));
+        let env_value = serde_json::Value::Object(env_map);
+        let env_bytes = serde_json::to_vec(&env_value)?;
+
+        // Sign capability envelope
+        let (cap_sig_b64, cap_pub_b64) = sign_envelope(sk_bytes, pk_bytes, &env_bytes)?;
+        let mut signed_env_obj = env_value.as_object().cloned().ok_or_else(|| anyhow::anyhow!("failed to get env object"))?;
+        signed_env_obj.insert("sig".to_string(), serde_json::Value::String(format!("ml-dsa-65:{}", cap_sig_b64)));
+        signed_env_obj.insert("pubkey".to_string(), serde_json::Value::String(cap_pub_b64));
+        
+        // Create target for this peer
+        let target = serde_json::json!({
+            "peer_id": peer_id,
+            "payload": serde_json::Value::Object(signed_env_obj)
+        });
+        targets.push(target);
+    }
+
+    // Send capability tokens via REST API
+    let cap_url = format!("{}/tenant/{}/tasks/{}/distribute_capabilities", base.trim_end_matches('/'), tenant, task_id);
+    let cap_body = serde_json::json!({ "targets": targets });
+    let resp = client.post(&cap_url).header(reqwest::header::CONTENT_TYPE, "application/json").body(cap_body.to_string()).send().await?;
+    let status = resp.status();
+    let body_text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("distribute_capabilities failed: {} {}", status, body_text);
+    }
+    
+    Ok(serde_json::from_str(&body_text)?)
 }

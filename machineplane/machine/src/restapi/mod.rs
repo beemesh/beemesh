@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use once_cell::sync::Lazy;
 use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
-use log::{info, debug, warn};
+use log::{info, warn, debug};
 use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -94,6 +94,7 @@ pub fn build_router(
         .route("/tenant/{tenant}/tasks/{task_id}/manifest_id", get(get_task_manifest_id))
         .route("/tenant/{tenant}/tasks", post(create_task))
         .route("/tenant/{tenant}/tasks/{task_id}/distribute_shares", post(distribute_shares))
+        .route("/tenant/{tenant}/tasks/{task_id}/distribute_capabilities", post(distribute_capabilities))
         .route("/tenant/{tenant}/tasks/{task_id}/assign", post(assign_task))
     .route("/tenant/{tenant}/tasks/{task_id}", get(get_task_status))
     .route("/tenant/{tenant}/tasks/{task_id}/candidates", get(get_candidates))
@@ -386,17 +387,47 @@ pub async fn apply_manifest(
     }))
 }
 
-use protocol::json::{TaskCreateRequest as JsonTaskCreateRequest, TaskCreateResponse as JsonTaskCreateResponse, DistributeSharesRequest as JsonDistributeSharesRequest, AssignRequest as JsonAssignRequest};
+use protocol::json::{TaskCreateRequest as JsonTaskCreateRequest, TaskCreateResponse as JsonTaskCreateResponse, DistributeSharesRequest as JsonDistributeSharesRequest, DistributeCapabilitiesRequest as JsonDistributeCapabilitiesRequest, AssignRequest as JsonAssignRequest};
 
 pub async fn create_task(
-    Path(_tenant): Path<String>,
+    Path(tenant): Path<String>,
     State(state): State<RestState>,
     Json(req): Json<JsonTaskCreateRequest>,
 ) -> Json<serde_json::Value> {
     // validate manifest/envelope similar to apply_manifest
     debug!("create_task: validating manifest");
-    // For now just store the manifest and return a task_id; selection happens on assign
-    let task_id = uuid::Uuid::new_v4().to_string();
+    
+    // Calculate manifest_id deterministically and get operation_id
+    let (manifest_id, operation_id) = if let Some(id) = req.manifest_id {
+        // If manifest_id is provided, use it directly (operation_id might be empty)
+        (id, req.operation_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+    } else if let Some(operation_id) = req.operation_id {
+        // Calculate manifest_id using the same method as in apply processing
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let manifest_json_str = serde_json::to_string(&req.manifest).unwrap_or_default();
+        let mut hasher = DefaultHasher::new();
+        tenant.hash(&mut hasher);
+        operation_id.hash(&mut hasher);
+        manifest_json_str.hash(&mut hasher);
+        let manifest_id = format!("{:x}", hasher.finish());
+        (manifest_id, operation_id)
+    } else {
+        // Fallback: use a UUID for task_id but also generate manifest_id from content
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let manifest_json_str = serde_json::to_string(&req.manifest).unwrap_or_default();
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let mut hasher = DefaultHasher::new();
+        tenant.hash(&mut hasher);
+        operation_id.hash(&mut hasher);
+        manifest_json_str.hash(&mut hasher);
+        let manifest_id = format!("{:x}", hasher.finish());
+        (manifest_id, operation_id)
+    };
+    
+    // Use manifest_id as the task_id (since manifest_id is the central identifier)
+    let task_id = manifest_id.clone();
     
     // Store manifest in DHT and calculate CID
     let manifest_cid = {
@@ -446,18 +477,21 @@ pub async fn create_task(
         created_at: std::time::SystemTime::now(),
         shares_distributed: HashMap::new(),
         assigned_peers: None,
-        manifest_cid,
-        last_operation_id: None,
+        manifest_cid: Some(manifest_id.clone()),
+        last_operation_id: Some(operation_id),
     };
     {
         let mut store = state.task_store.write().await;
         store.insert(task_id.clone(), rec);
     }
-    Json(serde_json::json!(JsonTaskCreateResponse {
+    
+    let response = JsonTaskCreateResponse {
         ok: true,
         task_id: task_id.clone(),
+        manifest_id: manifest_id.clone(),
         selection_window_ms: FREE_CAPACITY_TIMEOUT_SECS as u64 * 1000,
-    }))
+    };
+    Json(serde_json::to_value(response).unwrap_or_else(|_| serde_json::json!({"ok": false, "error": "serialization failed"})))
 }
 
 // Debug: list keystore share CIDs for this node
@@ -698,6 +732,74 @@ pub async fn distribute_shares(
                         if let Some(r) = store.get_mut(&task_id) {
                             r.shares_distributed.insert(t.peer_id.clone(), false);
                         }
+                    }
+                }
+            }
+            Err(e) => {
+                results.insert(t.peer_id.clone(), serde_json::Value::String(format!("invalid peer id: {}", e)));
+            }
+        }
+    }
+    Json(serde_json::json!({"ok": true, "results": serde_json::Value::Object(results)}))
+}
+
+pub async fn distribute_capabilities(
+    Path((_tenant, task_id)): Path<(String, String)>,
+    State(state): State<RestState>,
+    Json(body): Json<JsonDistributeCapabilitiesRequest>,
+) -> Json<serde_json::Value> {
+    // lookup task
+    let maybe = { state.task_store.read().await.get(&task_id).cloned() };
+    let task_record = match maybe {
+        Some(record) => record,
+        None => return Json(serde_json::json!({"ok": false, "error": "task not found"})),
+    };
+
+    let mut results = serde_json::Map::new();
+    for t in &body.targets {
+        match t.peer_id.parse::<libp2p::PeerId>() {
+            Ok(peer_id) => {
+                // Verify the capability envelope signature (optional - log warnings for invalid signatures)
+                if let Err(e) = crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&t.payload) {
+                    log::warn!("distribute_capabilities: capability verification failed for peer {}: {:?} - continuing", peer_id, e);
+                }
+
+                // Attach manifest_id and type to the payload 
+                let mut payload_with_meta = t.payload.clone();
+                if let Some(manifest_cid) = &task_record.manifest_cid {
+                    payload_with_meta["manifest_id"] = serde_json::Value::String(manifest_cid.clone());
+                } else if let Some(opid) = &task_record.last_operation_id {
+                    // fall back to computing manifest id using tenant + operation_id + manifest_json
+                    let tenant = _tenant.clone();
+                    let manifest_json = task_record.manifest.to_string();
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    tenant.hash(&mut hasher);
+                    opid.hash(&mut hasher);
+                    manifest_json.hash(&mut hasher);
+                    let manifest_id = format!("{:x}", hasher.finish());
+                    payload_with_meta["manifest_id"] = serde_json::Value::String(manifest_id);
+                }
+                payload_with_meta["type"] = serde_json::Value::String("capability".to_string());
+
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
+                let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
+                    peer_id,
+                    share_payload: payload_with_meta,
+                    reply_tx: tx,
+                });
+                
+                // wait for an ack from libp2p control layer (bounded)
+                match tokio::time::timeout(Duration::from_secs(3), rx.recv()).await {
+                    Ok(Some(Ok(()))) => {
+                        results.insert(t.peer_id.clone(), serde_json::Value::String("delivered".to_string()));
+                    }
+                    Ok(Some(Err(e))) => {
+                        results.insert(t.peer_id.clone(), serde_json::Value::String(format!("error: {}", e)));
+                    }
+                    _ => {
+                        results.insert(t.peer_id.clone(), serde_json::Value::String("timeout".to_string()));
                     }
                 }
             }

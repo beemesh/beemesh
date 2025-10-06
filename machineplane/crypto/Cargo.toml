@@ -21,6 +21,7 @@ kyber-rust = "0.2"
 saorsa-pqc = "0.3"
 log = "0.4"
 zeroize = "1.5"
+once_cell = "1.20"
 
 # SQLite keystore support
 rusqlite = "0.37.0"

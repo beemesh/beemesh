@@ -239,8 +239,6 @@ async fn test_apply_functionality() {
                                     break;
                                 } else {
                                     println!("Decrypted manifest does not match expected.");
-                                    println!("GOT (pretty-printed):\n{}", serde_json::to_string_pretty(entry).unwrap_or_else(|_| format!("{:?}", entry)));
-                                    println!("EXPECTED (pretty-printed):\n{}", serde_json::to_string_pretty(&expected_manifest_json).unwrap_or_else(|_| format!("{:?}", expected_manifest_json)));
                                     println!("GOT (debug): {:?}", entry);
                                     println!("EXPECTED (debug): {:?}", expected_manifest_json);
                                     // mismatch -> log and break early

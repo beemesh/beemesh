@@ -106,12 +106,17 @@ pub struct TaskCreateRequest {
     pub manifest: serde_json::Value,
     #[serde(default)]
     pub replicas: Option<u32>,
+    #[serde(default)]
+    pub manifest_id: Option<String>,
+    #[serde(default)]
+    pub operation_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TaskCreateResponse {
     pub ok: bool,
     pub task_id: String,
+    pub manifest_id: String,
     pub selection_window_ms: u64,
 }
 
@@ -155,6 +160,19 @@ pub struct TaskStatusResponse {
 pub struct ShareTarget {
     pub peer_id: String,
     /// Arbitrary JSON payload (the CLI should have encrypted the share for the recipient)
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DistributeCapabilitiesRequest {
+    // per-target capability payloads (peer id + capability envelope)
+    pub targets: Vec<CapabilityTarget>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CapabilityTarget {
+    pub peer_id: String,
+    /// Signed capability envelope (JSON object with sig, pubkey, etc.)
     pub payload: serde_json::Value,
 }
 

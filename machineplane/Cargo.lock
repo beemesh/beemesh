@@ -602,6 +602,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -724,6 +725,7 @@ dependencies = [
  "hex",
  "kyber-rust",
  "log",
+ "once_cell",
  "rand 0.8.5",
  "reqwest",
  "rusqlite",

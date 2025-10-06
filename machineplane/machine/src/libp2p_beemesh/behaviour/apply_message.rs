@@ -17,30 +17,29 @@ fn search_local_key_shares(manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, 
     
     let mut key_shares = Vec::new();
     
-    // Instead of searching all CIDs, directly look for the manifest_id in keystore metadata
-    match keystore.find_cid_for_manifest(manifest_id) {
-        Ok(Some(cid)) => {
-            if let Ok(Some(blob)) = keystore.get(&cid) {
-                match crypto::ensure_kem_keypair_on_disk() {
-                    Ok((_pubb, privb)) => {
-                        match crypto::decrypt_share_from_blob(&blob, &privb) {
-                            Ok(decrypted_share) => {
-                                log::info!("libp2p: decrypt found matching local key share for manifest_id={} (cid={})", manifest_id, cid);
-                                key_shares.push((cid.clone(), decrypted_share));
-                            }
-                            Err(e) => {
-                                log::warn!("libp2p: decrypt failed to decrypt share blob for cid {}: {}", cid, e);
+    // Instead of searching all CIDs, directly look for all CIDs matching the manifest_id in keystore metadata
+    match keystore.find_cids_for_manifest(manifest_id) {
+        Ok(cids) => {
+            for cid in cids.iter() {
+                if let Ok(Some(blob)) = keystore.get(cid) {
+                    match crypto::ensure_kem_keypair_on_disk() {
+                        Ok((_pubb, privb)) => {
+                            match crypto::decrypt_share_from_blob(&blob, &privb) {
+                                Ok(decrypted_share) => {
+                                    log::info!("libp2p: decrypt found matching local key share for manifest_id={} (cid={})", manifest_id, cid);
+                                    key_shares.push((cid.clone(), decrypted_share));
+                                }
+                                Err(e) => {
+                                    log::warn!("libp2p: decrypt failed to decrypt share blob for cid {}: {}", cid, e);
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        log::warn!("libp2p: decrypt could not get KEM keypair: {}", e);
+                        Err(e) => {
+                            log::warn!("libp2p: decrypt could not get KEM keypair: {}", e);
+                        }
                     }
                 }
             }
-        }
-        Ok(None) => {
-            log::info!("libp2p: decrypt no local key share found for manifest_id={}", manifest_id);
         }
         Err(e) => {
             log::warn!("libp2p: decrypt error searching keystore for manifest_id {}: {}", manifest_id, e);
@@ -103,7 +102,7 @@ async fn decrypt_encrypted_manifest_local_only(manifest_json_str: &str) -> Resul
 }
 
 /// Decrypt an encrypted manifest using a specific manifest ID and nonce/payload
-async fn decrypt_encrypted_manifest_with_id(manifest_id: &str, nonce_str: &str, payload_str: &str) -> Result<String, anyhow::Error> {
+async fn decrypt_encrypted_manifest_with_id(manifest_id: &str, nonce_str: &str, payload_str: &str, local_peer_id: &libp2p::PeerId) -> Result<String, anyhow::Error> {
     log::info!("libp2p: decrypt_with_id attempting decryption for manifest_id={}", manifest_id);
     
     // Step 1: Search for key shares in local keystore
@@ -119,13 +118,18 @@ async fn decrypt_encrypted_manifest_with_id(manifest_id: &str, nonce_str: &str, 
         let holders = find_manifest_holders(manifest_id).await?;
         log::info!("libp2p: decrypt_with_id found {} potential holders via DHT: {:?}", holders.len(), holders);
         
-        // If DHT provider discovery failed, fall back to querying all connected peers
+        // Always get all connected peers and combine with DHT results to maximize our chances of finding keyshares
+        let connected_peers = get_connected_peers().await;
+        log::info!("libp2p: decrypt_with_id found {} connected peers: {:?}", connected_peers.len(), connected_peers);
+        
+        // Combine DHT holders and connected peers, removing duplicates
         let mut peers_to_query = holders;
-        if peers_to_query.is_empty() {
-            log::info!("libp2p: decrypt_with_id DHT provider discovery failed, falling back to querying all connected peers");
-            peers_to_query = get_connected_peers().await;
-            log::info!("libp2p: decrypt_with_id will query {} connected peers: {:?}", peers_to_query.len(), peers_to_query);
+        for peer in connected_peers {
+            if !peers_to_query.contains(&peer) {
+                peers_to_query.push(peer);
+            }
         }
+        log::info!("libp2p: decrypt_with_id will query {} total peers: {:?}", peers_to_query.len(), peers_to_query);
         
         // Fetch shares from remote peers until we have enough
         let mut fetched_shares = 0;
@@ -135,11 +139,98 @@ async fn decrypt_encrypted_manifest_with_id(manifest_id: &str, nonce_str: &str, 
             }
             
             // Prepare the keyshare request
-            let mut builder = flatbuffers::FlatBufferBuilder::new();
             let keyshare_request_fb = build_keyshare_request(manifest_id, "");
             
-            // Fetch share from this peer
-            match fetch_keyshare_from_peer(&peer_id, keyshare_request_fb).await {
+            // Attempt to attach a locally-held capability token (if present) so
+            // the remote peer can authorize this fetch. The capability token is
+            // stored in the keystore under metadata `capability:<manifest_id>` by
+            // the originator when it distributed capabilities during apply.
+            let mut request_fb_to_send = keyshare_request_fb.clone();
+            if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
+                let cap_meta = format!("capability:{}", manifest_id);
+                log::info!("libp2p: attempting keystore capability lookup for meta='{}'", cap_meta);
+                match ks.find_cid_for_manifest(&cap_meta) {
+                    Ok(Some(cap_cid)) => {
+                        log::info!("libp2p: keystore lookup succeeded for meta='{}' -> cid={}", cap_meta, cap_cid);
+
+                        if let Ok(Some(cap_blob)) = ks.get(&cap_cid) {
+                            // Decrypt the stored capability blob using our KEM privkey
+                            if let Ok((_pubb, privb)) = crypto::ensure_kem_keypair_on_disk() {
+                                if let Ok(cap_plain) = crypto::decrypt_share_from_blob(&cap_blob, &privb) {
+                                    // cap_plain contains the signed JSON envelope bytes
+                                    log::info!("libp2p: decrypt local capability plain_len={} prefix={:02x}{:02x}{:02x}", cap_plain.len(),
+                                        if cap_plain.len() > 0 { cap_plain[0] } else { 0u8 },
+                                        if cap_plain.len() > 1 { cap_plain[1] } else { 0u8 },
+                                        if cap_plain.len() > 2 { cap_plain[2] } else { 0u8 }
+                                    );
+                                    let cap_b64 = base64::engine::general_purpose::STANDARD.encode(&cap_plain);
+                                    // Log diagnostics about attached capability so remote holders can
+                                    // be inspected when they reject/parsing fails.
+                                    log::info!("libp2p: attaching local capability for manifest_id={} cap_len={} first_byte=0x{:02x}",
+                                        manifest_id,
+                                        cap_plain.len(),
+                                        if cap_plain.is_empty() { 0u8 } else { cap_plain[0] });
+                                    request_fb_to_send = build_keyshare_request(manifest_id, &cap_b64);
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        log::info!("libp2p: keystore lookup found no cid for meta='{}'", cap_meta);
+                    }
+                    Err(e) => {
+                        log::warn!("libp2p: keystore lookup error for meta='{}': {:?}", cap_meta, e);
+                    }
+                }
+            }
+
+            // Check if this is a self-request and handle it locally to avoid libp2p request-response issues
+            if peer_id == *local_peer_id {
+                log::info!("libp2p: handling self-fetch locally for manifest_id={}", manifest_id);
+                // Handle self-fetch locally by directly querying our keystore
+                if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
+                    match ks.find_cids_for_manifest(manifest_id) {
+                        Ok(cids) => {
+                            for cid in cids.iter() {
+                                // Skip CIDs we already have from local search to avoid duplicates
+                                if key_shares.iter().any(|(existing_cid, _)| existing_cid == cid) {
+                                    log::info!("libp2p: self-fetch skipping duplicate CID {} for manifest_id={}", cid, manifest_id);
+                                    continue;
+                                }
+                                
+                                if let Ok(Some(blob)) = ks.get(cid) {
+                                    if let Ok((_pubb, privb)) = crypto::ensure_kem_keypair_on_disk() {
+                                        if let Ok(plain) = crypto::decrypt_share_from_blob(&blob, &privb) {
+                                            log::info!("libp2p: self-fetch found new keyshare for manifest_id={} cid={}", manifest_id, cid);
+                                            let self_share_key = format!("self_{}", cid);
+                                            key_shares.push((self_share_key, plain));
+                                            fetched_shares += 1;
+                                            
+                                            // Break if we have enough shares
+                                            if key_shares.len() >= 2 {
+                                                break;
+                                            }
+                                        } else {
+                                            log::warn!("libp2p: self-fetch failed to decrypt keyshare for manifest_id={} cid={}", manifest_id, cid);
+                                        }
+                                    } else {
+                                        log::warn!("libp2p: self-fetch could not load KEM keypair for decryption");
+                                    }
+                                } else {
+                                    log::warn!("libp2p: self-fetch could not get blob for manifest_id={} cid={}", manifest_id, cid);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("libp2p: self-fetch keystore error for manifest_id={}: {:?}", manifest_id, e);
+                        }
+                    }
+                } else {
+                    log::warn!("libp2p: self-fetch could not open keystore");
+                }
+            } else {
+                // Fetch share from remote peer
+                match fetch_keyshare_from_peer(&peer_id, request_fb_to_send).await {
                 Ok(keyshare_response_bytes) => {
                     // Parse the FlatBuffer response
                     if let Ok(keyshare_response) = protocol::machine::root_as_key_share_response(&keyshare_response_bytes) {
@@ -160,6 +251,7 @@ async fn decrypt_encrypted_manifest_with_id(manifest_id: &str, nonce_str: &str, 
                 }
                 Err(e) => {
                     log::warn!("libp2p: decrypt_with_id failed to fetch from peer={}: {}", peer_id, e);
+                }
                 }
             }
         }
@@ -401,6 +493,7 @@ pub fn process_self_apply_request(
             let tenant_s = apply_req.tenant().map(|s| s.to_string());
             let operation_id_s = apply_req.operation_id().map(|s| s.to_string());
             let manifest_json_s = apply_req.manifest_json().map(|s| s.to_string());
+            let local_peer_id_copy = local_peer; // Capture for async block
 
             tokio::spawn(async move {
                 if let (Some(tenant), Some(operation_id), Some(manifest_json)) = (
@@ -433,7 +526,7 @@ pub fn process_self_apply_request(
                             
                             // Extract nonce and payload
                             if let (Some(nonce_str), Some(payload_str)) = (nonce_val.as_str(), payload_val.as_str()) {
-                                match decrypt_encrypted_manifest_with_id(&manifest_id, nonce_str, payload_str).await {
+                                match decrypt_encrypted_manifest_with_id(&manifest_id, nonce_str, payload_str, &local_peer_id_copy).await {
                                     Ok(decrypted_yaml) => {
                                         log::info!("libp2p: self-apply successfully decrypted manifest");
                                         // Parse the decrypted YAML content

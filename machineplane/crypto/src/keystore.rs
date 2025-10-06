@@ -102,13 +102,30 @@ impl Keystore {
     /// Find CID for a share with the given manifest_id in its metadata
     pub fn find_cid_for_manifest(&self, manifest_id: &str) -> Result<Option<String>> {
         let mut stmt = self.conn.prepare("SELECT cid FROM shares WHERE meta = ?1")?;
+        log::info!("Keystore::find_cid_for_manifest looking up meta='{}'", manifest_id);
         let mut rows = stmt.query([manifest_id])?;
         if let Some(row) = rows.next()? {
             let cid: String = row.get(0)?;
+            log::info!("Keystore::find_cid_for_manifest found cid='{}' for meta='{}'", cid, manifest_id);
             Ok(Some(cid))
         } else {
+            log::info!("Keystore::find_cid_for_manifest no cid found for meta='{}'", manifest_id);
             Ok(None)
         }
+    }
+
+    /// Find all CIDs for shares with the given manifest_id in their metadata
+    pub fn find_cids_for_manifest(&self, manifest_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT cid FROM shares WHERE meta = ?1")?;
+        log::info!("Keystore::find_cids_for_manifest looking up meta='{}'", manifest_id);
+        let mut rows = stmt.query([manifest_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let cid: String = row.get(0)?;
+            out.push(cid);
+        }
+        log::info!("Keystore::find_cids_for_manifest found {} cids for meta='{}'", out.len(), manifest_id);
+        Ok(out)
     }
 }
 

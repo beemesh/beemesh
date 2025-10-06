@@ -1,5 +1,6 @@
 use std::convert::AsRef;
 use std::sync::{Once, Mutex};
+use once_cell::sync::OnceCell;
 use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
 use base64::{engine::general_purpose, Engine as _};
 use rand::RngCore;
@@ -85,6 +86,24 @@ pub fn ensure_keypair_on_disk() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
 
 /// Ensure a KEM keypair exists on disk. Returns (pub_bytes, priv_bytes).
 pub fn ensure_kem_keypair_on_disk() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+	// Support ephemeral KEM mode for tests to avoid writing to $HOME.
+	// If BEEMESH_KEM_EPHEMERAL is set, generate a transient KEM keypair once and reuse it
+	// for the life of the process so encrypt/decrypt operations are consistent.
+	static EPHEMERAL_KEM: OnceCell<(Vec<u8>, Vec<u8>)> = OnceCell::new();
+	if std::env::var("BEEMESH_KEM_EPHEMERAL").is_ok() {
+		if let Some(k) = EPHEMERAL_KEM.get() {
+			return Ok((k.0.clone(), k.1.clone()));
+		}
+		ensure_pqc_init()?;
+		let kem = ml_kem_512();
+		let (pubk, privk) = kem.generate_keypair()?;
+		let pubb = pubk.to_bytes();
+		let privb = privk.to_bytes();
+		log::warn!("ensure_kem_keypair_on_disk: BEEMESH_KEM_EPHEMERAL set - using ephemeral KEM keypair (no disk writes)");
+		let _ = EPHEMERAL_KEM.set((pubb.clone(), privb.clone()));
+		return Ok((pubb, privb));
+	}
+
 	// Reuse same key dir logic as signing keypair
 	let home = home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
 	let key_dir = home.join(KEY_DIR);
@@ -191,7 +210,8 @@ pub fn decrypt_share_from_blob(blob: &[u8], priv_kem_bytes: &[u8]) -> anyhow::Re
 	if blob.len() < idx + 2 { anyhow::bail!("blob too short"); }
 	let wlen = u16::from_be_bytes([blob[idx], blob[idx+1]]) as usize; idx += 2;
 	if blob.len() < idx + wlen { anyhow::bail!("blob too short for wrapped"); }
-	let wrapped = &blob[idx..idx+wlen]; idx += wlen;
+	let wrapped = &blob[idx..idx+wlen];
+	idx += wlen;
 	if blob.len() < idx + 1 { anyhow::bail!("blob too short for nonce len"); }
 	let nlen = blob[idx] as usize; idx += 1;
 	if blob.len() < idx + nlen { anyhow::bail!("blob too short for nonce"); }
@@ -260,6 +280,55 @@ pub fn encrypt_manifest(manifest_json: &serde_json::Value) -> anyhow::Result<(Ve
 	let plaintext = serde_json::to_vec(manifest_json)?;
 	let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).map_err(|e| anyhow::anyhow!("aes-gcm encrypt error: {}", e))?;
 	Ok((ciphertext, nonce_bytes.to_vec(), sym, nonce_bytes))
+}
+
+/// Encrypt an arbitrary payload to a recipient's KEM public key.
+/// Output blob format:
+/// [version=0x02 u8][wlen u16 BE][wrapped_key_ct bytes][nlen u8][nonce bytes][ctlen u32 BE][ciphertext bytes]
+pub fn encrypt_payload_for_recipient(recipient_pub: &[u8], payload: &[u8]) -> anyhow::Result<Vec<u8>> {
+	// encapsulate to recipient pubkey
+	let (wrapped_ct, shared_secret) = encapsulate_to_pubkey(recipient_pub)?;
+	let cipher = Aes256Gcm::new_from_slice(&shared_secret).map_err(|e| anyhow::anyhow!("invalid key length for AES-GCM: {}", e))?;
+	let mut nonce_bytes = [0u8; 12];
+	rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+	let nonce = Nonce::from_slice(&nonce_bytes);
+	let ciphertext = cipher.encrypt(nonce, payload).map_err(|e| anyhow::anyhow!("aes-gcm encrypt error: {}", e))?;
+
+	let mut blob = Vec::with_capacity(1 + 2 + wrapped_ct.len() + 1 + nonce_bytes.len() + 4 + ciphertext.len());
+	blob.push(0x02u8);
+	let wlen = wrapped_ct.len() as u16;
+	blob.extend_from_slice(&wlen.to_be_bytes());
+	blob.extend_from_slice(&wrapped_ct);
+	blob.push(nonce_bytes.len() as u8);
+	blob.extend_from_slice(&nonce_bytes);
+	let clen = ciphertext.len() as u32;
+	blob.extend_from_slice(&clen.to_be_bytes());
+	blob.extend_from_slice(&ciphertext);
+	Ok(blob)
+}
+
+/// Reverse of encrypt_payload_for_recipient: decapsulate the wrapped key and decrypt AES-GCM ciphertext.
+pub fn decrypt_payload_from_recipient_blob(blob: &[u8], priv_kem_bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+	if blob.is_empty() || blob[0] != 0x02 { anyhow::bail!("unsupported recipient-blob version"); }
+	let mut idx = 1usize;
+	if blob.len() < idx + 2 { anyhow::bail!("blob too short"); }
+	let wlen = u16::from_be_bytes([blob[idx], blob[idx+1]]) as usize; idx += 2;
+	if blob.len() < idx + wlen { anyhow::bail!("blob too short for wrapped"); }
+	let wrapped = &blob[idx..idx+wlen]; idx += wlen;
+	if blob.len() < idx + 1 { anyhow::bail!("blob too short for nonce len"); }
+	let nlen = blob[idx] as usize; idx += 1;
+	if blob.len() < idx + nlen { anyhow::bail!("blob too short for nonce"); }
+	let nonce = &blob[idx..idx+nlen]; idx += nlen;
+	if blob.len() < idx + 4 { anyhow::bail!("blob too short for ct len"); }
+	let clen = u32::from_be_bytes([blob[idx], blob[idx+1], blob[idx+2], blob[idx+3]]) as usize; idx += 4;
+	if blob.len() < idx + clen { anyhow::bail!("blob too short for ciphertext"); }
+	let ciphertext = &blob[idx..idx+clen];
+
+	// decapsulate wrapped key
+	let shared = decapsulate_share(priv_kem_bytes, wrapped)?; // Zeroizing<Vec<u8>>
+	let cipher = Aes256Gcm::new_from_slice(&shared[..]).map_err(|e| anyhow::anyhow!("aes key error: {}", e))?;
+	let plain = cipher.decrypt(Nonce::from_slice(nonce), ciphertext.as_ref()).map_err(|e| anyhow::anyhow!("aes-gcm decrypt error: {}", e))?;
+	Ok(plain)
 }
 
 /// Decrypt a manifest ciphertext produced by `encrypt_manifest` using the symmetric key and nonce.
@@ -450,5 +519,24 @@ mod tests {
 	// Finally attempt to decrypt ciphertext using the priv key
 	let recovered = decrypt_share_from_blob(&blob, &privb).expect("decrypt failed");
 	assert_eq!(&recovered, payload);
+	}
+
+	#[test]
+	fn test_recipient_blob_roundtrip() {
+		let _guard = PQC_TEST_MUTEX
+			.get_or_init(|| std::sync::Mutex::new(()))
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+
+		ensure_pqc_init().expect("pqc init");
+		let kem = ml_kem_512();
+		let (pubk, privk) = kem.generate_keypair().expect("kem keygen");
+		let pubb = pubk.to_bytes();
+		let privb = privk.to_bytes();
+
+		let payload = b"hello recipient payload";
+		let blob = encrypt_payload_for_recipient(&pubb, payload).expect("encrypt recipient blob");
+		let recovered = decrypt_payload_from_recipient_blob(&blob, &privb).expect("decrypt recipient blob");
+		assert_eq!(&recovered, payload);
 	}
 }
