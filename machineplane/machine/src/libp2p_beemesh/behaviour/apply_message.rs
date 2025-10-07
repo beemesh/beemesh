@@ -519,10 +519,96 @@ pub fn process_self_apply_request(
 
                     log::info!("libp2p: self-apply triggering decryption for manifest_id={}", manifest_id);
                     
-                    // Check if manifest_json is encrypted (has nonce/payload structure)
-                    let manifest_value = if let Ok(encrypted_manifest) = serde_json::from_str::<serde_json::Value>(manifest_json) {
-                        if let (Some(nonce_val), Some(payload_val)) = (encrypted_manifest.get("nonce"), encrypted_manifest.get("payload")) {
-                            log::info!("libp2p: self-apply detected encrypted manifest - attempting decryption");
+                    // Check if manifest_json is a signed envelope or directly encrypted
+                    let manifest_value = if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(manifest_json) {
+                        // Check if this is a signed envelope (has 'alg', 'payload', 'sig')
+                        if envelope.get("alg").is_some() && envelope.get("sig").is_some() {
+                            log::info!("libp2p: self-apply detected signed envelope - extracting payload");
+                            
+                            // Extract and decode the payload from the signed envelope
+                            if let Some(payload_b64) = envelope.get("payload").and_then(|p| p.as_str()) {
+                                match base64::engine::general_purpose::STANDARD.decode(payload_b64) {
+                                    Ok(payload_bytes) => {
+                                        match String::from_utf8(payload_bytes) {
+                                            Ok(inner_content) => {
+                                                log::info!("libp2p: self-apply extracted payload from envelope: {}", inner_content.chars().take(100).collect::<String>());
+                                                
+                                                // Now check if the inner content is encrypted (has nonce/payload structure)
+                                                if let Ok(inner_json) = serde_json::from_str::<serde_json::Value>(&inner_content) {
+                                                    if let (Some(nonce_val), Some(payload_val)) = (inner_json.get("nonce"), inner_json.get("payload")) {
+                                                        log::info!("libp2p: self-apply detected encrypted content inside envelope - attempting decryption");
+                                                        
+                                                        if let (Some(nonce_str), Some(payload_str)) = (nonce_val.as_str(), payload_val.as_str()) {
+                                                            match decrypt_encrypted_manifest_with_id(&manifest_id, nonce_str, payload_str, &local_peer_id_copy).await {
+                                                                Ok(decrypted_yaml) => {
+                                                                    log::info!("libp2p: self-apply successfully decrypted manifest from envelope");
+                                                                    // Parse the decrypted YAML content
+                                                                    match serde_yaml::from_str::<serde_json::Value>(&decrypted_yaml) {
+                                                                        Ok(v) => {
+                                                                            log::info!("libp2p: self-apply parsed decrypted YAML successfully");
+                                                                            v
+                                                                        }
+                                                                        Err(_) => {
+                                                                            log::info!("libp2p: self-apply treating decrypted content as raw");
+                                                                            serde_json::json!({ "raw": decrypted_yaml })
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => {
+                                                                    log::warn!("libp2p: self-apply failed to decrypt manifest from envelope: {}", e);
+                                                                    // Fallback to inner content for debugging
+                                                                    inner_json
+                                                                }
+                                                            }
+                                                        } else {
+                                                            log::warn!("libp2p: self-apply inner content has invalid nonce/payload format");
+                                                            inner_json
+                                                        }
+                                                    } else {
+                                                        // Inner content is not encrypted, try to parse as YAML
+                                                        match serde_yaml::from_str::<serde_json::Value>(&inner_content) {
+                                                            Ok(v) => {
+                                                                log::info!("libp2p: self-apply parsed inner YAML successfully");
+                                                                v
+                                                            }
+                                                            Err(_) => {
+                                                                log::info!("libp2p: self-apply treating inner content as raw");
+                                                                serde_json::json!({ "raw": inner_content })
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Inner content is not JSON, try as YAML
+                                                    match serde_yaml::from_str::<serde_json::Value>(&inner_content) {
+                                                        Ok(v) => {
+                                                            log::info!("libp2p: self-apply parsed inner YAML successfully");
+                                                            v
+                                                        }
+                                                        Err(_) => {
+                                                            log::info!("libp2p: self-apply treating inner content as raw");
+                                                            serde_json::json!({ "raw": inner_content })
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::warn!("libp2p: self-apply failed to decode payload as UTF-8: {}", e);
+                                                envelope
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::warn!("libp2p: self-apply failed to base64 decode payload: {}", e);
+                                        envelope
+                                    }
+                                }
+                            } else {
+                                log::warn!("libp2p: self-apply envelope missing payload field");
+                                envelope
+                            }
+                        } else if let (Some(nonce_val), Some(payload_val)) = (envelope.get("nonce"), envelope.get("payload")) {
+                            // This is directly encrypted (old format)
+                            log::info!("libp2p: self-apply detected directly encrypted manifest - attempting decryption");
                             
                             // Extract nonce and payload
                             if let (Some(nonce_str), Some(payload_str)) = (nonce_val.as_str(), payload_val.as_str()) {
@@ -544,12 +630,12 @@ pub fn process_self_apply_request(
                                     Err(e) => {
                                         log::warn!("libp2p: self-apply failed to decrypt manifest: {}", e);
                                         // Fallback to encrypted structure for debugging
-                                        encrypted_manifest
+                                        envelope
                                     }
                                 }
                             } else {
                                 log::warn!("libp2p: self-apply encrypted manifest has invalid nonce/payload format");
-                                encrypted_manifest
+                                envelope
                             }
                         } else {
                             // Not encrypted, try to parse as YAML
