@@ -20,24 +20,26 @@ impl FlatbufferClient {
     pub async fn create_task(
         &self,
         tenant: &str,
-        manifest: &JsonValue,
+        manifest_bytes: &[u8],  // Raw flatbuffer bytes
         manifest_id: Option<String>,
         operation_id: Option<String>,
     ) -> Result<JsonValue> {
-        let create_body = protocol::json::TaskCreateRequest {
-            manifest: manifest.clone(),
-            replicas: None,
-            manifest_id,
-            operation_id,
-        };
-
+        // Send flatbuffer envelope directly as binary data
         let url = format!("{}/tenant/{}/tasks", self.base_url.trim_end_matches('/'), tenant);
-        let resp = self.client
+        let mut req = self.client
             .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&create_body)
-            .send()
-            .await?;
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(manifest_bytes.to_vec());
+        
+        // Add metadata as query parameters since we're not using JSON body
+        if let Some(mid) = manifest_id {
+            req = req.query(&[("manifest_id", mid)]);
+        }
+        if let Some(oid) = operation_id {
+            req = req.query(&[("operation_id", oid)]);
+        }
+        
+        let resp = req.send().await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -88,20 +90,24 @@ impl FlatbufferClient {
         shares_envelope: &JsonValue,
         targets: &[ShareTarget],
     ) -> Result<JsonValue> {
-        let request = protocol::json::DistributeSharesRequest {
-            shares_envelope: Some(shares_envelope.clone()),
-            targets: targets.iter().map(|t| protocol::json::ShareTarget {
-                peer_id: t.peer_id.clone(),
-                payload: t.payload.clone(),
-            }).collect(),
-        };
+        // Convert shares_envelope to JSON string and targets to the required format
+        let shares_envelope_json = serde_json::to_string(shares_envelope)?;
+        let fb_targets: Vec<(String, String)> = targets.iter()
+            .map(|t| (t.peer_id.clone(), serde_json::to_string(&t.payload).unwrap_or_default()))
+            .collect();
+
+        // Create flatbuffer request
+        let flatbuffer_data = machine::build_distribute_shares_request(
+            &shares_envelope_json,
+            &fb_targets,
+        );
 
         let url = format!("{}/tenant/{}/tasks/{}/distribute_shares", 
                          self.base_url.trim_end_matches('/'), tenant, task_id);
         let resp = self.client
             .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&request)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(flatbuffer_data)
             .send()
             .await?;
 
@@ -122,19 +128,20 @@ impl FlatbufferClient {
         task_id: &str,
         targets: &[CapabilityTarget],
     ) -> Result<JsonValue> {
-        let request = protocol::json::DistributeCapabilitiesRequest {
-            targets: targets.iter().map(|t| protocol::json::CapabilityTarget {
-                peer_id: t.peer_id.clone(),
-                payload: t.payload.clone(),
-            }).collect(),
-        };
+        // Convert targets to the required format for flatbuffer
+        let fb_targets: Vec<(String, String)> = targets.iter()
+            .map(|t| (t.peer_id.clone(), serde_json::to_string(&t.payload).unwrap_or_default()))
+            .collect();
+
+        // Create flatbuffer request
+        let flatbuffer_data = machine::build_distribute_capabilities_request(&fb_targets);
 
         let url = format!("{}/tenant/{}/tasks/{}/distribute_capabilities", 
                          self.base_url.trim_end_matches('/'), tenant, task_id);
         let resp = self.client
             .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&request)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(flatbuffer_data)
             .send()
             .await?;
 
@@ -155,16 +162,15 @@ impl FlatbufferClient {
         task_id: &str,
         chosen_peers: Vec<String>,
     ) -> Result<JsonValue> {
-        let request = protocol::json::AssignRequest {
-            chosen_peers: Some(chosen_peers),
-        };
+        // Create flatbuffer request
+        let flatbuffer_data = machine::build_assign_request(&chosen_peers);
 
         let url = format!("{}/tenant/{}/tasks/{}/assign", 
                          self.base_url.trim_end_matches('/'), tenant, task_id);
         let resp = self.client
             .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&request)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(flatbuffer_data)
             .send()
             .await?;
 

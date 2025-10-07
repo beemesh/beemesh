@@ -116,6 +116,42 @@ mod generated {
         )]
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/capability_token_generated.rs"));
     }
+
+    pub mod generated_distribute_shares_request {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/distribute_shares_request_generated.rs"));
+    }
+
+    pub mod generated_distribute_capabilities_request {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/distribute_capabilities_request_generated.rs"));
+    }
+
+    pub mod generated_assign_request {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/assign_request_generated.rs"));
+    }
 }
 
 pub mod machine {
@@ -157,6 +193,23 @@ pub mod machine {
     pub use crate::machine::generated_capability_token::SignatureEntry;
     pub use crate::machine::generated_capability_token::SignatureEntryArgs;
     pub use crate::machine::generated_capability_token::root_as_capability_token;
+    
+    // Distribute shares types  
+    pub use crate::generated::generated_distribute_shares_request::beemesh::machine::{
+        DistributeSharesRequest, DistributeSharesRequestArgs, ShareTarget, ShareTargetArgs, 
+        root_as_distribute_shares_request
+    };
+    
+    // Distribute capabilities types
+    pub use crate::generated::generated_distribute_capabilities_request::beemesh::machine::{
+        DistributeCapabilitiesRequest, DistributeCapabilitiesRequestArgs, 
+        CapabilityTarget, CapabilityTargetArgs, root_as_distribute_capabilities_request  
+    };
+    
+    // Assign request types
+    pub use crate::generated::generated_assign_request::beemesh::machine::{
+        AssignRequest, AssignRequestArgs, root_as_assign_request
+    };
     
     // AppliedManifest for DHT storage (generated). Wrap include in a module with
     // liberal allow attributes so generated code doesn't emit warnings.
@@ -462,6 +515,81 @@ pub mod machine {
         
         let manifest = AppliedManifest::create(&mut fbb, &args);
         fbb.finish(manifest, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder function for DistributeSharesRequest
+    pub fn build_distribute_shares_request(
+        shares_envelope_json: &str,
+        targets: &[(String, String)], // (peer_id, payload_json)
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+        
+        let shares_env_offset = fbb.create_string(shares_envelope_json);
+        
+        // Create ShareTarget vector
+        let target_offsets: Vec<_> = targets.iter().map(|(peer_id, payload_json)| {
+            let peer_id_offset = fbb.create_string(peer_id);
+            let payload_offset = fbb.create_string(payload_json);
+            ShareTarget::create(&mut fbb, &ShareTargetArgs {
+                peer_id: Some(peer_id_offset),
+                payload_json: Some(payload_offset),
+            })
+        }).collect();
+        let targets_offset = fbb.create_vector(&target_offsets);
+        
+        let args = DistributeSharesRequestArgs {
+            shares_envelope_json: Some(shares_env_offset),
+            targets: Some(targets_offset),
+        };
+        
+        let request = DistributeSharesRequest::create(&mut fbb, &args);
+        fbb.finish(request, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder function for DistributeCapabilitiesRequest  
+    pub fn build_distribute_capabilities_request(
+        targets: &[(String, String)], // (peer_id, payload_json)
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+        
+        // Create CapabilityTarget vector
+        let target_offsets: Vec<_> = targets.iter().map(|(peer_id, payload_json)| {
+            let peer_id_offset = fbb.create_string(peer_id);
+            let payload_offset = fbb.create_string(payload_json);
+            CapabilityTarget::create(&mut fbb, &CapabilityTargetArgs {
+                peer_id: Some(peer_id_offset),
+                payload_json: Some(payload_offset),
+            })
+        }).collect();
+        let targets_offset = fbb.create_vector(&target_offsets);
+        
+        let args = DistributeCapabilitiesRequestArgs {
+            targets: Some(targets_offset),
+        };
+        
+        let request = DistributeCapabilitiesRequest::create(&mut fbb, &args);
+        fbb.finish(request, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder function for AssignRequest
+    pub fn build_assign_request(chosen_peers: &[String]) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+        
+        // Create vector of peer ID strings
+        let peer_offsets: Vec<_> = chosen_peers.iter()
+            .map(|peer_id| fbb.create_string(peer_id))
+            .collect();
+        let peers_offset = fbb.create_vector(&peer_offsets);
+        
+        let args = AssignRequestArgs {
+            chosen_peers: Some(peers_offset),
+        };
+        
+        let request = AssignRequest::create(&mut fbb, &args);
+        fbb.finish(request, None);
         fbb.finished_data().to_vec()
     }
 }

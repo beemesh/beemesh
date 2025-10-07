@@ -62,9 +62,6 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         &sk_bytes, 
         &pk_bytes
     )?;
-    
-    // Convert to JSON for compatibility with existing APIs
-    let manifest_envelope_signed = envelope_to_json(&manifest_envelope_signed_bytes)?;
 
     // build shares envelope using flatbuffers (contains the base64 shares for peers)
     let shares_b64: Vec<String> = shares_vec.iter().map(|s| base64::engine::general_purpose::STANDARD.encode(s)).collect();
@@ -85,10 +82,14 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     // Convert to JSON for compatibility with existing APIs
     let shares_envelope_signed = envelope_to_json(&shares_envelope_signed_bytes)?;
 
-    // wrapper message containing both envelopes
+    // Convert signed envelopes to base64 for any needed JSON compatibility
+    let manifest_envelope_signed_b64 = base64::engine::general_purpose::STANDARD.encode(&manifest_envelope_signed_bytes);
+    let shares_envelope_signed_b64 = base64::engine::general_purpose::STANDARD.encode(&shares_envelope_signed_bytes);
+
+    // wrapper message containing both envelopes (as base64)
     let _final_msg = serde_json::json!({
-        "manifest_envelope": manifest_envelope_signed,
-        "shares_envelope": shares_envelope_signed,
+        "manifest_envelope": manifest_envelope_signed_b64,
+        "shares_envelope": shares_envelope_signed_b64,
     });
 
     // hardcoded tenant for now
@@ -96,7 +97,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
     // Calculate manifest_id deterministically using the same method as the machine
     let operation_id = uuid::Uuid::new_v4().to_string();
-    let manifest_envelope_signed_str = serde_json::to_string(&manifest_envelope_signed)?;
+    let manifest_envelope_signed_str = manifest_envelope_signed_b64;
     let manifest_id = {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -113,7 +114,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
     // 1) Create task using flatbuffer client (store manifest in task store)
     let create_resp = fb_client
-        .create_task(tenant, &manifest_envelope_signed, Some(manifest_id.clone()), Some(operation_id.clone()))
+        .create_task(tenant, &manifest_envelope_signed_bytes, Some(manifest_id.clone()), Some(operation_id.clone()))
         .await?;
     let returned_manifest_id = create_resp
         .get("manifest_id")

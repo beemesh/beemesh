@@ -40,28 +40,28 @@ pub struct Envelope {
     pub peer_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CapacityRequest {
-    pub cpu_milli: u32,
-    pub memory_bytes: u64,
-    pub storage_bytes: u64,
-    pub replicas: u32,
-}
+// #[derive(Debug, Serialize, Deserialize, Clone)]
+// pub struct CapacityRequest {
+//     pub cpu_milli: u32,
+//     pub memory_bytes: u64,
+//     pub storage_bytes: u64,
+//     pub replicas: u32,
+// }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ApplyPayload {
-    /// The manifest JSON as an embedded JSON object/string
-    pub manifest: serde_json::Value,
-    /// Scheduling/capacity request associated with this apply
-    pub capacity_request: CapacityRequest,
-}
+// #[derive(Debug, Serialize, Deserialize, Clone)]
+// pub struct ApplyPayload {
+//     /// The manifest JSON as an embedded JSON object/string
+//     pub manifest: serde_json::Value,
+//     /// Scheduling/capacity request associated with this apply
+//     pub capacity_request: CapacityRequest,
+// }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SharesPayload {
-    /// Base64-encoded shares produced by Shamir split
-    pub shares: Vec<String>,
-    pub shares_meta: SharesMeta,
-}
+// #[derive(Debug, Serialize, Deserialize, Clone)]
+// pub struct SharesPayload {
+//     /// Base64-encoded shares produced by Shamir split
+//     pub shares: Vec<String>,
+//     pub shares_meta: SharesMeta,
+// }
 
 impl Envelope {
     /// Decode the base64 payload into bytes.
@@ -90,16 +90,16 @@ impl Envelope {
     }
 }
 
-/// Produce a canonical JSON representation with deterministic key ordering.
-/// This implements a simple canonicalization by recursively sorting object keys
-/// and serializing without extra whitespace. It's not a full JCS implementation
-/// but sufficient for deterministic signing within this project.
-pub fn canonicalize_json_value(v: &Value) -> anyhow::Result<Vec<u8>> {
-    let bytes = jcs_to_vec(v).map_err(|e| anyhow::anyhow!("canonicalize failed: {}", e))?;
-    Ok(bytes)
-}
+// /// Produce a canonical JSON representation with deterministic key ordering.
+// /// This implements a simple canonicalization by recursively sorting object keys
+// /// and serializing without extra whitespace. It's not a full JCS implementation
+// /// but sufficient for deterministic signing within this project.
+// pub fn canonicalize_json_value(v: &Value) -> anyhow::Result<Vec<u8>> {
+//     let bytes = jcs_to_vec(v).map_err(|e| anyhow::anyhow!("canonicalize failed: {}", e))?;
+//     Ok(bytes)
+// }
 
-// -- Task / REST API types -------------------------------------------------
+// // -- Task / REST API types -------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TaskCreateRequest {
