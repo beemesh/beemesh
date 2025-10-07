@@ -16,11 +16,11 @@ pub struct Cli {
     pub ephemeral: bool,
     /// Host address for REST API
     #[arg(long, default_value = "127.0.0.1")]
-    pub api_host: String,
+    pub rest_api_host: String,
 
     /// Port for REST API
     #[arg(long, default_value = "3000")]
-    pub api_port: u16,
+    pub rest_api_port: u16,
 
     /// Disable REST API server
     #[arg(long, default_value_t = false)]
@@ -33,7 +33,6 @@ pub struct Cli {
     /// Custom node name (optional)
     #[arg(long)]
     pub node_name: Option<String>,
-
 
     #[arg(long, default_value = "/run/beemesh/host.sock")]
     pub api_socket: Option<String>,
@@ -63,7 +62,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         std::env::set_var("BEEMESH_KEYSTORE_EPHEMERAL", "1");
         // In ephemeral mode, create a per-node shared keystore so all components
         // within this node process share the same keystore instance
-        let shared_name = format!("node_{}", cli.api_port);
+        let shared_name = format!("node_{}", cli.rest_api_port);
         std::env::set_var("BEEMESH_KEYSTORE_SHARED_NAME", &shared_name);
         // Also set in libp2p module for use by keyshare processing
         libp2p_beemesh::set_keystore_shared_name(Some(shared_name));
@@ -163,7 +162,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         // hold on to the sender for the lifetime of this task
         let _keeper = control_tx_for_libp2p;
         let keystore_shared_name = if cli.ephemeral {
-            Some(format!("node_{}", cli.api_port))
+            Some(format!("node_{}", cli.rest_api_port))
         } else {
             None
         };
@@ -177,16 +176,16 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
     // rest api server
     if !cli.disable_rest_api {
         let shared_name = if cli.ephemeral {
-            Some(format!("node_{}", cli.api_port))
+            Some(format!("node_{}", cli.rest_api_port))
         } else {
             None
         };
         let app = restapi::build_router(peer_rx, control_tx.clone(), shared_name);
 
         // Public TCP server
-        let bind_addr = format!("{}:{}", cli.api_host, cli.api_port);
+        let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);
         let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-        log::info!("listening on {}", listener.local_addr().unwrap());
+        log::info!("rest api listening on {}", listener.local_addr().unwrap());
         handles.push(tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, app.clone().into_make_service()).await {
                 log::error!("axum server error: {}", e);

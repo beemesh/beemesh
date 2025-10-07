@@ -45,11 +45,11 @@ impl Drop for NodeGuard {
     }
 }
 
-pub fn make_test_cli(api_port: u16, disable_rest: bool, disable_machine: bool, api_socket: Option<String>, bootstrap_peer: Option<String>) -> Cli {
+pub fn make_test_cli(rest_api_port: u16, disable_rest: bool, disable_machine: bool, api_socket: Option<String>, bootstrap_peer: Option<String>) -> Cli {
     Cli {
         ephemeral: true,
-        api_host: "127.0.0.1".to_string(),
-        api_port,
+        rest_api_host: "127.0.0.1".to_string(),
+        rest_api_port,
         disable_rest_api: disable_rest,
         disable_machine_api: disable_machine,
         node_name: None,
@@ -83,8 +83,8 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
         // Spawn machine process with CLI args
         let mut cmd = Command::new(&machine_binary);
         cmd.arg("--ephemeral")
-            .arg("--api-host").arg(&cli.api_host)
-            .arg("--api-port").arg(&cli.api_port.to_string());
+            .arg("--rest-api-host").arg(&cli.rest_api_host)
+            .arg("--rest-api-port").arg(&cli.rest_api_port.to_string());
         
         if cli.disable_rest_api {
             cmd.arg("--disable-rest-api");
@@ -101,7 +101,7 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
             cmd.env("BEEMESH_TEST_MODE", test_mode);
         }
         
-        println!("Starting machine process on port {}", cli.api_port);
+        println!("Starting machine process on port {}", cli.rest_api_port);
         match cmd.spawn() {
             Ok(child) => {
                 guard.processes.push(child);
