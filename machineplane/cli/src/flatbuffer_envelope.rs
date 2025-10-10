@@ -1,8 +1,8 @@
 use anyhow::Result;
 use base64::Engine;
+use crypto::sign_envelope;
 use protocol::machine::{build_envelope_canonical, build_envelope_signed, root_as_envelope};
 use serde_json::Value as JsonValue;
-use crypto::sign_envelope;
 
 /// Helper for building flatbuffer Envelopes instead of JSON
 pub struct FlatbufferEnvelopeBuilder;
@@ -122,15 +122,27 @@ impl FlatbufferEnvelopeBuilder {
         // Create envelope in the exact format expected by security verification
         // This matches what send_apply_request.rs creates (lines 144-146)
         let mut envelope = serde_json::Map::new();
-        envelope.insert("payload".to_string(), serde_json::Value::String(
-            base64::engine::general_purpose::STANDARD.encode(&token_bytes)
-        ));
-        envelope.insert("manifest_id".to_string(), serde_json::Value::String(manifest_id.to_string()));
-        envelope.insert("type".to_string(), serde_json::Value::String("capability".to_string()));
+        envelope.insert(
+            "payload".to_string(),
+            serde_json::Value::String(
+                base64::engine::general_purpose::STANDARD.encode(&token_bytes),
+            ),
+        );
+        envelope.insert(
+            "manifest_id".to_string(),
+            serde_json::Value::String(manifest_id.to_string()),
+        );
+        envelope.insert(
+            "type".to_string(),
+            serde_json::Value::String("capability".to_string()),
+        );
         envelope.insert("nonce".to_string(), serde_json::Value::String(nonce_str));
         envelope.insert("ts".to_string(), serde_json::Value::Number(ts.into()));
-        envelope.insert("alg".to_string(), serde_json::Value::String("ml-dsa-65".to_string()));
-        
+        envelope.insert(
+            "alg".to_string(),
+            serde_json::Value::String("ml-dsa-65".to_string()),
+        );
+
         let envelope_value = serde_json::Value::Object(envelope);
         let envelope_bytes = serde_json::to_vec(&envelope_value)?;
 
@@ -143,26 +155,41 @@ impl FlatbufferEnvelopeBuilder {
         sk_bytes: &[u8],
         pk_bytes: &[u8],
     ) -> Result<Vec<u8>> {
-        let (sig_b64, pub_b64) = sign_envelope(sk_bytes, pk_bytes, envelope_bytes)?;
-        
         // Try to parse as JSON first (for capability envelopes)
-        if let Ok(mut envelope_json) = serde_json::from_slice::<serde_json::Value>(envelope_bytes) {
-            if let Some(obj) = envelope_json.as_object_mut() {
-                obj.insert("sig".to_string(), serde_json::Value::String(format!("ml-dsa-65:{}", sig_b64)));
-                obj.insert("pubkey".to_string(), serde_json::Value::String(pub_b64));
-                return Ok(serde_json::to_vec(&envelope_json)?);
+        if let Ok(envelope_json) = serde_json::from_slice::<serde_json::Value>(envelope_bytes) {
+            if let Some(obj) = envelope_json.as_object() {
+                // Create canonical bytes for signing (same as verification does)
+                // This means we exclude sig and pubkey fields, just like verify_json_envelope does
+                let mut canonical = obj.clone();
+                canonical.remove("sig");
+                canonical.remove("pubkey");
+                let canonical_value = serde_json::Value::Object(canonical);
+                let canonical_bytes = serde_json::to_vec(&canonical_value)?;
+
+                // Sign the canonical bytes
+                let (sig_b64, pub_b64) = sign_envelope(sk_bytes, pk_bytes, &canonical_bytes)?;
+
+                // Add signature and pubkey to the original envelope
+                let mut signed_obj = obj.clone();
+                signed_obj.insert(
+                    "sig".to_string(),
+                    serde_json::Value::String(format!("ml-dsa-65:{}", sig_b64)),
+                );
+                signed_obj.insert("pubkey".to_string(), serde_json::Value::String(pub_b64));
+                let signed_envelope = serde_json::Value::Object(signed_obj);
+                return Ok(serde_json::to_vec(&signed_envelope)?);
             }
         }
-        
-        // Fall back to flatbuffer handling
+
+        // Fall back to flatbuffer handling - sign the entire envelope bytes for flatbuffers
+        let (sig_b64, pub_b64) = sign_envelope(sk_bytes, pk_bytes, envelope_bytes)?;
+
         let envelope = root_as_envelope(envelope_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to parse envelope: {}", e))?;
 
         // Build signed envelope using protocol helper
-        let payload_bytes = envelope.payload()
-            .map(|v| v.bytes())
-            .unwrap_or(&[]);
-        
+        let payload_bytes = envelope.payload().map(|v| v.bytes()).unwrap_or(&[]);
+
         Ok(build_envelope_signed(
             payload_bytes,
             envelope.payload_type().unwrap_or(""),
@@ -182,43 +209,67 @@ pub fn envelope_to_json(envelope_bytes: &[u8]) -> Result<JsonValue> {
     if let Ok(json_value) = serde_json::from_slice::<JsonValue>(envelope_bytes) {
         return Ok(json_value);
     }
-    
+
     // Fall back to flatbuffer parsing
     let envelope = root_as_envelope(envelope_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to parse envelope: {}", e))?;
 
     let mut json_obj = serde_json::Map::new();
-    
+
     if let Some(payload) = envelope.payload() {
-        json_obj.insert("payload".to_string(), serde_json::Value::String(
-            base64::engine::general_purpose::STANDARD.encode(payload.bytes())
-        ));
+        json_obj.insert(
+            "payload".to_string(),
+            serde_json::Value::String(
+                base64::engine::general_purpose::STANDARD.encode(payload.bytes()),
+            ),
+        );
     }
-    
+
     if let Some(payload_type) = envelope.payload_type() {
-        json_obj.insert("payload_type".to_string(), serde_json::Value::String(payload_type.to_string()));
+        json_obj.insert(
+            "payload_type".to_string(),
+            serde_json::Value::String(payload_type.to_string()),
+        );
     }
-    
+
     if let Some(nonce) = envelope.nonce() {
-        json_obj.insert("nonce".to_string(), serde_json::Value::String(nonce.to_string()));
+        json_obj.insert(
+            "nonce".to_string(),
+            serde_json::Value::String(nonce.to_string()),
+        );
     }
-    
-    json_obj.insert("ts".to_string(), serde_json::Value::Number(envelope.ts().into()));
-    
+
+    json_obj.insert(
+        "ts".to_string(),
+        serde_json::Value::Number(envelope.ts().into()),
+    );
+
     if let Some(alg) = envelope.alg() {
-        json_obj.insert("alg".to_string(), serde_json::Value::String(alg.to_string()));
+        json_obj.insert(
+            "alg".to_string(),
+            serde_json::Value::String(alg.to_string()),
+        );
     }
-    
+
     if let Some(sig) = envelope.sig() {
-        json_obj.insert("sig".to_string(), serde_json::Value::String(sig.to_string()));
+        json_obj.insert(
+            "sig".to_string(),
+            serde_json::Value::String(sig.to_string()),
+        );
     }
-    
+
     if let Some(pubkey) = envelope.pubkey() {
-        json_obj.insert("pubkey".to_string(), serde_json::Value::String(pubkey.to_string()));
+        json_obj.insert(
+            "pubkey".to_string(),
+            serde_json::Value::String(pubkey.to_string()),
+        );
     }
-    
+
     if let Some(peer_id) = envelope.peer_id() {
-        json_obj.insert("peer_id".to_string(), serde_json::Value::String(peer_id.to_string()));
+        json_obj.insert(
+            "peer_id".to_string(),
+            serde_json::Value::String(peer_id.to_string()),
+        );
     }
 
     Ok(serde_json::Value::Object(json_obj))

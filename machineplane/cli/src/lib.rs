@@ -1,18 +1,18 @@
-use log::info;
+use base64::Engine;
+use crypto::{encrypt_manifest, ensure_keypair_on_disk, split_symmetric_key, KEY_DIR};
 use dirs::home_dir;
+use log::info;
 use serde_json::Value as JsonValue;
 use serde_yaml;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use base64::Engine;
-use crypto::{ensure_keypair_on_disk, encrypt_manifest, split_symmetric_key, KEY_DIR};
 
 mod flatbuffers;
-use flatbuffers::{FlatbufferClient, ShareTarget, CapabilityTarget};
+use flatbuffers::{CapabilityTarget, FlatbufferClient};
 
 mod flatbuffer_envelope;
-use flatbuffer_envelope::{FlatbufferEnvelopeBuilder, envelope_to_json};
+use flatbuffer_envelope::{envelope_to_json, FlatbufferEnvelopeBuilder};
 
 pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     if !path.exists() {
@@ -52,39 +52,32 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     // build manifest envelope using flatbuffers (contains original YAML content)
     let mut envelope_builder = FlatbufferEnvelopeBuilder::new();
     let manifest_envelope_bytes = envelope_builder.build_simple_envelope(
-        "manifest",
-        &contents // use original YAML content instead of encrypted ciphertext
+        "manifest", &contents, // use original YAML content instead of encrypted ciphertext
     )?;
 
     // sign manifest envelope
-    let manifest_envelope_signed_bytes = FlatbufferEnvelopeBuilder::sign_envelope(
-        &manifest_envelope_bytes, 
-        &sk_bytes, 
-        &pk_bytes
-    )?;
+    let manifest_envelope_signed_bytes =
+        FlatbufferEnvelopeBuilder::sign_envelope(&manifest_envelope_bytes, &sk_bytes, &pk_bytes)?;
 
     // build shares envelope using flatbuffers (contains the base64 shares for peers)
-    let shares_b64: Vec<String> = shares_vec.iter().map(|s| base64::engine::general_purpose::STANDARD.encode(s)).collect();
-    let shares_envelope_bytes = envelope_builder.build_shares_envelope(
-        &shares_b64,
-        n,
-        k,
-        shares_vec.len()
-    )?;
+    let shares_b64: Vec<String> = shares_vec
+        .iter()
+        .map(|s| base64::engine::general_purpose::STANDARD.encode(s))
+        .collect();
+    let shares_envelope_bytes =
+        envelope_builder.build_shares_envelope(&shares_b64, n, k, shares_vec.len())?;
 
     // sign shares envelope
-    let shares_envelope_signed_bytes = FlatbufferEnvelopeBuilder::sign_envelope(
-        &shares_envelope_bytes,
-        &sk_bytes,
-        &pk_bytes
-    )?;
-    
-    // Convert to JSON for compatibility with existing APIs
-    let shares_envelope_signed = envelope_to_json(&shares_envelope_signed_bytes)?;
+    let shares_envelope_signed_bytes =
+        FlatbufferEnvelopeBuilder::sign_envelope(&shares_envelope_bytes, &sk_bytes, &pk_bytes)?;
+
+    // Convert shares envelope to base64 for transport (keep as flatbuffer, not JSON)
+    let shares_envelope_signed_b64 =
+        base64::engine::general_purpose::STANDARD.encode(&shares_envelope_signed_bytes);
 
     // Convert signed envelopes to base64 for any needed JSON compatibility
-    let manifest_envelope_signed_b64 = base64::engine::general_purpose::STANDARD.encode(&manifest_envelope_signed_bytes);
-    let shares_envelope_signed_b64 = base64::engine::general_purpose::STANDARD.encode(&shares_envelope_signed_bytes);
+    let manifest_envelope_signed_b64 =
+        base64::engine::general_purpose::STANDARD.encode(&manifest_envelope_signed_bytes);
 
     // wrapper message containing both envelopes (as base64)
     let _final_msg = serde_json::json!({
@@ -114,7 +107,12 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
     // 1) Create task using flatbuffer client (store manifest in task store)
     let create_resp = fb_client
-        .create_task(tenant, &manifest_envelope_signed_bytes, Some(manifest_id.clone()), Some(operation_id.clone()))
+        .create_task(
+            tenant,
+            &manifest_envelope_signed_bytes,
+            Some(manifest_id.clone()),
+            Some(operation_id.clone()),
+        )
         .await?;
     let returned_manifest_id = create_resp
         .get("manifest_id")
@@ -128,31 +126,54 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     info!("Candidates: {:?}", peers);
 
     // 3) Distribute shares to the responders using flatbuffers
-    let mut targets: Vec<ShareTarget> = Vec::new();
+    let mut target_flatbuffers: Vec<Vec<u8>> = Vec::new();
+    let mut target_peer_ids: Vec<String> = Vec::new();
+
     // For simplicity, send shares to all responders found
     for (i, peer) in peers.iter().enumerate() {
         // read local share file created earlier
-        let share_path = home.join(KEY_DIR).join("shares").join(format!("share-{}.bin", i + 1));
+        let share_path = home
+            .join(KEY_DIR)
+            .join("shares")
+            .join(format!("share-{}.bin", i + 1));
         if share_path.exists() {
             let share_bytes = tokio::fs::read(&share_path).await?;
-            let share_b64 = base64::engine::general_purpose::STANDARD.encode(&share_bytes);
-            let target = ShareTarget {
-                peer_id: peer.clone(),
-                payload: serde_json::json!({ "share": share_b64 })
-            };
-            targets.push(target);
+
+            // Create a flatbuffer envelope containing the share data
+            let mut envelope_builder = FlatbufferEnvelopeBuilder::new();
+            let share_envelope_bytes = envelope_builder.build_simple_envelope(
+                "keyshare",
+                &base64::engine::general_purpose::STANDARD.encode(&share_bytes),
+            )?;
+
+            // Sign the share envelope
+            let signed_share_envelope = FlatbufferEnvelopeBuilder::sign_envelope(
+                &share_envelope_bytes,
+                &sk_bytes,
+                &pk_bytes,
+            )?;
+
+            target_flatbuffers.push(signed_share_envelope);
+            target_peer_ids.push(peer.clone());
         } else {
             log::warn!("missing local share file: {}", share_path.display());
         }
     }
 
     let dist_resp = fb_client
-        .distribute_shares(tenant, &manifest_id, &shares_envelope_signed, &targets)
+        .distribute_shares_flatbuffer(
+            tenant,
+            &manifest_id,
+            &shares_envelope_signed_b64,
+            &target_peer_ids,
+            &target_flatbuffers,
+        )
         .await?;
     info!("Distribute shares response: {:?}", dist_resp);
 
     // 4) Distribute capability tokens using flatbuffers
-    let capability_targets = create_capability_tokens(&peers, &returned_manifest_id, &pk_bytes, &sk_bytes).await?;
+    let capability_targets =
+        create_capability_tokens(&peers, &returned_manifest_id, &pk_bytes, &sk_bytes).await?;
     let capability_resp = fb_client
         .distribute_capabilities(tenant, &manifest_id, &capability_targets)
         .await?;
@@ -160,14 +181,25 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
     // 5) Assign task to replicas using flatbuffers
     // Determine replicas desired from manifest
-    let replicas = manifest_json.get("replicas").and_then(|v| v.as_u64()).or_else(|| manifest_json.get("spec").and_then(|s| s.get("replicas").and_then(|r| r.as_u64()))).unwrap_or(1) as usize;
+    let replicas = manifest_json
+        .get("replicas")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            manifest_json
+                .get("spec")
+                .and_then(|s| s.get("replicas").and_then(|r| r.as_u64()))
+        })
+        .unwrap_or(1) as usize;
     let chosen_peers: Vec<String> = peers.into_iter().take(replicas).collect();
     let assign_resp = fb_client
         .assign_task(tenant, &manifest_id, chosen_peers)
         .await?;
     info!("Assign response: {:?}", assign_resp);
 
-    let ok = assign_resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ok = assign_resp
+        .get("ok")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if !ok {
         anyhow::bail!("assign failed");
     }
@@ -192,34 +224,30 @@ async fn create_capability_tokens(
 
     // Create capability tokens for each peer
     let mut targets: Vec<CapabilityTarget> = Vec::new();
-    
+
     for peer_id in peers {
         // Create capability envelope using flatbuffers
         let mut envelope_builder = FlatbufferEnvelopeBuilder::new();
-        let capability_envelope_bytes = envelope_builder.build_capability_envelope(
-            manifest_id,
-            peer_id,
-            ts_millis
-        )?;
+        let capability_envelope_bytes =
+            envelope_builder.build_capability_envelope(manifest_id, peer_id, ts_millis)?;
 
         // Sign capability envelope
         let capability_envelope_signed_bytes = FlatbufferEnvelopeBuilder::sign_envelope(
             &capability_envelope_bytes,
             sk_bytes,
-            pk_bytes
+            pk_bytes,
         )?;
-        
+
         // Convert to JSON for compatibility with existing APIs
         let signed_env_json = envelope_to_json(&capability_envelope_signed_bytes)?;
-        
+
         // Create target for this peer
         let target = CapabilityTarget {
             peer_id: peer_id.clone(),
-            payload: signed_env_json
+            payload: signed_env_json,
         };
         targets.push(target);
     }
-    
+
     Ok(targets)
 }
-

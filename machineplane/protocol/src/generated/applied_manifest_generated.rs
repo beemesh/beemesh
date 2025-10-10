@@ -77,7 +77,7 @@ impl<'a> flatbuffers::Follow<'a> for SignatureScheme {
   type Inner = Self;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    let b = unsafe { flatbuffers::read_scalar_at::<i8>(buf, loc) };
+    let b = flatbuffers::read_scalar_at::<i8>(buf, loc);
     Self(b)
   }
 }
@@ -86,7 +86,7 @@ impl flatbuffers::Push for SignatureScheme {
     type Output = SignatureScheme;
     #[inline]
     unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
-        unsafe { flatbuffers::emplace_scalar::<i8>(dst, self.0); }
+        flatbuffers::emplace_scalar::<i8>(dst, self.0);
     }
 }
 
@@ -166,7 +166,7 @@ impl<'a> flatbuffers::Follow<'a> for OperationType {
   type Inner = Self;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    let b = unsafe { flatbuffers::read_scalar_at::<i8>(buf, loc) };
+    let b = flatbuffers::read_scalar_at::<i8>(buf, loc);
     Self(b)
   }
 }
@@ -175,7 +175,7 @@ impl flatbuffers::Push for OperationType {
     type Output = OperationType;
     #[inline]
     unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
-        unsafe { flatbuffers::emplace_scalar::<i8>(dst, self.0); }
+        flatbuffers::emplace_scalar::<i8>(dst, self.0);
     }
 }
 
@@ -215,7 +215,7 @@ impl<'a> flatbuffers::Follow<'a> for KeyValue<'a> {
   type Inner = KeyValue<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -329,7 +329,7 @@ impl<'a> flatbuffers::Follow<'a> for AppliedManifest<'a> {
   type Inner = AppliedManifest<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -687,14 +687,14 @@ pub fn size_prefixed_root_as_applied_manifest_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `AppliedManifest`.
 pub unsafe fn root_as_applied_manifest_unchecked(buf: &[u8]) -> AppliedManifest {
-  unsafe { flatbuffers::root_unchecked::<AppliedManifest>(buf) }
+  flatbuffers::root_unchecked::<AppliedManifest>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed AppliedManifest and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `AppliedManifest`.
 pub unsafe fn size_prefixed_root_as_applied_manifest_unchecked(buf: &[u8]) -> AppliedManifest {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<AppliedManifest>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<AppliedManifest>(buf)
 }
 #[inline]
 pub fn finish_applied_manifest_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

@@ -57,19 +57,11 @@ pub async fn store_manifest_in_dht(
         .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
         .unwrap_or_default();
 
-    let owner_signature_bytes: Vec<u8> = manifest
-        .get("sig")
-        .and_then(|v| v.as_str())
-        .map(|s| {
-            // signature may be prefixed like "ml-dsa-65:<b64>"; strip prefix if present
-            if let Some(idx) = s.find(':') {
-                &s[idx + 1..]
-            } else {
-                s
-            }
-        })
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .unwrap_or_default();
+    let owner_sig_str = manifest.get("sig").and_then(|v| v.as_str());
+    let owner_sig_bytes = crate::libp2p_beemesh::envelope::normalize_and_decode_signature(
+        owner_sig_str,
+    ).map_err(|e| format!("failed to decode signature: {:?}", e))?;
+    // owner_sig_bytes is now the decoded signature bytes
 
     let signature_scheme = SignatureScheme::NONE; // CLI uses PQ scheme not represented in enum yet
 
@@ -80,7 +72,7 @@ pub async fn store_manifest_in_dht(
         &local_peer_id.to_string(),
         &owner_pubkey_bytes,
         signature_scheme,
-        &owner_signature_bytes,
+        &owner_sig_bytes,
         &manifest_json,
         &manifest_kind,
         labels,
@@ -173,6 +165,7 @@ mod tests {
         let local_peer_id = libp2p::PeerId::random();
         let manifest = serde_json::json!({
             "pubkey": base64::engine::general_purpose::STANDARD.encode(&vec![1u8,2u8,3u8]),
+            // Use the standardized signature prefix for test fixtures
             "sig": format!("ml-dsa-65:{}", base64::engine::general_purpose::STANDARD.encode(&vec![9u8,8u8,7u8])),
         });
 
@@ -198,14 +191,11 @@ mod tests {
             .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
             .unwrap_or_default();
 
-        let owner_signature_bytes: Vec<u8> = manifest
-            .get("sig")
-            .and_then(|v| v.as_str())
-            .map(|s| {
-                if let Some(idx) = s.find(':') { &s[idx+1..] } else { s }
-            })
-            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-            .unwrap_or_default();
+        let owner_sig_str = manifest.get("sig").and_then(|v| v.as_str());
+        let owner_sig_bytes = crate::libp2p_beemesh::envelope::normalize_and_decode_signature(
+            owner_sig_str,
+        ).unwrap();
+        // owner_sig_bytes is now the decoded signature bytes
 
         let buf = build_applied_manifest(
             &manifest_id,
@@ -214,7 +204,7 @@ mod tests {
             &local_peer_id.to_string(),
             &owner_pubkey_bytes,
             SignatureScheme::NONE,
-            &owner_signature_bytes,
+            &owner_sig_bytes,
             &manifest_json,
             "Test",
             labels,

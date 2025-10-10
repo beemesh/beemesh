@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use std::collections::HashMap;
+type KadQuerySender = mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>;
 
 use crate::libp2p_beemesh::{behaviour::MyBehaviour};
 use libp2p::kad::QueryId;
@@ -254,7 +255,7 @@ static ACTIVE_ANNOUNCES: Lazy<Mutex<HashMap<String, AnnounceEntry>>> = Lazy::new
 static ENQUEUED_CONTROLS: Lazy<Mutex<std::collections::VecDeque<Libp2pControl>>> = Lazy::new(|| Mutex::new(std::collections::VecDeque::new()));
 
 /// Pending Kademlia GetRecord queries: query_id debug string -> reply sender
-static PENDING_KAD_QUERIES: Lazy<Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+static PENDING_KAD_QUERIES: Lazy<Mutex<std::collections::HashMap<String, KadQuerySender>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Pending provider lookup queries: QueryId string -> reply sender (Vec<PeerId>)
 static PENDING_PROVIDERS_QUERIES: Lazy<Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Vec<libp2p::PeerId>>>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
@@ -376,7 +377,8 @@ pub enum Libp2pControl {
     /// Send an encrypted key share to a specific peer
     SendKeyShare {
         peer_id: PeerId,
-        share_payload: serde_json::Value,
+        /// Payload bytes (flatbuffer envelope, flatbuffer KeyShareRequest, or recipient blob)
+        share_payload: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
     /// Find peers that hold shares for a given manifest id using DHT providers

@@ -128,64 +128,57 @@ graph TD
 * **Task ID**: ULID string. **MUST** be globally unique for de‑duplication.
 * **Lease Key**: `lease/<task_id>` in MDHT.
 
-### 3.2 Message Schemas (canonical JSON)
+### 3.2 Message Schemas (FlatBuffer Protocol)
 
-**Task** (published to `scheduler-tasks`):
+All inter-node communication uses **FlatBuffer** serialized messages wrapped in signed envelopes for authentication and replay protection. The protocol defines the following key message types:
 
-```json
-{
-  "task_id": "01JABCD123...",
-  "manifest_ref": "oci://registry.example/app:1.2.3#deployment.yaml",
-  "reqs": { "cpu_m": 500, "mem_mb": 256, "gpu": 0, "storage_mb": 0 },
-  "qos": { "priority": 5, "preemptible": true, "deadline_ms": 0 },
-  "affinity": { "include": ["region:eu", "arch:amd64"], "exclude": ["zone:edge-13"] },
-  "hints": { "network_locality": ["service:db-primary"], "data_locality": ["s3://bucket/key"] },
-  "nonce": "base64-12B",
-  "ts": 1726646400123,
-  "sig": "ed25519:..."
-}
-```
+**ApplyRequest** - Request to deploy a workload:
+- `replicas`: Number of replicas to deploy
+- `tenant`: Tenant identifier
+- `operation_id`: Unique operation identifier  
+- `manifest_json`: Kubernetes manifest as JSON/YAML string
+- `origin_peer`: Requesting peer ID
 
-**Bid** (published to `scheduler-proposals`):
+**ApplyResponse** - Response to deployment request:
+- `ok`: Success/failure indicator
+- `operation_id`: Matching operation identifier
+- `message`: Status or error message
 
-```json
-{
-  "task_id": "01JABCD123...",
-  "node_id": "12D3KooW...",
-  "score": 0.842,
-  "fit": {"cpu_m": 0.9, "mem_mb": 0.7, "latency_ms": 12},
-  "reasons": ["cpu_fit", "same_region"],
-  "capabilities": ["podman", "gpu:0"],
-  "nonce": "base64-12B",
-  "ts": 1726646400250,
-  "sig": "ed25519:..."
-}
-```
+**CapacityRequest** - Query available resources:
+- `cpu_milli`: Required CPU in millicores
+- `memory_bytes`: Required memory in bytes
+- `storage_bytes`: Required storage in bytes
+- `replicas`: Number of replicas
 
-**Event** (published to `scheduler-events`):
+**CapacityReply** - Resource availability response:
+- `ok`: Availability indicator
+- `cpu_available_milli`: Available CPU
+- `memory_available_bytes`: Available memory
+- `storage_available_bytes`: Available storage
+- `node_id`: Responding node identifier
+- `region`: Node region/zone
+- `capabilities`: Node capabilities list
 
-```json
-{
-  "task_id": "01JABCD123...",
-  "node_id": "12D3KooW...",
-  "status": "Deployed|Failed|Preempted|Cancelled",
-  "details": "string",
-  "ts": 1726646400450,
-  "sig": "ed25519:..."
-}
-```
+**KeyShareRequest** - Request encrypted key share:
+- `manifest_id`: Manifest identifier
+- `capability`: Authorization capability token
 
-**Lease** (MDHT record, ephemeral):
+**KeyShareResponse** - Key share response:
+- `ok`: Success indicator
+- `operation_id`: Request identifier
+- `message`: Share data or error message
 
-```json
-{
-  "task_id": "01JABCD123...",
-  "winner_id": "12D3KooW...",
-  "expires_at": 1726646400450,
-  "version": 2,
-  "sig": "ed25519:..."
-}
-```
+**Envelope** - Authentication wrapper for all messages:
+- `payload`: FlatBuffer message bytes
+- `payload_type`: Message type identifier
+- `nonce`: Replay protection nonce
+- `ts`: Timestamp (milliseconds)
+- `alg`: Signature algorithm
+- `sig`: Digital signature
+- `pubkey`: Public key for verification
+- `peer_id`: Optional peer identifier
+
+All messages are serialized as FlatBuffers and wrapped in signed Envelope structures using post-quantum ML-DSA-65 signatures.
 
 ### 3.3 Cryptography
 
@@ -327,8 +320,8 @@ machineplane:
 
 ## 11. Interop & Compatibility
 
-* Wire formats **MUST** be JSON with UTF‑8; unknown fields **MUST** be ignored (forward‑compat).
-* Versioning **MUST** appear as top‑level field `proto_version` when incremented; nodes **MUST** expose supported versions in MDHT metadata.
+* Wire formats **MUST** be FlatBuffer with signed Envelope wrappers; unknown fields in FlatBuffers are automatically ignored (forward‑compat).
+* Versioning **MUST** appear in FlatBuffer schema evolution; nodes **MUST** expose supported protocol versions in MDHT metadata.
 
 ---
 

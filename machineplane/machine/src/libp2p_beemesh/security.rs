@@ -3,11 +3,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use base64::engine::general_purpose;
-use base64::Engine as _;
 use serde_json::Value;
-
-use crypto;
 
 /// Keep nonces for a short window to mitigate replay attacks.
 /// Simple in-memory map: nonce_str -> Instant inserted_at.
@@ -16,10 +12,8 @@ use crypto;
 /// LRU cache, sharded maps, or a persistent store for high-throughput nodes.
 static NONCE_STORE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
-/// Toggle to require signed messages. Reads env var BEE_MESH_REQUIRE_SIGNED=true/1
-// Previously this was controlled by the BEE_MESH_REQUIRE_SIGNED env var.
-// Signature verification is required unconditionally to ensure messages
-// are always authenticated and cannot be silently accepted.
+/// Signature verification is required unconditionally to ensure messages
+/// are always authenticated and cannot be silently accepted.
 pub fn require_signed_messages() -> bool {
     true
 }
@@ -35,182 +29,103 @@ fn prune_nonces(max_age: Duration) {
     store.retain(|_, &mut t| now.duration_since(t) <= max_age);
 }
 
-/// Verify an incoming JSON envelope and check nonce uniqueness.
-///
-/// Expected envelope JSON shape (example produced by CLI):
-/// {
-///   "payload": "<base64-ciphertext>",
-///   "nonce": "<base64-nonce>",
-///   "shares_meta": { ... },
-///   // server gets "sig" and "pubkey" fields appended by the CLI:
-///   "sig": "ml-dsa-65:BASE64_SIG",
-///   "pubkey": "BASE64_PUBKEY"
-/// }
-///
-/// This function:
-/// - extracts and removes `sig` and `pubkey`
-/// - reserializes the remaining envelope (deterministic insertion/order assumption)
-/// - base64-decodes `pubkey` and `sig`
-/// - calls `crypto::verify_envelope(pub_bytes, envelope_bytes, sig_bytes)`
-/// - verifies `nonce` is not already seen in the last `nonce_window`
-/// - returns the decoded payload bytes (ciphertext) on success
+/// Verify a FlatBuffer envelope and check nonce for replay protection.
+/// Returns (payload_bytes, pub_bytes, sig_bytes) on successful verification.
 pub fn verify_envelope_and_check_nonce(
-    envelope: &Value,
-) -> anyhow::Result<(Vec<u8>, String, String)> {
-    // Try JSON envelope first (backwards compatible)
-    if let Some(obj) = envelope.as_object() {
-        if obj.contains_key("sig") && obj.contains_key("pubkey") {
-            // Extract sig and pubkey fields
-            let sig_value = obj.get("sig").context("envelope missing 'sig' field")?;
-            let pub_value = obj.get("pubkey").context("envelope missing 'pubkey' field")?;
+    envelope_bytes: &[u8],
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    // Use standard 5 minute nonce window for backward compatibility
+    let nonce_window = Duration::from_secs(300);
 
-            let sig_s = sig_value.as_str().context("'sig' is not a string")?;
-            let pub_b64 = pub_value.as_str().context("'pubkey' is not a string")?;
+    // All envelopes must be FlatBuffers now
+    crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(envelope_bytes, nonce_window)
+}
 
-            // Signature string may have a scheme prefix like "ml-dsa-65:BASE64", handle that
-            let sig_b64 = sig_s
-                .splitn(2, ':')
-                .nth(if sig_s.contains(':') { 1 } else { 0 })
-                .unwrap_or(sig_s);
+/// Compatibility wrapper that can handle both JSON Value and raw FlatBuffer bytes
+/// This is a temporary function to help transition from JSON to FlatBuffer-only communication
+pub fn verify_envelope_and_check_nonce_compat(
+    envelope_data: &[u8],
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    // First try to parse as FlatBuffer
+    if let Ok(result) = verify_envelope_and_check_nonce(envelope_data) {
+        return Ok(result);
+    }
 
-            let sig_bytes = general_purpose::STANDARD
-                .decode(sig_b64)
-                .context("failed to base64-decode signature")?;
-            let pub_bytes = general_purpose::STANDARD
-                .decode(pub_b64)
-                .context("failed to base64-decode pubkey")?;
-
-            // Build a new Value that excludes sig and pubkey for verification (the CLI signed this envelope)
-            let mut envelope_no_sig = serde_json::Map::new();
-            for (k, v) in obj.iter() {
-                if k == "sig" || k == "pubkey" {
-                    continue;
-                }
-                envelope_no_sig.insert(k.clone(), v.clone());
-            }
-            let envelope_no_sig_value = Value::Object(envelope_no_sig);
-            let envelope_bytes = serde_json::to_vec(&envelope_no_sig_value)
-                .context("failed to serialize envelope for verification")?;
-
-            // Verify signature using crypto helper
-            crypto::verify_envelope(&pub_bytes, &envelope_bytes, &sig_bytes)
-                .context("signature verification failed")?;
-
-            // Extract nonce and check replay
-            let nonce_val = envelope
-                .get("nonce")
-                .context("envelope missing 'nonce' field for replay protection")?;
-            let nonce_str = if nonce_val.is_string() {
-                nonce_val.as_str().unwrap().to_string()
-            } else {
-                return Err(anyhow::anyhow!("envelope 'nonce' must be a string"));
-            };
-
-            // Nonce window
-            let nonce_window = Duration::from_secs(300); // 5 minutes
-
-            {
-                let mut store = nonce_store().lock().unwrap();
-
-                // Prune expired entries opportunistically
-                let now = Instant::now();
-                store.retain(|_, &mut t| now.duration_since(t) <= nonce_window);
-
-                if store.contains_key(&nonce_str) {
-                    return Err(anyhow::anyhow!("replay detected: nonce already seen"));
-                }
-
-                store.insert(nonce_str, Instant::now());
-            }
-
-            // Return the decoded payload bytes (ciphertext) so the caller can decrypt as needed.
-            let payload_val = envelope
-                .get("payload")
-                .context("envelope missing 'payload' field")?;
-            let payload_b64 = payload_val
-                .as_str()
-                .context("'payload' field is not a base64 string")?;
-            let payload_bytes = general_purpose::STANDARD
-                .decode(payload_b64)
-                .context("failed to base64-decode payload")?;
-
-            // Return payload bytes plus original pubkey and signature strings so callers can
-            // propagate them into AppliedManifest records.
-            return Ok((payload_bytes, pub_b64.to_string(), sig_s.to_string()));
+    // If FlatBuffer parsing fails, try JSON for backward compatibility
+    if let Ok(json_str) = std::str::from_utf8(envelope_data) {
+        if let Ok(json_value) = serde_json::from_str::<Value>(json_str) {
+            // Use the old JSON verification logic
+            let nonce_window = Duration::from_secs(300);
+            return crate::libp2p_beemesh::envelope::verify_json_envelope(
+                &json_value,
+                nonce_window,
+            );
         }
     }
 
-    // If not JSON, maybe it's a FlatBuffer Envelope: attempt to parse and verify.
-    // We try to interpret the provided Value as a base64 string of bytes or an
-    // object containing raw bytes (caller should pass Value::String or similar).
-    // For simplicity, if the envelope Value is a string containing base64, decode
-    // and try to parse as a FlatBuffer Envelope.
-    if let Some(s) = envelope.as_str() {
-        let buf = general_purpose::STANDARD
-            .decode(s)
-            .context("failed to base64-decode input when expecting flatbuffer bytes string")?;
+    Err(anyhow::anyhow!(
+        "envelope is neither valid FlatBuffer nor JSON"
+    ))
+}
 
-        // Try to parse as Envelope flatbuffer using the protocol helper which returns
-        // canonical bytes and decoded signature/pubkey.
-    if let Ok((canonical, sig_bytes, pub_bytes, sig_field, pubkey_field)) = protocol::machine::fb_envelope_extract_sig_pub(&buf) {
-            // Verify
-            crypto::verify_envelope(&pub_bytes, &canonical, &sig_bytes)
-                .context("signature verification failed for flatbuffer envelope")?;
-
-            // Extract nonce from the parsed envelope by re-parsing the envelope root
-            if let Ok(fb_env) = protocol::machine::root_as_envelope(&buf) {
-                let nonce = fb_env.nonce().unwrap_or("").to_string();
-                let nonce_window = Duration::from_secs(300);
-                {
-                    let mut store = nonce_store().lock().unwrap();
-                    let now = Instant::now();
-                    store.retain(|_, &mut t| now.duration_since(t) <= nonce_window);
-                    if store.contains_key(&nonce) {
-                        return Err(anyhow::anyhow!("replay detected: nonce already seen"));
-                    }
-                    store.insert(nonce, Instant::now());
-                }
-            }
-
-            // Finally return the inner payload bytes and original strings
-            // Note: we need to parse the payload bytes from the envelope body
-            if let Ok(fb_env2) = protocol::machine::root_as_envelope(&buf) {
-                let payload_vec = fb_env2.payload().map(|b| b.iter().collect::<Vec<u8>>()).unwrap_or_default();
-                return Ok((payload_vec, pubkey_field, sig_field));
-            }
-        }
-    }
-
-    Err(anyhow::anyhow!("envelope format not recognized"))
+/// Convert JSON Value to bytes for the compatibility function
+pub fn verify_envelope_json_value(
+    json_value: &Value,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let nonce_window = Duration::from_secs(300);
+    crate::libp2p_beemesh::envelope::verify_json_envelope(json_value, nonce_window)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crypto::{ensure_pqc_init, ensure_keypair_ephemeral, sign_envelope};
-    use serde_json::json;
+    use crypto::{ensure_keypair_ephemeral, ensure_pqc_init, sign_envelope};
 
     #[test]
     fn test_verify_and_replay() {
         ensure_pqc_init().expect("pqc init");
         let (pubb, privb) = ensure_keypair_ephemeral().expect("keygen");
 
-        let payload = b"{\"a\":1}".to_vec();
-        let envelope = json!({
-            "payload": base64::engine::general_purpose::STANDARD.encode(&payload),
-            "nonce": "n-abc",
-        });
-        let envelope_bytes = serde_json::to_vec(&envelope).unwrap();
-        let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &envelope_bytes).expect("sign");
+        let payload = b"test payload";
+        let payload_type = "test";
+        let nonce = format!(
+            "test-nonce-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let timestamp = 1234567890u64;
+        let alg = "ml-dsa-65";
 
-        let mut env_with_sig = envelope.clone();
-        env_with_sig["sig"] = json!(format!("ml-dsa-65:{}", sig_b64));
-        env_with_sig["pubkey"] = json!(pub_b64);
+        // Create canonical bytes for signing
+        let canonical = protocol::machine::build_envelope_canonical(
+            payload,
+            payload_type,
+            &nonce,
+            timestamp,
+            alg,
+        );
+        let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("sign");
 
-        let (decoded, _pub, _sig) = verify_envelope_and_check_nonce(&env_with_sig).expect("verify");
+        // Build signed envelope
+        let envelope_bytes = protocol::machine::build_envelope_signed(
+            payload,
+            payload_type,
+            &nonce,
+            timestamp,
+            alg,
+            "ml-dsa-65",
+            &sig_b64,
+            &pub_b64,
+        );
+
+        // First verification should succeed
+        let (decoded, _pub, _sig) =
+            verify_envelope_and_check_nonce(&envelope_bytes).expect("verify");
         assert_eq!(decoded, payload);
 
         // Replay should be rejected
-        assert!(verify_envelope_and_check_nonce(&env_with_sig).is_err());
+        assert!(verify_envelope_and_check_nonce(&envelope_bytes).is_err());
     }
 }

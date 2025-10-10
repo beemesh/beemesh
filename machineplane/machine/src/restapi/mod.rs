@@ -1,30 +1,30 @@
 use crate::pod_communication;
 use axum::{
-    extract::{Path, State, Query},
+    body::Bytes,
+    extract::{Path, Query, State},
     routing::{get, post},
-    Json, Router, body::Bytes,
+    Json, Router,
 };
+use base64::Engine;
+use log::{debug, info, warn};
+use once_cell::sync::Lazy;
+use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
 use protocol::libp2p_constants::{
     FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS, REPLICAS_FIELD, SPEC_REPLICAS_FIELD,
 };
-use serde::{Serialize};
-use std::sync::Arc;
-use base64::Engine;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
-use once_cell::sync::Lazy;
-use tokio::sync::mpsc;
-use tokio::{sync::watch, time::Duration};
-use log::{info, warn, debug};
-use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 use protocol::machine::{
-    FbEnvelope, root_as_envelope,
-    DistributeSharesRequest, root_as_distribute_shares_request,
-    DistributeCapabilitiesRequest, root_as_distribute_capabilities_request,
-    AssignRequest, root_as_assign_request
+    root_as_assign_request, root_as_distribute_capabilities_request,
+    root_as_distribute_shares_request, root_as_envelope, AssignRequest,
+    DistributeCapabilitiesRequest, DistributeSharesRequest, FbEnvelope,
 };
+use serde::Serialize;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::RwLock;
+use tokio::{sync::watch, time::Duration};
 
 #[derive(Serialize)]
 pub struct NodesResponse {
@@ -46,25 +46,37 @@ pub struct RestState {
 
 // Global in-memory store of decrypted manifests for debugging / tests.
 // Keyed by manifest_id -> decrypted manifest JSON/value.
-static DECRYPTED_MANIFESTS: Lazy<tokio::sync::RwLock<HashMap<String, serde_json::Value>>> = Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
+static DECRYPTED_MANIFESTS: Lazy<tokio::sync::RwLock<HashMap<String, serde_json::Value>>> =
+    Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
 // Global mapping of operation_id -> manifest_cid to ensure consistent manifest ID usage across REST API and apply processing
-static OPERATION_MANIFEST_MAPPING: Lazy<tokio::sync::RwLock<HashMap<String, String>>> = Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
+static OPERATION_MANIFEST_MAPPING: Lazy<tokio::sync::RwLock<HashMap<String, String>>> =
+    Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
 /// Store a decrypted manifest (async). Called by libp2p background tasks after successful decryption.
 pub async fn store_decrypted_manifest(manifest_id: &str, value: serde_json::Value) {
     let mut map = DECRYPTED_MANIFESTS.write().await;
     map.insert(manifest_id.to_string(), value.clone());
-    log::warn!("store_decrypted_manifest: stored manifest_id='{}' value_preview='{}'", 
-               manifest_id, 
-               serde_json::to_string(&value).unwrap_or("(invalid)".to_string()).chars().take(100).collect::<String>());
+    log::warn!(
+        "store_decrypted_manifest: stored manifest_id='{}' value_preview='{}'",
+        manifest_id,
+        serde_json::to_string(&value)
+            .unwrap_or("(invalid)".to_string())
+            .chars()
+            .take(100)
+            .collect::<String>()
+    );
 }
 
 /// Store the mapping of operation_id -> manifest_cid for consistent manifest ID usage
 pub async fn store_operation_manifest_mapping(operation_id: &str, manifest_cid: &str) {
     let mut map = OPERATION_MANIFEST_MAPPING.write().await;
     map.insert(operation_id.to_string(), manifest_cid.to_string());
-    log::info!("store_operation_manifest_mapping: operation_id={} -> manifest_cid={}", operation_id, manifest_cid);
+    log::info!(
+        "store_operation_manifest_mapping: operation_id={} -> manifest_cid={}",
+        operation_id,
+        manifest_cid
+    );
 }
 
 /// Get the manifest_cid for a given operation_id
@@ -98,13 +110,25 @@ pub fn build_router(
         .route("/debug/dht/manifest/{manifest_id}", get(debug_get_manifest))
         .route("/debug/peers", get(debug_peers))
         .route("/debug/tasks", get(debug_all_tasks))
-        .route("/tenant/{tenant}/tasks/{task_id}/manifest_id", get(get_task_manifest_id))
+        .route(
+            "/tenant/{tenant}/tasks/{task_id}/manifest_id",
+            get(get_task_manifest_id),
+        )
         .route("/tenant/{tenant}/tasks", post(create_task))
-        .route("/tenant/{tenant}/tasks/{task_id}/distribute_shares", post(distribute_shares))
-        .route("/tenant/{tenant}/tasks/{task_id}/distribute_capabilities", post(distribute_capabilities))
+        .route(
+            "/tenant/{tenant}/tasks/{task_id}/distribute_shares",
+            post(distribute_shares),
+        )
+        .route(
+            "/tenant/{tenant}/tasks/{task_id}/distribute_capabilities",
+            post(distribute_capabilities),
+        )
         .route("/tenant/{tenant}/tasks/{task_id}/assign", post(assign_task))
-    .route("/tenant/{tenant}/tasks/{task_id}", get(get_task_status))
-    .route("/tenant/{tenant}/tasks/{task_id}/candidates", get(get_candidates))
+        .route("/tenant/{tenant}/tasks/{task_id}", get(get_task_status))
+        .route(
+            "/tenant/{tenant}/tasks/{task_id}/candidates",
+            get(get_candidates),
+        )
         .route("/tenant/{tenant}/apply_manifest", post(apply_manifest))
         .route("/tenant/{tenant}/apply_keyshares", post(apply_keyshares))
         .route("/tenant/{tenant}/nodes", get(get_nodes))
@@ -143,23 +167,31 @@ pub async fn get_candidates(
         .and_then(|v| v.as_u64())
         .unwrap_or(3) as usize; // default to 3 if not found
 
-    // Use max(replicas, shares_n) to ensure we have enough nodes for both 
+    // Use max(replicas, shares_n) to ensure we have enough nodes for both
     // workload replication and secret reconstruction
     let required_responders = std::cmp::max(replicas, shares_n);
 
     let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
-    let capacity_fb = protocol::machine::build_capacity_request(500u32, 512u64 * 1024 * 1024, 10u64 * 1024 * 1024 * 1024, replicas as u32);
+    let capacity_fb = protocol::machine::build_capacity_request(
+        500u32,
+        512u64 * 1024 * 1024,
+        10u64 * 1024 * 1024 * 1024,
+        replicas as u32,
+    );
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
-    let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
-        request_id: request_id.clone(),
-        reply_tx: reply_tx.clone(),
-        payload: capacity_fb,
-    });
+    let _ = state.control_tx.send(
+        crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
+            request_id: request_id.clone(),
+            reply_tx: reply_tx.clone(),
+            payload: capacity_fb,
+        },
+    );
 
     let mut responders: Vec<String> = Vec::new();
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS) {
-        let remaining = Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS).saturating_sub(start.elapsed());
+        let remaining =
+            Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS).saturating_sub(start.elapsed());
         match tokio::time::timeout(remaining, reply_rx.recv()).await {
             Ok(Some(peer)) => {
                 if !responders.contains(&peer) {
@@ -188,7 +220,6 @@ struct TaskRecord {
     pub last_operation_id: Option<String>,
 }
 
-
 pub async fn apply_manifest(
     Path(tenant): Path<String>,
     State(state): State<RestState>,
@@ -204,13 +235,17 @@ pub async fn apply_manifest(
         match serde_json::from_str::<serde_json::Value>(&wrapper.to_string()) {
             Ok(env) => {
                 if env.get("sig").is_some() && env.get("pubkey").is_some() {
-                    match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&env).map(|(p, _pub, _sig)| p)
+                    match crate::libp2p_beemesh::security::verify_envelope_json_value(&env)
+                        .map(|(p, _pub, _sig)| p)
                     {
                         Ok(payload_bytes) => match std::str::from_utf8(&payload_bytes) {
                             Ok(s) => match serde_json::from_str::<serde_json::Value>(s) {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    log::warn!("apply_manifest: envelope payload not JSON: {:?}", e);
+                                    log::warn!(
+                                        "apply_manifest: envelope payload not JSON: {:?}",
+                                        e
+                                    );
                                     return Json(serde_json::json!({
                                         "ok": false,
                                         "error": "envelope payload not JSON; decryption required on server"
@@ -233,37 +268,42 @@ pub async fn apply_manifest(
                         }
                     }
                 } else {
-                    return Json(serde_json::json!({"ok": false, "error": "manifest_envelope missing signature"}));
+                    return Json(
+                        serde_json::json!({"ok": false, "error": "manifest_envelope missing signature"}),
+                    );
                 }
             }
             Err(e) => {
-                log::warn!("apply_manifest: manifest_envelope not parseable as Envelope: {:?}", e);
-                return Json(serde_json::json!({"ok": false, "error": "invalid manifest_envelope"}));
+                log::warn!(
+                    "apply_manifest: manifest_envelope not parseable as Envelope: {:?}",
+                    e
+                );
+                return Json(
+                    serde_json::json!({"ok": false, "error": "invalid manifest_envelope"}),
+                );
             }
         }
     } else if manifest.get("sig").is_some() && manifest.get("pubkey").is_some() {
         // older single-envelope format
-        match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&manifest) {
-            Ok((payload_bytes, _pubkey_s, _sig_s)) => {
-                match std::str::from_utf8(&payload_bytes) {
-                    Ok(s) => match serde_json::from_str::<serde_json::Value>(s) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            log::warn!("apply_manifest: envelope payload not JSON: {:?}", e);
-                            return Json(serde_json::json!({
-                                "ok": false,
-                                "error": "envelope payload not JSON; decryption required on server"
-                            }));
-                        }
-                    },
-                    Err(_) => {
+        match crate::libp2p_beemesh::security::verify_envelope_json_value(&manifest) {
+            Ok((payload_bytes, _pubkey_s, _sig_s)) => match std::str::from_utf8(&payload_bytes) {
+                Ok(s) => match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!("apply_manifest: envelope payload not JSON: {:?}", e);
                         return Json(serde_json::json!({
                             "ok": false,
-                            "error": "envelope payload not valid UTF-8; decryption required"
+                            "error": "envelope payload not JSON; decryption required on server"
                         }));
                     }
+                },
+                Err(_) => {
+                    return Json(serde_json::json!({
+                        "ok": false,
+                        "error": "envelope payload not valid UTF-8; decryption required"
+                    }));
                 }
-            }
+            },
             Err(e) => {
                 log::warn!("apply_manifest: envelope verification failed: {:?}", e);
                 return Json(serde_json::json!({
@@ -283,7 +323,7 @@ pub async fn apply_manifest(
         match serde_json::from_str::<serde_json::Value>(&wrapper.to_string()) {
             Ok(sh_env) => {
                 if sh_env.get("sig").is_some() && sh_env.get("pubkey").is_some() {
-                    match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&sh_env) {
+                    match crate::libp2p_beemesh::security::verify_envelope_json_value(&sh_env) {
                         Ok((_payload_bytes, _pub, _sig)) => {
                             // payload here is the shares payload (json with base64 shares). We don't
                             // need to decode the shares at this layer; pod_communication or DHT storage
@@ -291,7 +331,10 @@ pub async fn apply_manifest(
                             debug!("apply_manifest: received verified shares_envelope");
                         }
                         Err(e) => {
-                            log::warn!("apply_manifest: shares_envelope verification failed: {:?}", e);
+                            log::warn!(
+                                "apply_manifest: shares_envelope verification failed: {:?}",
+                                e
+                            );
                         }
                     }
                 } else {
@@ -299,7 +342,10 @@ pub async fn apply_manifest(
                 }
             }
             Err(e) => {
-                log::warn!("apply_manifest: shares_envelope not parseable as Envelope: {:?}", e);
+                log::warn!(
+                    "apply_manifest: shares_envelope not parseable as Envelope: {:?}",
+                    e
+                );
             }
         }
     }
@@ -320,20 +366,25 @@ pub async fn apply_manifest(
     let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
     // build a sample flatbuffer CapacityRequest (sample values for now)
     let capacity_fb = protocol::machine::build_capacity_request(
-        500u32,                    // cpu_milli
-        512u64 * 1024 * 1024,      // memory_bytes (512MB)
+        500u32,                     // cpu_milli
+        512u64 * 1024 * 1024,       // memory_bytes (512MB)
         10u64 * 1024 * 1024 * 1024, // storage_bytes (10GB)
-        replicas as u32,          // replicas
+        replicas as u32,            // replicas
     );
-    info!("apply_manifest: request_id={}, replicas={} payload_bytes={}", request_id, replicas, capacity_fb.len());
+    info!(
+        "apply_manifest: request_id={}, replicas={} payload_bytes={}",
+        request_id,
+        replicas,
+        capacity_fb.len()
+    );
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
-    let _ = state
-        .control_tx
-        .send(crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
+    let _ = state.control_tx.send(
+        crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
             request_id: request_id.clone(),
             reply_tx: reply_tx.clone(),
             payload: capacity_fb,
-        });
+        },
+    );
 
     // collect replies for the configured timeout (or until we have enough responders)
     let mut responders: Vec<String> = Vec::new();
@@ -402,7 +453,7 @@ pub async fn create_task(
 ) -> Json<serde_json::Value> {
     // validate manifest/envelope similar to apply_manifest
     debug!("create_task: validating flatbuffer envelope");
-    
+
     // Parse flatbuffer envelope from body bytes
     use protocol::machine::root_as_envelope;
     let envelope = match root_as_envelope(&body) {
@@ -414,7 +465,10 @@ pub async fn create_task(
     };
 
     // Extract payload from envelope (contains YAML content)
-    let payload_bytes = envelope.payload().map(|v| v.iter().collect::<Vec<u8>>()).unwrap_or_default();
+    let payload_bytes = envelope
+        .payload()
+        .map(|v| v.iter().collect::<Vec<u8>>())
+        .unwrap_or_default();
     let payload_str = match String::from_utf8(payload_bytes) {
         Ok(s) => s,
         Err(e) => {
@@ -422,11 +476,17 @@ pub async fn create_task(
             return Json(serde_json::json!({"error": "invalid payload content"}));
         }
     };
-    
+
     // Calculate manifest_id deterministically and get operation_id from query params
     let (manifest_id, operation_id) = if let Some(id) = params.get("manifest_id") {
         // If manifest_id is provided, use it directly (operation_id might be empty)
-        (id.clone(), params.get("operation_id").cloned().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+        (
+            id.clone(),
+            params
+                .get("operation_id")
+                .cloned()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        )
     } else if let Some(operation_id) = params.get("operation_id") {
         // Calculate manifest_id using the same method as in apply processing
         use std::collections::hash_map::DefaultHasher;
@@ -449,14 +509,14 @@ pub async fn create_task(
         let manifest_id = format!("{:x}", hasher.finish());
         (manifest_id, operation_id)
     };
-    
+
     // Use manifest_id as the task_id (since manifest_id is the central identifier)
     let task_id = manifest_id.clone();
-    
+
     // Store manifest in DHT and calculate CID
     let manifest_cid = {
         let manifest_bytes = payload_str.as_bytes();
-        
+
         // Calculate CID first using the same hash calculation as in the control module
         let calculated_cid = {
             use std::collections::hash_map::DefaultHasher;
@@ -466,13 +526,13 @@ pub async fn create_task(
             let hash = hasher.finish();
             Some(format!("{:016x}", hash))
         };
-        
+
         let (tx, mut rx) = mpsc::unbounded_channel();
         let msg = crate::libp2p_beemesh::control::Libp2pControl::StoreAppliedManifest {
             manifest_data: manifest_bytes.to_vec(),
             reply_tx: tx,
         };
-        
+
         // Send to libp2p control to store in DHT
         if state.control_tx.send(msg).is_ok() {
             // Wait for response with timeout
@@ -495,7 +555,7 @@ pub async fn create_task(
             None
         }
     };
-    
+
     // Parse the YAML payload as JSON Value
     let manifest_json: serde_json::Value = match serde_yaml::from_str(&payload_str) {
         Ok(val) => val,
@@ -504,7 +564,7 @@ pub async fn create_task(
             return Json(serde_json::json!({"error": "invalid YAML content"}));
         }
     };
-    
+
     let rec = TaskRecord {
         manifest: manifest_json,
         created_at: std::time::SystemTime::now(),
@@ -517,7 +577,7 @@ pub async fn create_task(
         let mut store = state.task_store.write().await;
         store.insert(task_id.clone(), rec);
     }
-    
+
     let response = serde_json::json!({
         "ok": true,
         "task_id": task_id.clone(),
@@ -536,19 +596,27 @@ async fn debug_keystore_shares(State(state): State<RestState>) -> Json<serde_jso
     } else {
         crypto::open_keystore_default()
     };
-    
+
     match keystore_result {
         Ok(ks) => {
             log::warn!("debug_keystore_shares: keystore opened, listing CIDs");
             match ks.list_cids() {
                 Ok(cids) => {
-                    log::warn!("debug_keystore_shares: found {} CIDs: {:?}", cids.len(), cids);
+                    log::warn!(
+                        "debug_keystore_shares: found {} CIDs: {:?}",
+                        cids.len(),
+                        cids
+                    );
                     Json(serde_json::json!({"ok": true, "cids": cids}))
-                },
-                Err(e) => Json(serde_json::json!({"ok": false, "error": format!("keystore list failed: {}", e)})),
+                }
+                Err(e) => Json(
+                    serde_json::json!({"ok": false, "error": format!("keystore list failed: {}", e)}),
+                ),
             }
-        },
-        Err(e) => Json(serde_json::json!({"ok": false, "error": format!("could not open keystore: {}", e)})),
+        }
+        Err(e) => Json(
+            serde_json::json!({"ok": false, "error": format!("could not open keystore: {}", e)}),
+        ),
     }
 }
 
@@ -615,7 +683,7 @@ async fn debug_peers(State(state): State<RestState>) -> Json<serde_json::Value> 
 async fn debug_all_tasks(State(state): State<RestState>) -> Json<serde_json::Value> {
     let store = state.task_store.read().await;
     let mut tasks = serde_json::Map::new();
-    
+
     for (task_id, record) in store.iter() {
         tasks.insert(task_id.clone(), serde_json::json!({
             "manifest_cid": record.manifest_cid,
@@ -624,14 +692,17 @@ async fn debug_all_tasks(State(state): State<RestState>) -> Json<serde_json::Val
             "shares_distributed_count": record.shares_distributed.len()
         }));
     }
-    
+
     Json(serde_json::json!({
         "ok": true,
         "tasks": serde_json::Value::Object(tasks)
     }))
 }
 
-async fn get_task_manifest_id(Path((_tenant, task_id)): Path<(String, String)>, State(state): State<RestState>) -> Json<serde_json::Value> {
+async fn get_task_manifest_id(
+    Path((_tenant, task_id)): Path<(String, String)>,
+    State(state): State<RestState>,
+) -> Json<serde_json::Value> {
     let maybe = { state.task_store.read().await.get(&task_id).cloned() };
     let task = match maybe {
         Some(t) => t,
@@ -646,16 +717,27 @@ async fn get_task_manifest_id(Path((_tenant, task_id)): Path<(String, String)>, 
     // Use stored manifest_cid instead of recalculating
     let manifest_id = match get_manifest_cid_for_operation(&operation_id).await {
         Some(cid) => {
-            log::info!("get_task_manifest_id: returning stored manifest_cid={} for operation_id={}", cid, operation_id);
+            log::info!(
+                "get_task_manifest_id: returning stored manifest_cid={} for operation_id={}",
+                cid,
+                operation_id
+            );
             cid
-        },
+        }
         None => {
             // Fallback to task record manifest_cid if available
             if let Some(cid) = &task.manifest_cid {
-                log::warn!("get_task_manifest_id: using task.manifest_cid={} for operation_id={}", cid, operation_id);
+                log::warn!(
+                    "get_task_manifest_id: using task.manifest_cid={} for operation_id={}",
+                    cid,
+                    operation_id
+                );
                 cid.clone()
             } else {
-                log::error!("get_task_manifest_id: no manifest_cid found for operation_id={}", operation_id);
+                log::error!(
+                    "get_task_manifest_id: no manifest_cid found for operation_id={}",
+                    operation_id
+                );
                 return Json(serde_json::json!({"ok": false, "error": "manifest_cid not found"}));
             }
         }
@@ -673,7 +755,10 @@ pub async fn distribute_shares(
     let distribute_request = match root_as_distribute_shares_request(&body) {
         Ok(req) => req,
         Err(e) => {
-            log::warn!("distribute_shares: failed to parse DistributeSharesRequest: {:?}", e);
+            log::warn!(
+                "distribute_shares: failed to parse DistributeSharesRequest: {:?}",
+                e
+            );
             return Json(serde_json::json!({
                 "ok": false,
                 "error": "invalid DistributeSharesRequest"
@@ -690,12 +775,15 @@ pub async fn distribute_shares(
 
     // Store the manifest in the DHT so peers can find it
     let manifest_data = serde_json::to_vec(&task_record.manifest).unwrap_or_default();
-    let (manifest_tx, mut manifest_rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
-    let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::StoreAppliedManifest {
-        manifest_data: manifest_data.clone(),
-        reply_tx: manifest_tx,
-    });
-    
+    let (manifest_tx, mut manifest_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
+    let _ = state.control_tx.send(
+        crate::libp2p_beemesh::control::Libp2pControl::StoreAppliedManifest {
+            manifest_data: manifest_data.clone(),
+            reply_tx: manifest_tx,
+        },
+    );
+
     // Wait for manifest storage (don't fail the entire operation if this fails)
     match tokio::time::timeout(Duration::from_secs(2), manifest_rx.recv()).await {
         Ok(Some(Ok(()))) => {
@@ -705,24 +793,29 @@ pub async fn distribute_shares(
             log::warn!("Failed to store manifest in DHT for task {}, continuing with keyshare distribution", task_id);
         }
     }
-    // verify shares envelope if present
-    if let Some(env_json) = distribute_request.shares_envelope_json() {
-        match serde_json::from_str::<serde_json::Value>(env_json) {
-            Ok(env) => {
-                if env.get("sig").is_none() || env.get("pubkey").is_none() {
-                    return Json(serde_json::json!({"ok": false, "error": "shares_envelope missing signature"}));
-                }
-                if let Err(e) = crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&env) {
+    // verify shares envelope if present - now expecting base64 flatbuffer envelope
+    if let Some(env_b64) = distribute_request.shares_envelope_json() {
+        // Decode base64 to get flatbuffer bytes
+        match base64::engine::general_purpose::STANDARD.decode(env_b64) {
+            Ok(envelope_bytes) => {
+                // Verify flatbuffer envelope using the existing flatbuffer verification
+                let nonce_window = std::time::Duration::from_secs(300);
+                if let Err(e) = crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
+                    &envelope_bytes,
+                    nonce_window,
+                ) {
                     // In test/integration environments signature verification may fail due to
                     // differences in canonicalization or key handling. Log and continue so
                     // that the distribution flow can proceed; callers should still see the
                     // warning in logs and adjust accordingly.
-                    log::warn!("distribute_shares: verification failed: {:?} - continuing for test", e);
+                    log::warn!("distribute_shares: flatbuffer verification failed: {:?} - continuing for test", e);
                 }
             }
             Err(e) => {
-                log::warn!("distribute_shares: envelope parse failed: {:?}", e);
-                return Json(serde_json::json!({"ok": false, "error": "invalid shares_envelope"}));
+                log::warn!("distribute_shares: envelope base64 decode failed: {:?}", e);
+                return Json(
+                    serde_json::json!({"ok": false, "error": "invalid base64 shares_envelope"}),
+                );
             }
         }
     }
@@ -732,68 +825,73 @@ pub async fn distribute_shares(
         for t in targets {
             let peer_id_str = t.peer_id().unwrap_or("");
             match peer_id_str.parse::<libp2p::PeerId>() {
-            Ok(peer_id) => {
-                let payload_json = t.payload_json().unwrap_or("{}");
-                let payload: serde_json::Value = match serde_json::from_str(payload_json) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        log::warn!("Failed to parse payload JSON: {:?}", e);
-                        serde_json::json!({})
+                Ok(peer_id) => {
+                    let payload_json = t.payload_json().unwrap_or("");
+
+                    // Decode base64 flatbuffer bytes directly
+                    let flatbuffer_bytes =
+                        match base64::engine::general_purpose::STANDARD.decode(payload_json) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                log::warn!("Failed to decode base64 flatbuffer payload: {:?}", e);
+                                results.insert(
+                                    peer_id_str.to_string(),
+                                    serde_json::Value::String(format!("decode error: {}", e)),
+                                );
+                                continue;
+                            }
+                        };
+
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
+                    let _ = state.control_tx.send(
+                        crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
+                            peer_id,
+                            share_payload: flatbuffer_bytes,
+                            reply_tx: tx,
+                        },
+                    );
+                    // wait for an ack from libp2p control layer (bounded)
+                    match tokio::time::timeout(Duration::from_secs(3), rx.recv()).await {
+                        Ok(Some(Ok(()))) => {
+                            results.insert(
+                                peer_id_str.to_string(),
+                                serde_json::Value::String("delivered".to_string()),
+                            );
+                            let mut store = state.task_store.write().await;
+                            if let Some(r) = store.get_mut(&task_id) {
+                                r.shares_distributed.insert(peer_id_str.to_string(), true);
+                            }
+                        }
+                        Ok(Some(Err(e))) => {
+                            results.insert(
+                                peer_id_str.to_string(),
+                                serde_json::Value::String(format!("error: {}", e)),
+                            );
+                            let mut store = state.task_store.write().await;
+                            if let Some(r) = store.get_mut(&task_id) {
+                                r.shares_distributed.insert(peer_id_str.to_string(), false);
+                            }
+                        }
+                        _ => {
+                            results.insert(
+                                peer_id_str.to_string(),
+                                serde_json::Value::String("timeout".to_string()),
+                            );
+                            let mut store = state.task_store.write().await;
+                            if let Some(r) = store.get_mut(&task_id) {
+                                r.shares_distributed.insert(peer_id_str.to_string(), false);
+                            }
+                        }
                     }
-                };
-                // Attach manifest_id to the payload if we can determine it from task record
-                let mut payload_with_mid = payload.clone();
-                if let Some(manifest_cid) = &task_record.manifest_cid {
-                    payload_with_mid["manifest_id"] = serde_json::Value::String(manifest_cid.clone());
-                } else if let Some(opid) = &task_record.last_operation_id {
-                    // fall back to computing manifest id using tenant + operation_id + manifest_json
-                    let tenant = _tenant.clone();
-                    let manifest_json = task_record.manifest.to_string();
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = DefaultHasher::new();
-                    tenant.hash(&mut hasher);
-                    opid.hash(&mut hasher);
-                    manifest_json.hash(&mut hasher);
-                    let manifest_id = format!("{:x}", hasher.finish());
-                    payload_with_mid["manifest_id"] = serde_json::Value::String(manifest_id);
                 }
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
-                let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
-                    peer_id,
-                    share_payload: payload_with_mid,
-                    reply_tx: tx,
-                });
-                // wait for an ack from libp2p control layer (bounded)
-                match tokio::time::timeout(Duration::from_secs(3), rx.recv()).await {
-                    Ok(Some(Ok(()))) => {
-                        results.insert(peer_id_str.to_string(), serde_json::Value::String("delivered".to_string()));
-                        let mut store = state.task_store.write().await;
-                        if let Some(r) = store.get_mut(&task_id) {
-                            r.shares_distributed.insert(peer_id_str.to_string(), true);
-                        }
-                    }
-                    Ok(Some(Err(e))) => {
-                        results.insert(peer_id_str.to_string(), serde_json::Value::String(format!("error: {}", e)));
-                        let mut store = state.task_store.write().await;
-                        if let Some(r) = store.get_mut(&task_id) {
-                            r.shares_distributed.insert(peer_id_str.to_string(), false);
-                        }
-                    }
-                    _ => {
-                        results.insert(peer_id_str.to_string(), serde_json::Value::String("timeout".to_string()));
-                        let mut store = state.task_store.write().await;
-                        if let Some(r) = store.get_mut(&task_id) {
-                            r.shares_distributed.insert(peer_id_str.to_string(), false);
-                        }
-                    }
+                Err(e) => {
+                    results.insert(
+                        peer_id_str.to_string(),
+                        serde_json::Value::String(format!("invalid peer id: {}", e)),
+                    );
                 }
-            }
-            Err(e) => {
-                results.insert(peer_id_str.to_string(), serde_json::Value::String(format!("invalid peer id: {}", e)));
             }
         }
-    }
     }
     Json(serde_json::json!({"ok": true, "results": serde_json::Value::Object(results)}))
 }
@@ -807,7 +905,10 @@ pub async fn distribute_capabilities(
     let distribute_request = match root_as_distribute_capabilities_request(&body) {
         Ok(req) => req,
         Err(e) => {
-            log::warn!("distribute_capabilities: failed to parse DistributeCapabilitiesRequest: {:?}", e);
+            log::warn!(
+                "distribute_capabilities: failed to parse DistributeCapabilitiesRequest: {:?}",
+                e
+            );
             return Json(serde_json::json!({
                 "ok": false,
                 "error": "invalid DistributeCapabilitiesRequest"
@@ -827,65 +928,83 @@ pub async fn distribute_capabilities(
         for t in targets {
             let peer_id_str = t.peer_id().unwrap_or("");
             match peer_id_str.parse::<libp2p::PeerId>() {
-            Ok(peer_id) => {
-                let payload_json = t.payload_json().unwrap_or("{}");
-                let payload: serde_json::Value = match serde_json::from_str(payload_json) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        log::warn!("Failed to parse payload JSON: {:?}", e);
-                        serde_json::json!({})
-                    }
-                };
+                Ok(peer_id) => {
+                    let payload_json = t.payload_json().unwrap_or("{}");
+                    let payload: serde_json::Value = match serde_json::from_str(payload_json) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            log::warn!("Failed to parse payload JSON: {:?}", e);
+                            serde_json::json!({})
+                        }
+                    };
 
-                // Verify the capability envelope signature (optional - log warnings for invalid signatures)
-                if let Err(e) = crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&payload) {
-                    log::warn!("distribute_capabilities: capability verification failed for peer {}: {:?} - continuing", peer_id, e);
-                }
+                    // Verify the capability envelope signature (optional - log warnings for invalid signatures)
+                    if let Err(e) =
+                        crate::libp2p_beemesh::security::verify_envelope_json_value(&payload)
+                    {
+                        log::warn!("distribute_capabilities: capability verification failed for peer {}: {:?} - continuing", peer_id, e);
+                    }
 
-                // Attach manifest_id and type to the payload 
-                let mut payload_with_meta = payload.clone();
-                if let Some(manifest_cid) = &task_record.manifest_cid {
-                    payload_with_meta["manifest_id"] = serde_json::Value::String(manifest_cid.clone());
-                } else if let Some(opid) = &task_record.last_operation_id {
-                    // fall back to computing manifest id using tenant + operation_id + manifest_json
-                    let tenant = _tenant.clone();
-                    let manifest_json = task_record.manifest.to_string();
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = DefaultHasher::new();
-                    tenant.hash(&mut hasher);
-                    opid.hash(&mut hasher);
-                    manifest_json.hash(&mut hasher);
-                    let manifest_id = format!("{:x}", hasher.finish());
-                    payload_with_meta["manifest_id"] = serde_json::Value::String(manifest_id);
-                }
-                payload_with_meta["type"] = serde_json::Value::String("capability".to_string());
+                    // Attach manifest_id and type to the payload
+                    let mut payload_with_meta = payload.clone();
+                    if let Some(manifest_cid) = &task_record.manifest_cid {
+                        payload_with_meta["manifest_id"] =
+                            serde_json::Value::String(manifest_cid.clone());
+                    } else if let Some(opid) = &task_record.last_operation_id {
+                        // fall back to computing manifest id using tenant + operation_id + manifest_json
+                        let tenant = _tenant.clone();
+                        let manifest_json = task_record.manifest.to_string();
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = DefaultHasher::new();
+                        tenant.hash(&mut hasher);
+                        opid.hash(&mut hasher);
+                        manifest_json.hash(&mut hasher);
+                        let manifest_id = format!("{:x}", hasher.finish());
+                        payload_with_meta["manifest_id"] = serde_json::Value::String(manifest_id);
+                    }
+                    payload_with_meta["type"] = serde_json::Value::String("capability".to_string());
 
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
-                let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
-                    peer_id,
-                    share_payload: payload_with_meta,
-                    reply_tx: tx,
-                });
-                
-                // wait for an ack from libp2p control layer (bounded)
-                match tokio::time::timeout(Duration::from_secs(3), rx.recv()).await {
-                    Ok(Some(Ok(()))) => {
-                        results.insert(peer_id_str.to_string(), serde_json::Value::String("delivered".to_string()));
-                    }
-                    Ok(Some(Err(e))) => {
-                        results.insert(peer_id_str.to_string(), serde_json::Value::String(format!("error: {}", e)));
-                    }
-                    _ => {
-                        results.insert(peer_id_str.to_string(), serde_json::Value::String("timeout".to_string()));
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
+                    let payload_bytes = serde_json::to_vec(&payload_with_meta).unwrap_or_default();
+                    let _ = state.control_tx.send(
+                        crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
+                            peer_id,
+                            share_payload: payload_bytes,
+                            reply_tx: tx,
+                        },
+                    );
+
+                    // wait for an ack from libp2p control layer (bounded)
+                    match tokio::time::timeout(Duration::from_secs(3), rx.recv()).await {
+                        Ok(Some(Ok(()))) => {
+                            results.insert(
+                                peer_id_str.to_string(),
+                                serde_json::Value::String("delivered".to_string()),
+                            );
+                        }
+                        Ok(Some(Err(e))) => {
+                            results.insert(
+                                peer_id_str.to_string(),
+                                serde_json::Value::String(format!("error: {}", e)),
+                            );
+                        }
+                        _ => {
+                            results.insert(
+                                peer_id_str.to_string(),
+                                serde_json::Value::String("timeout".to_string()),
+                            );
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                results.insert(peer_id_str.to_string(), serde_json::Value::String(format!("invalid peer id: {}", e)));
+                Err(e) => {
+                    results.insert(
+                        peer_id_str.to_string(),
+                        serde_json::Value::String(format!("invalid peer id: {}", e)),
+                    );
+                }
             }
         }
-    }
     }
     Json(serde_json::json!({"ok": true, "results": serde_json::Value::Object(results)}))
 }
@@ -928,18 +1047,26 @@ pub async fn assign_task(
         .unwrap_or(1) as usize;
 
     let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
-    let capacity_fb = protocol::machine::build_capacity_request(500u32, 512u64 * 1024 * 1024, 10u64 * 1024 * 1024 * 1024, replicas as u32);
+    let capacity_fb = protocol::machine::build_capacity_request(
+        500u32,
+        512u64 * 1024 * 1024,
+        10u64 * 1024 * 1024 * 1024,
+        replicas as u32,
+    );
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
-    let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
-        request_id: request_id.clone(),
-        reply_tx: reply_tx.clone(),
-        payload: capacity_fb,
-    });
+    let _ = state.control_tx.send(
+        crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
+            request_id: request_id.clone(),
+            reply_tx: reply_tx.clone(),
+            payload: capacity_fb,
+        },
+    );
 
     let mut responders: Vec<String> = Vec::new();
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS) {
-        let remaining = Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS).saturating_sub(start.elapsed());
+        let remaining =
+            Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS).saturating_sub(start.elapsed());
         match tokio::time::timeout(remaining, reply_rx.recv()).await {
             Ok(Some(peer)) => {
                 if !responders.contains(&peer) {
@@ -955,8 +1082,8 @@ pub async fn assign_task(
 
     let assigned: Vec<String> = if let Some(chosen_peers) = assign_request.chosen_peers() {
         chosen_peers.iter().map(|s| s.to_string()).collect()
-    } else { 
-        responders.into_iter().take(replicas).collect() 
+    } else {
+        responders.into_iter().take(replicas).collect()
     };
     if assigned.is_empty() {
         return Json(serde_json::json!({"ok": false, "error": "no responders"}));
@@ -978,14 +1105,26 @@ pub async fn assign_task(
                         // Store the mapping of operation_id -> manifest_cid for consistent apply processing
                         if let Some(manifest_cid) = &r.manifest_cid {
                             store_operation_manifest_mapping(&operation_id, manifest_cid).await;
-                            log::info!("assign_task: stored operation_id={} -> manifest_cid={}", operation_id, manifest_cid);
+                            log::info!(
+                                "assign_task: stored operation_id={} -> manifest_cid={}",
+                                operation_id,
+                                manifest_cid
+                            );
                         } else {
-                            log::warn!("assign_task: no manifest_cid available for task {}", task_id);
+                            log::warn!(
+                                "assign_task: no manifest_cid available for task {}",
+                                task_id
+                            );
                         }
                     }
                 }
                 let manifest_json = task.manifest.to_string();
-                let local_peer = state.peer_rx.borrow().get(0).cloned().unwrap_or_else(|| "".to_string());
+                let local_peer = state
+                    .peer_rx
+                    .borrow()
+                    .get(0)
+                    .cloned()
+                    .unwrap_or_else(|| "".to_string());
                 let apply_fb = protocol::machine::build_apply_request(
                     replicas as u32,
                     &_tenant,
@@ -995,27 +1134,43 @@ pub async fn assign_task(
                 );
 
                 let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
-                let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::SendApplyRequest {
-                    peer_id,
-                    manifest: apply_fb,
-                    reply_tx,
-                });
+                let _ = state.control_tx.send(
+                    crate::libp2p_beemesh::control::Libp2pControl::SendApplyRequest {
+                        peer_id,
+                        manifest: apply_fb,
+                        reply_tx,
+                    },
+                );
 
                 // wait for response
-                match tokio::time::timeout(Duration::from_secs(REQUEST_RESPONSE_TIMEOUT_SECS), reply_rx.recv()).await {
+                match tokio::time::timeout(
+                    Duration::from_secs(REQUEST_RESPONSE_TIMEOUT_SECS),
+                    reply_rx.recv(),
+                )
+                .await
+                {
                     Ok(Some(Ok(_msg))) => {
                         per_peer.insert(peer.clone(), serde_json::Value::String("ok".to_string()));
                     }
                     Ok(Some(Err(e))) => {
-                        per_peer.insert(peer.clone(), serde_json::Value::String(format!("error: {}", e)));
+                        per_peer.insert(
+                            peer.clone(),
+                            serde_json::Value::String(format!("error: {}", e)),
+                        );
                     }
                     _ => {
-                        per_peer.insert(peer.clone(), serde_json::Value::String("timeout".to_string()));
+                        per_peer.insert(
+                            peer.clone(),
+                            serde_json::Value::String("timeout".to_string()),
+                        );
                     }
                 }
             }
             Err(e) => {
-                per_peer.insert(peer.clone(), serde_json::Value::String(format!("invalid peer id: {}", e)));
+                per_peer.insert(
+                    peer.clone(),
+                    serde_json::Value::String(format!("invalid peer id: {}", e)),
+                );
             }
         }
     }
@@ -1042,9 +1197,14 @@ pub async fn get_task_status(
 ) -> Json<serde_json::Value> {
     let maybe = { state.task_store.read().await.get(&task_id).cloned() };
     if let Some(r) = maybe {
-        let distributed: Vec<String> = r.shares_distributed.iter().filter(|(_, v)| **v).map(|(k, _)| k.clone()).collect();
+        let distributed: Vec<String> = r
+            .shares_distributed
+            .iter()
+            .filter(|(_, v)| **v)
+            .map(|(k, _)| k.clone())
+            .collect();
         let assigned = r.assigned_peers.unwrap_or_default();
-        
+
         return Json(serde_json::json!({
             "task_id": task_id,
             "state": "Pending",
@@ -1079,7 +1239,10 @@ pub async fn apply_keyshares(
     let shares_env = match serde_json::from_str::<serde_json::Value>(&shares_env_val.to_string()) {
         Ok(env) => env,
         Err(e) => {
-            log::warn!("distribute_shares: shares_envelope not parseable as Envelope: {:?}", e);
+            log::warn!(
+                "distribute_shares: shares_envelope not parseable as Envelope: {:?}",
+                e
+            );
             return Json(serde_json::json!({"ok": false, "error": "invalid shares_envelope"}));
         }
     };
@@ -1087,8 +1250,11 @@ pub async fn apply_keyshares(
     if shares_env.get("sig").is_none() || shares_env.get("pubkey").is_none() {
         log::warn!("apply_keyshares: shares_envelope missing signature - continuing for test");
     } else {
-        if let Err(e) = crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&shares_env) {
-            log::warn!("apply_keyshares: shares_envelope verification failed: {:?} - continuing for test", e);
+        if let Err(e) = crate::libp2p_beemesh::security::verify_envelope_json_value(&shares_env) {
+            log::warn!(
+                "apply_keyshares: shares_envelope verification failed: {:?} - continuing for test",
+                e
+            );
         }
     }
 
@@ -1100,17 +1266,27 @@ pub async fn apply_keyshares(
                 // parse peer id
                 match t.peer_id.parse::<libp2p::PeerId>() {
                     Ok(peer_id) => {
-                        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
-                        let _ = state.control_tx.send(crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
-                            peer_id,
-                            share_payload: t.payload.clone(),
-                            reply_tx: tx,
-                        });
+                        let (tx, _rx) =
+                            tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
+                        let payload_bytes = serde_json::to_vec(&t.payload).unwrap_or_default();
+                        let _ = state.control_tx.send(
+                            crate::libp2p_beemesh::control::Libp2pControl::SendKeyShare {
+                                peer_id,
+                                share_payload: payload_bytes,
+                                reply_tx: tx,
+                            },
+                        );
                         // For now we don't wait on reply channel; assume success
-                        results.insert(t.peer_id.clone(), serde_json::Value::String("dispatched".to_string()));
+                        results.insert(
+                            t.peer_id.clone(),
+                            serde_json::Value::String("dispatched".to_string()),
+                        );
                     }
                     Err(e) => {
-                        results.insert(t.peer_id.clone(), serde_json::Value::String(format!("invalid peer id: {}", e)));
+                        results.insert(
+                            t.peer_id.clone(),
+                            serde_json::Value::String(format!("invalid peer id: {}", e)),
+                        );
                     }
                 }
             }

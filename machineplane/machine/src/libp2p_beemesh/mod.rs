@@ -1,4 +1,6 @@
 use anyhow::Result;
+use base64::engine::general_purpose;
+use base64::Engine;
 use futures::stream::StreamExt;
 use libp2p::{
     gossipsub, kad, mdns, noise, request_response, swarm::SwarmEvent, tcp, yamux, PeerId, Swarm,
@@ -28,11 +30,12 @@ use crate::libp2p_beemesh::{
 };
 
 pub mod behaviour;
+pub mod constants;
 pub mod control;
 pub mod dht_helpers;
 pub mod dht_manager;
-#[allow(dead_code)]
-pub mod dht_usage_example;
+pub mod envelope;
+pub mod error_helpers;
 pub mod security;
 
 // Handshake state used by the handshake behaviour handlers
@@ -120,9 +123,6 @@ pub fn setup_libp2p_node() -> Result<(
             let store = kad::store::MemoryStore::new(key.public().to_peer_id());
             let mut kademlia_config = kad::Config::default();
 
-            // Configure for small test networks
-            if std::env::var("BEEMESH_TEST_MODE").is_ok() {}
-
             kademlia_config.set_replication_factor(std::num::NonZeroUsize::new(1).unwrap()); // Minimum replication
             kademlia_config.set_max_packet_size(1024 * 1024); // Allow larger packets
 
@@ -173,7 +173,8 @@ pub static KEYSTORE_SHARED_NAME: OnceCell<Option<String>> = OnceCell::new();
 // Global behaviour-level cache for peer KEM public keys populated from capacity replies
 use once_cell::sync::Lazy;
 use std::time::{SystemTime, UNIX_EPOCH};
-pub static PEER_KEM_PUBKEYS: Lazy<RwLock<StdHashMap<libp2p::PeerId, Vec<u8>>>> = Lazy::new(|| RwLock::new(StdHashMap::new()));
+pub static PEER_KEM_PUBKEYS: Lazy<RwLock<StdHashMap<libp2p::PeerId, Vec<u8>>>> =
+    Lazy::new(|| RwLock::new(StdHashMap::new()));
 
 pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
     let _ = NODE_KEYPAIR.set(pair);
@@ -332,16 +333,69 @@ pub async fn start_libp2p_node(
                     }
                     if state.last_attempt.elapsed() >= Duration::from_secs(2) {
                         // Send handshake request using request-response protocol with FlatBuffer
-                        let local_peer_id = swarm.local_peer_id().to_string();
-                        let handshake_signature = format!("{}-{}", local_peer_id, state.attempts + 1);
-                        let handshake_request = protocol::machine::build_handshake(0, 0, "TODO", &handshake_signature);
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let nonce = rand::random::<u32>();
 
-                        let request_id = swarm.behaviour_mut().handshake_rr.send_request(peer_id, handshake_request);
-            debug!("libp2p: sent handshake request to peer={} request_id={:?} attempt={}",
-                peer_id, request_id, state.attempts + 1);
+                        // Generate proper cryptographic signature for handshake request
+                        match crypto::ensure_keypair_on_disk() {
+                            Ok((pub_bytes, sk_bytes)) => {
+                                let protocol_version = "beemesh/1.0";
+                                let local_peer_id = swarm.local_peer_id().to_string();
 
-                        state.attempts += 1;
-                        state.last_attempt = Instant::now();
+
+                                // Build simple handshake request
+                                let handshake_request = protocol::machine::build_handshake(
+                                    nonce,
+                                    timestamp,
+                                    protocol_version,
+                                    &local_peer_id,
+                                );
+
+                                // Create nonce for envelope
+                                let envelope_nonce = format!("handshake_req_{}", nonce);
+
+                                // Build canonical envelope bytes
+                                let canonical_bytes = protocol::machine::build_envelope_canonical(
+                                    &handshake_request,
+                                    "handshake",
+                                    &envelope_nonce,
+                                    timestamp,
+                                    "ml-dsa-65",
+                                );
+
+                                match crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
+                                    Ok((sig_b64, pub_b64)) => {
+                                        // Create signed envelope
+                                        let signed_envelope = protocol::machine::build_envelope_signed(
+                                            &handshake_request,
+                                            "handshake",
+                                            &envelope_nonce,
+                                            timestamp,
+                                            "ml-dsa-65",
+                                            "ml-dsa-65",
+                                            &sig_b64,
+                                            &pub_b64,
+                                        );
+
+                                        let request_id = swarm.behaviour_mut().handshake_rr.send_request(peer_id, signed_envelope);
+                                        debug!("libp2p: sent handshake request to peer={} request_id={:?} attempt={}",
+                                            peer_id, request_id, state.attempts + 1);
+
+                                        state.attempts += 1;
+                                        state.last_attempt = Instant::now();
+                                    }
+                                    Err(e) => {
+                                        warn!("failed to sign handshake request for peer {}: {:?}", peer_id, e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("failed to load keypair for handshake request to peer {}: {:?}", peer_id, e);
+                            }
+                        }
                     }
                 }
                 for peer_id in to_remove {

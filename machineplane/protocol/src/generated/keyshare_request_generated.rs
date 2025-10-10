@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for KeyShareRequest<'a> {
   type Inner = KeyShareRequest<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -191,14 +191,14 @@ pub fn size_prefixed_root_as_key_share_request_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `KeyShareRequest`.
 pub unsafe fn root_as_key_share_request_unchecked(buf: &[u8]) -> KeyShareRequest {
-  unsafe { flatbuffers::root_unchecked::<KeyShareRequest>(buf) }
+  flatbuffers::root_unchecked::<KeyShareRequest>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed KeyShareRequest and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `KeyShareRequest`.
 pub unsafe fn size_prefixed_root_as_key_share_request_unchecked(buf: &[u8]) -> KeyShareRequest {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<KeyShareRequest>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<KeyShareRequest>(buf)
 }
 #[inline]
 pub fn finish_key_share_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

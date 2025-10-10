@@ -1,9 +1,9 @@
-use libp2p::request_response;
-use log::{info, warn};
 use base64::engine::general_purpose;
 use base64::Engine as _;
+use libp2p::request_response;
+use log::{info, warn};
 /// Handle inbound key-share request-response messages.
-/// Expects the request bytes to be JSON (encrypted share payload) and replies with an ApplyResponse flatbuffer.
+/// Accept only flatbuffer-encoded KeyShareRequest / Envelope formats. JSON paths have been removed.
 pub fn keyshare_message(
     message: request_response::Message<Vec<u8>, Vec<u8>>,
     peer: libp2p::PeerId,
@@ -11,112 +11,119 @@ pub fn keyshare_message(
     _local_peer: libp2p::PeerId,
 ) {
     match message {
-        request_response::Message::Request { request, channel, .. } => {
-            warn!("libp2p: received keyshare request from peer={} request_size={}", peer, request.len());
+        request_response::Message::Request {
+            request, channel, ..
+        } => {
+            warn!(
+                "libp2p: received keyshare request from peer={} request_size={}",
+                peer,
+                request.len()
+            );
 
             // First try to parse as FlatBuffer KeyShareRequest (fetch request)
             if let Ok(kreq) = protocol::machine::root_as_key_share_request(&request) {
                 // It's a fetch request: respond with the locally stored share if available
                 let manifest_id = kreq.manifest_id().unwrap_or("");
-                warn!("libp2p: keyshare fetch request for manifest_id={} from {}", manifest_id, peer);
+                warn!(
+                    "libp2p: keyshare fetch request for manifest_id={} from {}",
+                    manifest_id, peer
+                );
 
                 // Enforce capability verification: require that the requester included a valid
                 // capability token in the 'capability' field of the request (base64-encoded).
                 // If missing or invalid, reject the fetch.
                 if let Some(cap_b64) = kreq.capability() {
                     match base64::engine::general_purpose::STANDARD.decode(cap_b64) {
-                            Ok(cap_bytes) => {
-                                log::info!("libp2p: received capability blob len={} first_byte=0x{:02x} from {}",
-                                    cap_bytes.len(), if cap_bytes.is_empty() { 0u8 } else { cap_bytes[0] }, peer);
-                            // If cap_bytes look like an encapsulated v0x02 blob, attempt to decapsulate.
-                            let effective_cap = if !cap_bytes.is_empty() && cap_bytes[0] == 0x02u8 {
-                                match crypto::ensure_kem_keypair_on_disk() {
-                                    Ok((_pubb, privb)) => match crypto::decrypt_payload_from_recipient_blob(&cap_bytes, &privb) {
-                                        Ok(inner) => inner,
-                                        Err(e) => {
-                                            warn!("failed to decapsulate capability blob from {}: {:?}", peer, e);
-                                            let resp = protocol::machine::build_keyshare_response(false, "fetch", "invalid_capability");
-                                            let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                            return;
-                                        }
-                                    },
-                                    Err(e) => {
-                                        warn!("could not load kem keypair to verify capability: {:?}", e);
-                                        let resp = protocol::machine::build_keyshare_response(false, "fetch", "server_kem_unavailable");
-                                        let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                        return;
-                                    }
-                                }
-                            } else {
-                                cap_bytes
-                            };
-
-                            // Try to parse capability as JSON envelope and verify
-                            match serde_json::from_slice::<serde_json::Value>(&effective_cap) {
-                                Ok(val) => {
-                                    match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&val) {
-                                        Ok((_payload, _pub, _sig)) => {
-                                            // Capability verified; store the signed capability locally so
-                                            // future local fetchers can present it when requesting shares.
-                                            // The originator sends the signed envelope in the capability
-                                            // field; persist it in the keystore under meta "capability:<manifest_id>".
-                                            if let Ok(signed_bytes) = serde_json::to_vec(&val) {
-                                                if let Ok((blob, cid)) = crypto::encrypt_share_for_keystore(&signed_bytes) {
-                                                    if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
-                                                        let meta = format!("capability:{}", manifest_id);
-                                                        match ks.put(&cid, &blob, Some(&meta)) {
-                                                            Ok(()) => {
-                                                                log::info!("libp2p: stored received capability for manifest_id={} cid={}", manifest_id, cid);
-                                                                // Announce provider for discovered capability holders
-                                                                let manifest_provider_cid = format!("manifest:{}", manifest_id);
-                                                                let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                                                                let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
-                                                                crate::libp2p_beemesh::control::enqueue_control(ctrl);
-                                                            }
-                                                            Err(e) => {
-                                                                log::warn!("keystore put failed for capability cid {}: {:?}", cid, e);
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                        Ok(cap_bytes) => {
+                            // Treat capability bytes as a flatbuffer envelope (not JSON).
+                            match crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
+                                &cap_bytes,
+                                std::time::Duration::from_secs(300),
+                            ) {
+                                Ok((_canonical, _pub, _sig)) => {
+                                    log::info!(
+                                        "libp2p: received valid capability blob len={} from {}",
+                                        cap_bytes.len(),
+                                        peer
+                                    );
+                                    // Store the raw capability blob in the keystore so it can be presented by local fetchers.
+                                    if let Ok((blob_enc, cid)) =
+                                        crypto::encrypt_share_for_keystore(&cap_bytes)
+                                    {
+                                        if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
+                                            let meta = format!("capability:{}", manifest_id);
+                                            if let Err(e) = ks.put(&cid, &blob_enc, Some(&meta)) {
+                                                log::warn!("keystore put failed for capability cid {}: {:?}", cid, e);
+                                            } else {
+                                                log::info!("libp2p: stored received capability for manifest_id={} cid={}", manifest_id, cid);
+                                                // Announce provider for discovered capability holders
+                                                let manifest_provider_cid =
+                                                    format!("manifest:{}", manifest_id);
+                                                let (reply_tx, _rx) =
+                                                    tokio::sync::mpsc::unbounded_channel();
+                                                let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
+                                                crate::libp2p_beemesh::control::enqueue_control(
+                                                    ctrl,
+                                                );
                                             }
-
-                                            // Capability verified; continue to fetch
-                                        }
-                                        Err(e) => {
-                                            warn!("capability verification failed from {}: {:?}", peer, e);
-                                            let resp = protocol::machine::build_keyshare_response(false, "fetch", "invalid_capability");
-                                            let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                            return;
                                         }
                                     }
+
+                                    // Capability verified; continue to fetch
                                 }
                                 Err(e) => {
-                                    warn!("capability payload from {} not parseable as JSON: {:?}", peer, e);
-                                    let resp = protocol::machine::build_keyshare_response(false, "fetch", "invalid_capability");
-                                    let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                                    warn!("capability verification failed from {}: {:?}", peer, e);
+                                    let resp = protocol::machine::build_keyshare_response(
+                                        false,
+                                        "fetch",
+                                        "invalid_capability",
+                                    );
+                                    let _ = swarm
+                                        .behaviour_mut()
+                                        .keyshare_rr
+                                        .send_response(channel, resp);
                                     return;
                                 }
                             }
                         }
                         Err(e) => {
                             warn!("failed to base64-decode capability from {}: {:?}", peer, e);
-                            let resp = protocol::machine::build_keyshare_response(false, "fetch", "invalid_capability");
-                            let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                            let resp = protocol::machine::build_keyshare_response(
+                                false,
+                                "fetch",
+                                "invalid_capability",
+                            );
+                            let _ = swarm
+                                .behaviour_mut()
+                                .keyshare_rr
+                                .send_response(channel, resp);
                             return;
                         }
                     }
                 } else {
-                    warn!("keyshare fetch missing capability from {} - rejecting", peer);
-                    let resp = protocol::machine::build_keyshare_response(false, "fetch", "missing_capability");
-                    let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                    warn!(
+                        "keyshare fetch missing capability from {} - rejecting",
+                        peer
+                    );
+                    let resp = protocol::machine::build_keyshare_response(
+                        false,
+                        "fetch",
+                        "missing_capability",
+                    );
+                    let _ = swarm
+                        .behaviour_mut()
+                        .keyshare_rr
+                        .send_response(channel, resp);
                     return;
                 }
 
                 // Search keystore for a share with this manifest_id
                 match crate::libp2p_beemesh::open_keystore() {
                     Ok(ks) => {
-                        warn!("libp2p: keyshare fetch searching keystore for manifest_id={}", manifest_id);
+                        warn!(
+                            "libp2p: keyshare fetch searching keystore for manifest_id={}",
+                            manifest_id
+                        );
                         // Use the keystore's metadata field to find the CID for this manifest_id
                         match ks.find_cid_for_manifest(manifest_id) {
                             Ok(Some(cid)) => {
@@ -142,7 +149,10 @@ pub fn keyshare_message(
                                 }
                             }
                             Ok(None) => {
-                                warn!("libp2p: keyshare fetch no share found for manifest_id={}", manifest_id);
+                                warn!(
+                                    "libp2p: keyshare fetch no share found for manifest_id={}",
+                                    manifest_id
+                                );
                             }
                             Err(e) => {
                                 warn!("libp2p: keyshare fetch error querying keystore: {:?}", e);
@@ -153,9 +163,15 @@ pub fn keyshare_message(
                 }
 
                 // Not found
-                warn!("libp2p: keyshare fetch no share found for manifest_id={}", manifest_id);
+                warn!(
+                    "libp2p: keyshare fetch no share found for manifest_id={}",
+                    manifest_id
+                );
                 let resp = protocol::machine::build_keyshare_response(false, "fetch", "not_found");
-                let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                let _ = swarm
+                    .behaviour_mut()
+                    .keyshare_rr
+                    .send_response(channel, resp);
                 return;
             }
 
@@ -166,7 +182,10 @@ pub fn keyshare_message(
                     Ok((_pubb, privb)) => {
                         match crypto::decrypt_payload_from_recipient_blob(&request, &privb) {
                             Ok(inner_bytes) => Ok(inner_bytes),
-                            Err(e) => Err(anyhow::anyhow!("failed to decapsulate recipient blob: {:?}", e)),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "failed to decapsulate recipient blob: {:?}",
+                                e
+                            )),
                         }
                     }
                     Err(e) => Err(anyhow::anyhow!("could not load kem keypair: {:?}", e)),
@@ -178,233 +197,148 @@ pub fn keyshare_message(
 
             match maybe_preprocessed {
                 Ok(effective_bytes) => {
-                    match serde_json::from_slice::<serde_json::Value>(&effective_bytes) {
-                        Ok(val) => {
-                            info!("libp2p: keyshare payload from {} = {}", peer, val);
+                    // Only accept flatbuffer-style envelopes/requests now. Reject any JSON payloads.
 
-                            // Check if this is a capability token before proceeding with envelope verification
-                            if let Some(token_type) = val.get("type").and_then(|v| v.as_str()) {
-                                if token_type == "capability" {
-                                    warn!("libp2p: detected capability token from {} - processing as capability", peer);
-                                    // Handle capability token directly without KEM decapsulation
-                                    if let Some(manifest_id) = val.get("manifest_id").and_then(|v| v.as_str()) {
-                                        // Store the entire capability token as JSON
-                                        let capability_json = serde_json::to_vec(&val).unwrap();
-                                        match crypto::encrypt_share_for_keystore(&capability_json) {
-                                            Ok((blob, cid)) => {
-                                                match crate::libp2p_beemesh::open_keystore() {
-                                                    Ok(ks) => {
-                                                        let capability_meta = format!("capability:{}", manifest_id);
-                                                        if let Err(e) = ks.put(&cid, &blob, Some(&capability_meta)) {
-                                                            warn!("keystore put failed for capability cid {}: {:?}", cid, e);
-                                                        } else {
-                                                            info!("keystore: stored capability token cid={} for manifest_id={}", cid, manifest_id);
-                                                            // Announce provider for the manifest id so requesters can discover capability holders
-                                                            let manifest_provider_cid = format!("manifest:{}", manifest_id);
-                                                            let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                                                            let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { 
-                                                                cid: manifest_provider_cid.clone(), 
-                                                                ttl_ms: 3000, 
-                                                                reply_tx 
-                                                            };
-                                                            crate::libp2p_beemesh::control::enqueue_control(ctrl);
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        warn!("could not open keystore for capability: {:?}", e);
-                                                    }
+                    // First try to parse as a simple flatbuffer envelope (for share distribution)
+                    if let Ok(env) = protocol::machine::root_as_envelope(&effective_bytes) {
+                        // Verify the envelope signature
+                        match crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
+                            &effective_bytes,
+                            std::time::Duration::from_secs(300),
+                        ) {
+                            Ok((payload_bytes, _pub, _sig)) => {
+                                // For simple share distribution, just store the payload directly
+                                match crypto::encrypt_share_for_keystore(&payload_bytes) {
+                                    Ok((blob, cid)) => {
+                                        match crate::libp2p_beemesh::open_keystore() {
+                                            Ok(ks) => {
+                                                warn!(
+                                                    "attempting keystore.put for cid={} size={}",
+                                                    cid,
+                                                    blob.len()
+                                                );
+                                                // Use manifest_id from envelope type or a default meta
+                                                let payload_type = env.payload_type().unwrap_or("");
+                                                let store_meta = if payload_type == "keyshare" {
+                                                    Some("keyshare".to_string())
+                                                } else {
+                                                    None
+                                                };
+
+                                                if let Err(e) =
+                                                    ks.put(&cid, &blob, store_meta.as_deref())
+                                                {
+                                                    warn!(
+                                                        "keystore put failed for cid {}: {:?}",
+                                                        cid, e
+                                                    );
+                                                } else {
+                                                    info!("keystore: stored simple keyshare cid={} type={}", cid, payload_type);
+                                                    // Always announce the CID itself
+                                                    let (reply_tx, _rx) =
+                                                        tokio::sync::mpsc::unbounded_channel();
+                                                    let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: cid.clone(), ttl_ms: 3000, reply_tx };
+                                                    crate::libp2p_beemesh::control::enqueue_control(
+                                                        ctrl,
+                                                    );
                                                 }
                                             }
                                             Err(e) => {
-                                                warn!("failed to encrypt capability token: {:?}", e);
+                                                warn!("could not open keystore: {:?}", e);
                                             }
                                         }
-                                        let resp = protocol::machine::build_keyshare_response(true, "capability", "stored capability token");
-                                        let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                        return;
-                                    } else {
-                                        warn!("capability token missing manifest_id from {}", peer);
-                                        let resp = protocol::machine::build_keyshare_response(false, "capability", "missing manifest_id");
-                                        let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                        return;
+                                        let resp = protocol::machine::build_keyshare_response(
+                                            true,
+                                            "keyshare_op",
+                                            "stored simple share",
+                                        );
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .keyshare_rr
+                                            .send_response(channel, resp);
+                                    }
+                                    Err(e) => {
+                                        warn!("failed to encrypt share for keystore: {:?}", e);
+                                        let resp = protocol::machine::build_keyshare_response(
+                                            false,
+                                            "keyshare_op",
+                                            "encryption for storage failed",
+                                        );
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .keyshare_rr
+                                            .send_response(channel, resp);
                                     }
                                 }
+                                return;
                             }
+                            Err(e) => {
+                                warn!("simple envelope verification failed from {}: {:?}", peer, e);
+                                // Fall through to try KEM-based processing
+                            }
+                        }
+                    }
 
-                            // Validate envelope shape and signature + nonce using security helper.
-                            match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&val) {
-                                Ok((payload_bytes, _pub, _sig)) => {
-                                    // The CLI currently places shares as base64 strings inside the envelope payload.
-                                    // If the payload is a ciphertext produced by our KEM flow, attempt to decapsulate
-                                    // using the node's on-disk KEM private key. The decapsulated shared secret is
-                                    // returned as a Zeroizing<Vec<u8>> and will be zeroed on drop.
-                                    match crypto::ensure_kem_keypair_on_disk() {
-                                        Ok((_pubb, privb)) => {
-                                            match crypto::decapsulate_share(&privb, &payload_bytes) {
-                                                Ok(shared_secret) => {
-                                                    info!("libp2p: successfully decapsulated shared secret for peer={}", peer);
-                                                    drop(shared_secret);
+                    // Try flatbuffer KeyShareRequest encoded directly in effective_bytes.
+                    if let Ok(kreq) = protocol::machine::root_as_key_share_request(&effective_bytes)
+                    {
+                        // Treat this as a keyshare upload: client provided KeyShareRequest as flatbuffer
+                        // Validate envelope/signature fields if present inside flatbuffer
+                        match crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
+                            &effective_bytes,
+                            std::time::Duration::from_secs(300),
+                        ) {
+                            Ok((_payload_bytes, _pub, _sig)) => {
+                                // The payload_bytes here are the canonical bytes; proceed to decapsulate and store as before
+                                match crypto::ensure_kem_keypair_on_disk() {
+                                    Ok((_pubb, privb)) => {
+                                        match crypto::decapsulate_share(&privb, &_payload_bytes) {
+                                            Ok(shared_secret) => {
+                                                info!("libp2p: successfully decapsulated shared secret for peer={}", peer);
+                                                drop(shared_secret);
 
-                                                    // Encrypt the provided payload and store in the local keystore.
-                                                    match crypto::encrypt_share_for_keystore(&payload_bytes) {
-                                                        Ok((blob, cid)) => {
-                                                            match crate::libp2p_beemesh::open_keystore() {
-                                                                Ok(ks) => {
-                                                                    warn!("attempting keystore.put for cid={} size={}", cid, blob.len());
-                                                                    // Use manifest_id as keystore metadata if provided.
-                                                                    // If the incoming JSON indicates a capability token (type=="capability"),
-                                                                    // store with metadata prefix `capability:` so callers can query by capability manifest id.
-                                                                    let metadata = val.get("manifest_id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                                                    let store_meta = if let Some(ref m) = metadata {
-                                                                        if let Some(t) = val.get("type").and_then(|v| v.as_str()) {
-                                                                            if t == "capability" {
-                                                                                Some(format!("capability:{}", m))
-                                                                            } else {
-                                                                                Some(m.clone())
-                                                                            }
-                                                                        } else {
-                                                                            Some(m.clone())
-                                                                        }
-                                                                    } else {
-                                                                        None
-                                                                    };
-
-                                                                    if let Err(e) = ks.put(&cid, &blob, store_meta.as_deref()) {
-                                                                        warn!("keystore put failed for cid {}: {:?}", cid, e);
-                                                                    } else {
-                                                                        if let Some(ref sm) = store_meta {
-                                                                            info!("keystore: stored keyshare cid={} meta={}", cid, sm);
-                                                                            // If this was capability metadata, announce provider for the manifest id so requesters can discover capability holders
-                                                                            if sm.starts_with("capability:") {
-                                                                                if let Some(manifest_id_val) = sm.strip_prefix("capability:") {
-                                                                                    let manifest_provider_cid = format!("manifest:{}", manifest_id_val);
-                                                                                    let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                                                                                    let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
-                                                                                    crate::libp2p_beemesh::control::enqueue_control(ctrl);
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        // Always announce the CID itself
-                                                                        let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                                                                        let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: cid.clone(), ttl_ms: 3000, reply_tx };
-                                                                        crate::libp2p_beemesh::control::enqueue_control(ctrl);
-                                                                    }
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!("could not open keystore: {:?}", e);
-                                                                }
-                                                            }
-                                                            let resp = protocol::machine::build_keyshare_response(
-                                                                true,
-                                                                "keyshare_op",
-                                                                "decapsulated, stored and announced",
-                                                            );
-                                                            let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("failed to encrypt share for keystore: {:?}", e);
-                                                            let resp = protocol::machine::build_keyshare_response(
-                                                                false,
-                                                                "keyshare_op",
-                                                                "encryption for storage failed",
-                                                            );
-                                                            let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    warn!("libp2p: failed to decapsulate share from {}: {:?}", peer, e);
-                                                    let resp = protocol::machine::build_keyshare_response(
-                                                        false,
-                                                        "keyshare_op",
-                                                        "decapsulation failed",
-                                                    );
-                                                    let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            warn!("libp2p: could not read or create kem keypair: {:?}", e);
-                                            let resp = protocol::machine::build_keyshare_response(
-                                                false,
-                                                "keyshare_op",
-                                                "server kem key unavailable",
-                                            );
-                                            let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    // Try capability token handling first
-                                    if let Some(type_val) = val.get("type").and_then(|v| v.as_str()) {
-                                        if type_val == "capability" {
-                                            warn!("libp2p: processing capability token from {}", peer);
-                                            if let Some(manifest_id) = val.get("manifest_id").and_then(|v| v.as_str()) {
-                                                if let Ok(signed_bytes) = serde_json::to_vec(&val) {
-                                                    if let Ok((blob, cid)) = crypto::encrypt_share_for_keystore(&signed_bytes) {
-                                                        if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
-                                                            let meta = format!("capability:{}", manifest_id);
-                                                            match ks.put(&cid, &blob, Some(&meta)) {
-                                                                Ok(()) => {
-                                                                    info!("libp2p: stored capability token for manifest_id={} cid={}", manifest_id, cid);
-                                                                    // Announce provider for discovered capability holders
-                                                                    let manifest_provider_cid = format!("manifest:{}", manifest_id);
-                                                                    let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                                                                    let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
-                                                                    crate::libp2p_beemesh::control::enqueue_control(ctrl);
-                                                                    
-                                                                    let resp = protocol::machine::build_keyshare_response(
-                                                                        true,
-                                                                        "capability",
-                                                                        "stored capability token",
-                                                                    );
-                                                                    let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                                                    return;
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!("keystore put failed for capability cid {}: {:?}", cid, e);
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            
-                                            let resp = protocol::machine::build_keyshare_response(
-                                                false,
-                                                "capability",
-                                                "failed to store capability token",
-                                            );
-                                            let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                                            return;
-                                        }
-                                    }
-                                    
-                                    // Try a simple fallback: some clients may send a bare {"share": "BASE64"}
-                                    // If so, accept and store it directly to the keystore to support the
-                                    // test harness and older clients.
-                                    warn!("libp2p: keyshare envelope verification failed from {}: {:?} - trying fallback", peer, e);
-                                    if let Some(share_val) = val.get("share").and_then(|v| v.as_str()) {
-                                        match general_purpose::STANDARD.decode(share_val) {
-                                            Ok(payload_bytes) => {
-                                                // proceed to encrypt for keystore and store
-                                                match crypto::encrypt_share_for_keystore(&payload_bytes) {
+                                                // Encrypt the provided payload and store in the local keystore.
+                                                match crypto::encrypt_share_for_keystore(
+                                                    &_payload_bytes,
+                                                ) {
                                                     Ok((blob, cid)) => {
-                                                        match crate::libp2p_beemesh::open_keystore() {
+                                                        match crate::libp2p_beemesh::open_keystore()
+                                                        {
                                                             Ok(ks) => {
-                                                                // Use manifest_id as keystore metadata if present in the JSON
-                                                                let metadata = val.get("manifest_id").and_then(|v| v.as_str());
-                                                                if let Err(e) = ks.put(&cid, &blob, metadata) {
+                                                                warn!("attempting keystore.put for cid={} size={}", cid, blob.len());
+                                                                // Use manifest_id from flatbuffer if provided.
+                                                                let metadata = kreq
+                                                                    .manifest_id()
+                                                                    .map(|s| s.to_string());
+                                                                let store_meta = metadata.clone();
+
+                                                                if let Err(e) = ks.put(
+                                                                    &cid,
+                                                                    &blob,
+                                                                    store_meta.as_deref(),
+                                                                ) {
                                                                     warn!("keystore put failed for cid {}: {:?}", cid, e);
                                                                 } else {
-                                                                    info!("keystore: stored keyshare cid={} (fallback)", cid);
-                                                                    // Announce manifest provider if manifest_id was provided
-                                                                    if let Some(manifest_id_val) = metadata {
-                                                                        info!("keystore: stored keyshare with manifest_id metadata: {} (fallback)", manifest_id_val);
-                                                                        let manifest_provider_cid = format!("manifest:{}", manifest_id_val);
-                                                                        let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                                                                        let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
-                                                                        crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                                    if let Some(ref sm) = store_meta
+                                                                    {
+                                                                        info!("keystore: stored keyshare cid={} meta={}", cid, sm);
+                                                                        if sm.starts_with(
+                                                                            "capability:",
+                                                                        ) {
+                                                                            if let Some(
+                                                                                manifest_id_val,
+                                                                            ) = sm.strip_prefix(
+                                                                                "capability:",
+                                                                            ) {
+                                                                                let manifest_provider_cid = format!(
+                                                                                    "manifest:{}",
+                                                                                    manifest_id_val
+                                                                                );
+                                                                                let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                                                                                let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
+                                                                                crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                                            }
+                                                                        }
                                                                     }
                                                                     // Always announce the CID itself
                                                                     let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -412,67 +346,117 @@ pub fn keyshare_message(
                                                                     crate::libp2p_beemesh::control::enqueue_control(ctrl);
                                                                 }
                                                             }
-                                                            Err(e) => warn!("could not open keystore: {:?}", e),
+                                                            Err(e) => {
+                                                                warn!(
+                                                                    "could not open keystore: {:?}",
+                                                                    e
+                                                                );
+                                                            }
                                                         }
                                                         let resp = protocol::machine::build_keyshare_response(
                                                             true,
                                                             "keyshare_op",
-                                                            "stored via fallback",
+                                                            "decapsulated, stored and announced",
                                                         );
-                                                        let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                                                        let _ = swarm
+                                                            .behaviour_mut()
+                                                            .keyshare_rr
+                                                            .send_response(channel, resp);
                                                     }
                                                     Err(e) => {
-                                                        warn!("failed to encrypt share for keystore (fallback): {:?}", e);
+                                                        warn!("failed to encrypt share for keystore: {:?}", e);
                                                         let resp = protocol::machine::build_keyshare_response(
                                                             false,
                                                             "keyshare_op",
                                                             "encryption for storage failed",
                                                         );
-                                                        let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                                                        let _ = swarm
+                                                            .behaviour_mut()
+                                                            .keyshare_rr
+                                                            .send_response(channel, resp);
                                                     }
                                                 }
                                             }
                                             Err(e) => {
-                                                warn!("libp2p: failed to base64-decode fallback share from {}: {:?}", peer, e);
-                                                let resp = protocol::machine::build_keyshare_response(
-                                                    false,
-                                                    "keyshare_op",
-                                                    "invalid base64 share",
-                                                );
-                                                let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                                                warn!("libp2p: failed to decapsulate share from {}: {:?}", peer, e);
+                                                let resp =
+                                                    protocol::machine::build_keyshare_response(
+                                                        false,
+                                                        "keyshare_op",
+                                                        "decapsulation failed",
+                                                    );
+                                                let _ = swarm
+                                                    .behaviour_mut()
+                                                    .keyshare_rr
+                                                    .send_response(channel, resp);
                                             }
                                         }
-                                    } else {
-                                        warn!("libp2p: keyshare envelope verification failed from {}: {:?}", peer, e);
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "libp2p: could not read or create kem keypair: {:?}",
+                                            e
+                                        );
                                         let resp = protocol::machine::build_keyshare_response(
                                             false,
                                             "keyshare_op",
-                                            "envelope verification failed",
+                                            "server kem key unavailable",
                                         );
-                                        let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .keyshare_rr
+                                            .send_response(channel, resp);
                                     }
                                 }
                             }
+                            Err(e) => {
+                                warn!(
+                                    "flatbuffer envelope verification failed from {}: {:?}",
+                                    peer, e
+                                );
+                                let resp = protocol::machine::build_keyshare_response(
+                                    false,
+                                    "keyshare_op",
+                                    "envelope verification failed",
+                                );
+                                let _ = swarm
+                                    .behaviour_mut()
+                                    .keyshare_rr
+                                    .send_response(channel, resp);
+                            }
                         }
-                        Err(e) => {
-                            warn!("libp2p: failed to parse keyshare JSON from {}: {:?}", peer, e);
-                            let resp = protocol::machine::build_keyshare_response(
-                                false,
-                                "keyshare_op",
-                                "invalid json payload",
-                            );
-                            let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
-                        }
+                        return;
                     }
+
+                    // Not a flatbuffer KeyShareRequest — reject legacy JSON-based payloads outright.
+                    warn!(
+                        "libp2p: rejecting non-flatbuffer keyshare request from {}",
+                        peer
+                    );
+                    let resp = protocol::machine::build_keyshare_response(
+                        false,
+                        "keyshare_op",
+                        "unsupported_payload_format",
+                    );
+                    let _ = swarm
+                        .behaviour_mut()
+                        .keyshare_rr
+                        .send_response(channel, resp);
                 }
                 Err(e) => {
-                    warn!("libp2p: failed to preprocess recipient blob from {}: {:?}", peer, e);
+                    warn!(
+                        "libp2p: failed to preprocess recipient blob from {}: {:?}",
+                        peer, e
+                    );
                     let resp = protocol::machine::build_keyshare_response(
                         false,
                         "keyshare_op",
                         "invalid recipient blob",
                     );
-                    let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
+                    let _ = swarm
+                        .behaviour_mut()
+                        .keyshare_rr
+                        .send_response(channel, resp);
                 }
             }
         }
@@ -485,14 +469,18 @@ pub fn keyshare_message(
                     let msg = resp.message().map(|s| s.to_string()).unwrap_or_default();
                     info!("libp2p: keyshare response - ok={} msg={}", ok, msg);
                     // If there's a pending fetch waiter for this peer, forward the raw response bytes
-                    if let Some(tx) = crate::libp2p_beemesh::control::take_pending_keyshare_for_peer(&peer.to_string()) {
+                    if let Some(tx) = crate::libp2p_beemesh::control::take_pending_keyshare_for_peer(
+                        &peer.to_string(),
+                    ) {
                         // send the raw response bytes so caller can parse
                         let _ = tx.send(Ok(response.clone()));
                     }
                 }
                 Err(e) => {
                     warn!("libp2p: failed to parse keyshare response: {:?}", e);
-                    if let Some(tx) = crate::libp2p_beemesh::control::take_pending_keyshare_for_peer(&peer.to_string()) {
+                    if let Some(tx) = crate::libp2p_beemesh::control::take_pending_keyshare_for_peer(
+                        &peer.to_string(),
+                    ) {
                         let _ = tx.send(Err(format!("failed to parse keyshare response: {:?}", e)));
                     }
                 }

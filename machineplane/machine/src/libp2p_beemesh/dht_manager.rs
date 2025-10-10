@@ -1,9 +1,12 @@
 #![allow(dead_code)]
 use libp2p::{kad, Swarm};
-use protocol::machine::{AppliedManifest, root_as_applied_manifest, build_applied_manifest, SignatureScheme, OperationType};
+use log::info;
+use protocol::machine::{
+    build_applied_manifest, root_as_applied_manifest, AppliedManifest, OperationType,
+    SignatureScheme,
+};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use log::info;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 
@@ -68,11 +71,7 @@ impl DhtManager {
     }
 
     /// Handle a DHT operation request
-    pub fn handle_operation(
-        &mut self,
-        operation: DhtOperation,
-        swarm: &mut Swarm<MyBehaviour>,
-    ) {
+    pub fn handle_operation(&mut self, operation: DhtOperation, swarm: &mut Swarm<MyBehaviour>) {
         match operation {
             DhtOperation::StoreManifest { manifest, reply_tx } => {
                 self.store_manifest(manifest, reply_tx, swarm);
@@ -80,11 +79,17 @@ impl DhtManager {
             DhtOperation::GetManifest { id, reply_tx } => {
                 self.get_manifest(id, reply_tx, swarm);
             }
-            DhtOperation::GetManifestsByTenant { tenant: _, reply_tx } => {
+            DhtOperation::GetManifestsByTenant {
+                tenant: _,
+                reply_tx,
+            } => {
                 // For now, send an error as this requires more complex indexing
                 let _ = reply_tx.send(Err("Tenant queries not implemented yet".to_string()));
             }
-            DhtOperation::GetManifestsByPeer { peer_id: _, reply_tx } => {
+            DhtOperation::GetManifestsByPeer {
+                peer_id: _,
+                reply_tx,
+            } => {
                 // For now, send an error as this requires more complex indexing
                 let _ = reply_tx.send(Err("Peer queries not implemented yet".to_string()));
             }
@@ -113,9 +118,15 @@ impl DhtManager {
             let tenant = manifest.tenant().unwrap_or("");
             let operation_id = manifest.operation_id().unwrap_or("");
             let origin_peer = manifest.origin_peer().unwrap_or("");
-            let owner_pubkey = manifest.owner_pubkey().map(|v| v.iter().collect::<Vec<_>>()).unwrap_or_default();
+            let owner_pubkey = manifest
+                .owner_pubkey()
+                .map(|v| v.iter().collect::<Vec<_>>())
+                .unwrap_or_default();
             let signature_scheme = manifest.signature_scheme();
-            let signature = manifest.signature().map(|v| v.iter().collect::<Vec<_>>()).unwrap_or_default();
+            let signature = manifest
+                .signature()
+                .map(|s| s.iter().collect::<Vec<_>>())
+                .unwrap_or_default();
             let manifest_json = manifest.manifest_json().unwrap_or("");
             let manifest_kind = manifest.manifest_kind().unwrap_or("");
             let labels = if let Some(labels_vec) = manifest.labels() {
@@ -163,13 +174,18 @@ impl DhtManager {
             expires: None,
         };
 
-        match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+        match swarm
+            .behaviour_mut()
+            .kademlia
+            .put_record(record, kad::Quorum::One)
+        {
             Ok(query_id) => {
-                info!("DHT: Initiated store operation for manifest {} (query_id: {:?})", manifest_id, query_id);
-                self.pending_queries.insert(
-                    query_id,
-                    DhtQueryContext::StoreManifest { reply_tx },
+                info!(
+                    "DHT: Initiated store operation for manifest {} (query_id: {:?})",
+                    manifest_id, query_id
                 );
+                self.pending_queries
+                    .insert(query_id, DhtQueryContext::StoreManifest { reply_tx });
             }
             Err(e) => {
                 let _ = reply_tx.send(Err(format!("Failed to initiate DHT store: {:?}", e)));
@@ -185,35 +201,36 @@ impl DhtManager {
     ) {
         let record_key = Self::manifest_key(&id);
         let query_id = swarm.behaviour_mut().kademlia.get_record(record_key);
-        
-    info!("DHT: Initiated get operation for manifest {} (query_id: {:?})", id, query_id);
-        
-        self.pending_queries.insert(
-            query_id,
-            DhtQueryContext::GetManifest { reply_tx },
+
+        info!(
+            "DHT: Initiated get operation for manifest {} (query_id: {:?})",
+            id, query_id
         );
+
+        self.pending_queries
+            .insert(query_id, DhtQueryContext::GetManifest { reply_tx });
     }
 
     /// Handle Kademlia query results
     pub fn handle_query_result(&mut self, query_id: kad::QueryId, result: kad::QueryResult) {
         if let Some(context) = self.pending_queries.remove(&query_id) {
             match context {
-                DhtQueryContext::StoreManifest { reply_tx } => {
-                    match result {
-                        kad::QueryResult::PutRecord(Ok(_)) => {
-                            let _ = reply_tx.send(Ok(()));
-                        }
-                        kad::QueryResult::PutRecord(Err(e)) => {
-                            let _ = reply_tx.send(Err(format!("Failed to store manifest: {:?}", e)));
-                        }
-                        _ => {
-                            let _ = reply_tx.send(Err("Unexpected query result".to_string()));
-                        }
+                DhtQueryContext::StoreManifest { reply_tx } => match result {
+                    kad::QueryResult::PutRecord(Ok(_)) => {
+                        let _ = reply_tx.send(Ok(()));
                     }
-                }
+                    kad::QueryResult::PutRecord(Err(e)) => {
+                        let _ = reply_tx.send(Err(format!("Failed to store manifest: {:?}", e)));
+                    }
+                    _ => {
+                        let _ = reply_tx.send(Err("Unexpected query result".to_string()));
+                    }
+                },
                 DhtQueryContext::GetManifest { reply_tx } => {
                     match result {
-                        kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))) => {
+                        kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
+                            peer_record,
+                        ))) => {
                             match root_as_applied_manifest(&peer_record.record.value) {
                                 Ok(_manifest) => {
                                     // Convert to owned data by cloning the bytes and re-parsing
@@ -223,27 +240,38 @@ impl DhtManager {
                                         Ok(_owned_manifest) => {
                                             // This is still a problem - we need a different approach
                                             // For now, we'll leak the memory to make it 'static
-                                            let leaked_bytes = Box::leak(owned_bytes.into_boxed_slice());
+                                            let leaked_bytes =
+                                                Box::leak(owned_bytes.into_boxed_slice());
                                             match root_as_applied_manifest(leaked_bytes) {
                                                 Ok(static_manifest) => {
-                                                    let _ = reply_tx.send(Ok(Some(static_manifest)));
+                                                    let _ =
+                                                        reply_tx.send(Ok(Some(static_manifest)));
                                                 }
                                                 Err(e) => {
-                                                    let _ = reply_tx.send(Err(format!("Failed to parse manifest: {:?}", e)));
+                                                    let _ = reply_tx.send(Err(format!(
+                                                        "Failed to parse manifest: {:?}",
+                                                        e
+                                                    )));
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            let _ = reply_tx.send(Err(format!("Failed to parse manifest: {:?}", e)));
+                                            let _ = reply_tx.send(Err(format!(
+                                                "Failed to parse manifest: {:?}",
+                                                e
+                                            )));
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    let _ = reply_tx.send(Err(format!("Failed to parse manifest: {:?}", e)));
+                                    let _ = reply_tx
+                                        .send(Err(format!("Failed to parse manifest: {:?}", e)));
                                 }
                             }
                         }
-                        kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. })) => {
+                        kad::QueryResult::GetRecord(Ok(
+                            kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. },
+                        )) => {
                             let _ = reply_tx.send(Ok(None));
                         }
                         kad::QueryResult::GetRecord(Err(e)) => {

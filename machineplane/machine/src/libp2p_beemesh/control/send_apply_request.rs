@@ -4,7 +4,8 @@ use log::info;
 
 use base64::engine::general_purpose;
 use base64::Engine as _;
-use serde_json::json;
+use flatbuffers::FlatBufferBuilder;
+use protocol::machine::{CapabilityTokenArgs, CapabilityArgs, CaveatArgs, SignatureEntryArgs};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,31 +47,38 @@ pub async fn handle_send_apply_request(
                 format!("{:x}", hasher.finish())
             };
 
-            // Build and sign capability envelope, then store signed bytes in keystore
-            let token_obj = serde_json::json!({
-                "task_id": manifest_id,
-                "issuer": swarm.local_peer_id().to_string(),
-                "required_quorum": 1,
-                "caveats": { "authorized_peer": peer_id.to_string() },
-                "ts": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0u64)
-            });
-            let token_bytes = serde_json::to_vec(&token_obj).unwrap_or_default();
-
+            // Build a flatbuffer CapabilityToken payload and sign it inside a FlatBuffer Envelope.
             if let Ok((pubb, privb)) = crypto::ensure_keypair_on_disk() {
-                // envelope
-                let mut envelope = serde_json::Map::new();
-                envelope.insert("payload".to_string(), serde_json::Value::String(general_purpose::STANDARD.encode(&token_bytes)));
-                envelope.insert("manifest_id".to_string(), serde_json::Value::String(manifest_id.clone()));
-                envelope.insert("type".to_string(), serde_json::Value::String("capability".to_string()));
-                let envelope_value = serde_json::Value::Object(envelope);
-                let envelope_bytes = serde_json::to_vec(&envelope_value).unwrap_or_default();
-                if let Ok((sig_b64, pub_b64)) = crypto::sign_envelope(&privb, &pubb, &envelope_bytes) {
-                    let mut signed_env = envelope_value.as_object().cloned().unwrap_or_default();
-                    signed_env.insert("sig".to_string(), serde_json::Value::String(format!("ml-dsa-65:{}", sig_b64)));
-                    signed_env.insert("pubkey".to_string(), serde_json::Value::String(pub_b64));
-                    let signed_bytes = serde_json::to_vec(&serde_json::Value::Object(signed_env)).unwrap_or_default();
+                let mut fbb = FlatBufferBuilder::with_capacity(256);
+                let task_off = fbb.create_string(&manifest_id);
+                let issuer_off = fbb.create_string(&swarm.local_peer_id().to_string());
+                // Build capability with required_quorum=1 and a single caveat authorized_peer
+                let peer_bytes = peer_id.to_string();
+                let caveat_value_vec = fbb.create_vector(peer_bytes.as_bytes());
+                let condition_off = fbb.create_string("authorized_peer");
+                let caveat_off = protocol::machine::Caveat::create(&mut fbb, &CaveatArgs { condition_type: Some(condition_off), value: Some(caveat_value_vec) });
+                let caves_vec = fbb.create_vector(&[caveat_off]);
+                let mut cap_args = protocol::machine::CapabilityArgs::default();
+                cap_args.task_id = Some(task_off);
+                cap_args.required_quorum = 1;
+                cap_args.issued_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0u64);
+                cap_args.expires_at = cap_args.issued_at + 3600 * 1000;
+                cap_args.issuer_peer_id = Some(issuer_off);
+                let cap_off = protocol::machine::Capability::create(&mut fbb, &cap_args);
+                let mut token_args = protocol::machine::CapabilityTokenArgs::default();
+                token_args.root_capability = Some(cap_off);
+                token_args.caveats = Some(caves_vec);
+                let token_off = protocol::machine::CapabilityToken::create(&mut fbb, &token_args);
+                fbb.finish(token_off, None);
+                let token_bytes = fbb.finished_data().to_vec();
 
-                    if let Ok((blob, cid)) = crypto::encrypt_share_for_keystore(&signed_bytes) {
+                // Sign the token bytes and wrap into a flatbuffer Envelope (signed)
+                if let Ok((sig_b64, pub_b64)) = crypto::sign_envelope(&privb, &pubb, &token_bytes) {
+                    let nonce = uuid::Uuid::new_v4().to_string();
+                    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0u64);
+                    let envelope_fb = protocol::machine::build_envelope_signed(&token_bytes, "capability", &nonce, ts, "ml-dsa-65", "ml-dsa-65", &sig_b64, &pub_b64);
+                    // Store a local copy encrypted for keystore
+                    if let Ok((blob, cid)) = crypto::encrypt_share_for_keystore(&envelope_fb) {
                         if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
                             let meta = format!("capability:{}", manifest_id);
                             if let Err(e) = ks.put(&cid, &blob, Some(&meta)) {
@@ -83,6 +91,11 @@ pub async fn handle_send_apply_request(
                             }
                         }
                     }
+                    // We'll send the envelope_fb to the peer (base64) below when creating KeyShareRequest
+                    // store envelope_fb in a variable for later use
+                    let signed_envelope_fb = envelope_fb;
+                    // attach to outer scope via placeholder variable (we will move below)
+                    // ...existing code...
                 }
             }
         }
@@ -122,96 +135,79 @@ pub async fn handle_send_apply_request(
         format!("{:x}", hasher.finish())
     };
 
-    // Build a simple JSON capability token (signed). We use a JSON token to avoid
-    // flatbuffers/flatbuffers-version issues in the workspace. The token contains
-    // basic fields and caveats. It is signed by this node's signing key.
-    let token_obj = json!({
-        "task_id": manifest_id,
-        "issuer": swarm.local_peer_id().to_string(),
-        "required_quorum": 1,
-        "caveats": { "authorized_peer": peer_id.to_string() },
-        "ts": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0u64)
-    });
-    let token_bytes = serde_json::to_vec(&token_obj).unwrap_or_default();
+    // Build a flatbuffer CapabilityToken for the remote peer and sign it.
+    let mut signed_bytes_for_remote: Option<Vec<u8>> = None;
+    if let Ok((pubb, privb)) = crypto::ensure_keypair_on_disk() {
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let task_off = fbb.create_string(&manifest_id);
+        let issuer_peer_off = fbb.create_string(&swarm.local_peer_id().to_string());
+        let peer_bytes_vec = fbb.create_vector(peer_id.to_string().as_bytes());
+        let condition_type_str = fbb.create_string("authorized_peer");
+        let caveat_off = protocol::machine::Caveat::create(&mut fbb, &CaveatArgs { condition_type: Some(condition_type_str), value: Some(peer_bytes_vec) });
+        let caves_vec = fbb.create_vector(&[caveat_off]);
 
-    // Sign the envelope (we sign the JSON token so recipients can verify origin)
-    // sign_envelope expects (sk_bytes, pk_bytes, envelope_bytes) but the helper
-    // `crypto::sign_envelope` in this repo takes (sk_bytes, pk_bytes, envelope_bytes)
-    // The caller who has persistent keys should use ensure_keypair_on_disk() to get pub/priv
-    match crypto::ensure_keypair_on_disk() {
-        Ok((pubb, privb)) => {
-            // Build an envelope JSON (without sig/pubkey fields) to sign deterministically
-            let mut envelope = serde_json::Map::new();
-            envelope.insert("payload".to_string(), serde_json::Value::String(general_purpose::STANDARD.encode(&token_bytes)));
-            envelope.insert("manifest_id".to_string(), serde_json::Value::String(manifest_id.clone()));
-            envelope.insert("type".to_string(), serde_json::Value::String("capability".to_string()));
-            let envelope_value = serde_json::Value::Object(envelope);
-            let envelope_bytes = serde_json::to_vec(&envelope_value).unwrap_or_default();
-                if let Ok((sig_b64, pub_b64)) = crypto::sign_envelope(&privb, &pubb, &envelope_bytes) {
-                // Attach signature fields
-                let mut signed_env = envelope_value.as_object().cloned().unwrap_or_default();
-                signed_env.insert("sig".to_string(), serde_json::Value::String(format!("ml-dsa-65:{}", sig_b64)));
-                signed_env.insert("pubkey".to_string(), serde_json::Value::String(pub_b64));
-                let signed_bytes = serde_json::to_vec(&serde_json::Value::Object(signed_env)).unwrap_or_default();
+        let mut cap_args = protocol::machine::CapabilityArgs::default();
+        cap_args.task_id = Some(task_off);
+        cap_args.required_quorum = 1;
+        cap_args.issued_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0u64);
+        cap_args.expires_at = cap_args.issued_at + 3600 * 1000;
+        cap_args.issuer_peer_id = Some(issuer_peer_off);
+        // type_ can be left None
+        let cap_off = protocol::machine::Capability::create(&mut fbb, &cap_args);
 
-                // Try to KEM-encapsulate the signed envelope per-recipient so only the
-                // intended peer can read it. Prefer using the KEM public key published by
-                // peers in their capacity replies (included in scheduler/gossipsub flows).
-                // If the peer's kem_pubkey is available in the behaviour peer metadata map,
-                // use it to encapsulate and place the resulting blob into the
-                // KeyShareRequest.capability FlatBuffer field. If not available, fall back
-                // to sending the signed JSON envelope directly as before.
-                let mut sent_blob = false;
+        let mut token_args = protocol::machine::CapabilityTokenArgs::default();
+        token_args.root_capability = Some(cap_off);
+        if let Some(caves) = Some(caves_vec) { token_args.caveats = Some(caves); }
+        let token_off = protocol::machine::CapabilityToken::create(&mut fbb, &token_args);
+        fbb.finish(token_off, None);
+        let token_bytes = fbb.finished_data().to_vec();
 
-                // Best-effort: try to locate the recipient's KEM public key from the
-                // global cache populated by capacity replies.
-                if let Ok(map) = crate::libp2p_beemesh::PEER_KEM_PUBKEYS.read() {
-                    if let Some(peer_kem_bytes) = map.get(&peer_id) {
-                        match crypto::encrypt_payload_for_recipient(&peer_kem_bytes, &signed_bytes) {
-                            Ok(enc_blob) => {
-                                let enc_b64 = base64::engine::general_purpose::STANDARD.encode(&enc_blob);
-                                let keyshare_fb = protocol::machine::build_keyshare_request(&manifest_id, &enc_b64);
-                                let _ = swarm.behaviour_mut().keyshare_rr.send_request(&peer_id, keyshare_fb);
-                                sent_blob = true;
-                            }
-                            Err(e) => {
-                                log::warn!("failed to encrypt payload for recipient {}: {:?} - falling back to plain envelope", peer_id, e);
-                            }
-                        }
+        if let Ok((sig_b64, pub_b64)) = crypto::sign_envelope(&privb, &pubb, &token_bytes) {
+            let nonce = uuid::Uuid::new_v4().to_string();
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0u64);
+            let envelope_fb = protocol::machine::build_envelope_signed(&token_bytes, "capability", &nonce, ts, "ml-dsa-65", "ml-dsa-65", &sig_b64, &pub_b64);
+            signed_bytes_for_remote = Some(envelope_fb);
+        }
+    }
+
+    // If we have a signed flatbuffer envelope, attempt KEM-encapsulate it per-recipient; otherwise fall back to sending the capability token bytes base64
+    if let Some(signed_envelope_fb) = signed_bytes_for_remote.as_ref() {
+        // Try to KEM-encapsulate the signed envelope per-recipient
+        let mut sent_blob = false;
+        if let Ok(map) = crate::libp2p_beemesh::PEER_KEM_PUBKEYS.read() {
+            if let Some(peer_kem_bytes) = map.get(&peer_id) {
+                match crypto::encrypt_payload_for_recipient(&peer_kem_bytes, &signed_envelope_fb) {
+                    Ok(enc_blob) => {
+                        let enc_b64 = base64::engine::general_purpose::STANDARD.encode(&enc_blob);
+                        let keyshare_fb = protocol::machine::build_keyshare_request(&manifest_id, &enc_b64);
+                        let _ = swarm.behaviour_mut().keyshare_rr.send_request(&peer_id, keyshare_fb);
+                        sent_blob = true;
                     }
-                }
-
-                if !sent_blob {
-                    // Send the capability envelope to the peer via the keyshare request channel so
-                    // their keyshare handler will store it in the keystore under metadata capability:<manifest_id>
-                    // We use the existing protocol builder to put the signed JSON bytes (base64) into the capability field.
-                    let signed_b64 = base64::engine::general_purpose::STANDARD.encode(&signed_bytes);
-                    let keyshare_fb = protocol::machine::build_keyshare_request(&manifest_id, &signed_b64);
-                    let _ = swarm.behaviour_mut().keyshare_rr.send_request(&peer_id, keyshare_fb);
-                }
-
-                // Also store a local copy in this node's keystore for auditing/owner purposes
-                // Store the signed envelope bytes so local fetchers can present a verifiable
-                // capability when requesting key shares. Previously we stored the raw token
-                // which lacked signature fields and failed verification at fetch time.
-                if let Ok((blob, cid)) = crypto::encrypt_share_for_keystore(&signed_bytes) {
-                    if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
-                        let meta = format!("capability:{}", manifest_id);
-                        if let Err(e) = ks.put(&cid, &blob, Some(&meta)) {
-                            log::warn!("keystore put failed for capability cid {}: {:?}", cid, e);
-                        } else {
-                            // Announce provider for manifest capability discovery
-                            let manifest_provider_cid = format!("manifest:{}", manifest_id);
-                            let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                            let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
-                            crate::libp2p_beemesh::control::enqueue_control(ctrl);
-                        }
+                    Err(e) => {
+                        log::warn!("failed to encrypt payload for recipient {}: {:?} - falling back to plain envelope", peer_id, e);
                     }
                 }
             }
         }
-        Err(e) => {
-            log::warn!("could not load signing keypair to create capability token: {:?}", e);
+        if !sent_blob {
+            // Send the signed envelope bytes base64 in KeyShareRequest.capability
+            let signed_b64 = base64::engine::general_purpose::STANDARD.encode(&signed_envelope_fb);
+            let keyshare_fb = protocol::machine::build_keyshare_request(&manifest_id, &signed_b64);
+            let _ = swarm.behaviour_mut().keyshare_rr.send_request(&peer_id, keyshare_fb);
+        }
+        // Also store a local copy encrypted for keystore
+        if let Ok((blob, cid)) = crypto::encrypt_share_for_keystore(&signed_envelope_fb) {
+            if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
+                let meta = format!("capability:{}", manifest_id);
+                if let Err(e) = ks.put(&cid, &blob, Some(&meta)) {
+                    log::warn!("keystore put failed for capability cid {}: {:?}", cid, e);
+                } else {
+                    let manifest_provider_cid = format!("manifest:{}", manifest_id);
+                    let (reply_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                    let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
+                    crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                }
+            }
         }
     }
 

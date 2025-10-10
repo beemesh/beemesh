@@ -8,7 +8,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/health_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/health_generated.rs"
+        ));
     }
 
     pub mod generated_capacity_request {
@@ -20,7 +23,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/capacity_request_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/capacity_request_generated.rs"
+        ));
     }
 
     pub mod generated_capacity_reply {
@@ -32,7 +38,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/capacity_reply_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/capacity_reply_generated.rs"
+        ));
     }
 
     pub mod generated_apply_request {
@@ -44,7 +53,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/apply_request_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/apply_request_generated.rs"
+        ));
     }
 
     pub mod generated_apply_response {
@@ -56,7 +68,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/apply_response_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/apply_response_generated.rs"
+        ));
     }
 
     pub mod generated_keyshare_response {
@@ -68,7 +83,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/keyshare_response_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/keyshare_response_generated.rs"
+        ));
     }
 
     pub mod generated_handshake {
@@ -80,7 +98,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/handshake_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/handshake_generated.rs"
+        ));
     }
 
     pub mod generated_envelope {
@@ -92,7 +113,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/envelope_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/envelope_generated.rs"
+        ));
     }
     pub mod generated_keyshare_request {
         #![allow(
@@ -103,7 +127,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/keyshare_request_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/keyshare_request_generated.rs"
+        ));
     }
     pub mod generated_capability_token {
         #![allow(
@@ -114,7 +141,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/capability_token_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/capability_token_generated.rs"
+        ));
     }
 
     pub mod generated_distribute_shares_request {
@@ -126,7 +156,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/distribute_shares_request_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/distribute_shares_request_generated.rs"
+        ));
     }
 
     pub mod generated_distribute_capabilities_request {
@@ -138,7 +171,10 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/distribute_capabilities_request_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/distribute_capabilities_request_generated.rs"
+        ));
     }
 
     pub mod generated_assign_request {
@@ -150,26 +186,62 @@ mod generated {
             unused_variables,
             mismatched_lifetime_syntaxes
         )]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/assign_request_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/assign_request_generated.rs"
+        ));
+    }
+
+    pub mod generated_encrypted_manifest {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/encrypted_manifest_generated.rs"
+        ));
     }
 }
 
 pub mod machine {
     // Avoid glob imports; re-export specific items below.
-    pub use crate::generated::generated_health::beemesh::machine::{Health, root_as_health};
-    pub use crate::generated::generated_capacity_reply::beemesh::machine::{ CapacityReply, root_as_capacity_reply, finish_capacity_reply_buffer };
-    pub use crate::generated::generated_capacity_request::beemesh::machine::{ CapacityRequest, root_as_capacity_request, finish_capacity_request_buffer };
+    pub use crate::generated::generated_capacity_reply::beemesh::machine::{
+        finish_capacity_reply_buffer, root_as_capacity_reply, CapacityReply,
+    };
+    pub use crate::generated::generated_capacity_request::beemesh::machine::{
+        finish_capacity_request_buffer, root_as_capacity_request, CapacityRequest,
+    };
+    pub use crate::generated::generated_health::beemesh::machine::{root_as_health, Health};
     // Re-export Args to allow building nested FB objects in other modules
-    pub use crate::generated::generated_capacity_request::beemesh::machine::CapacityRequestArgs;
+    pub use crate::generated::generated_apply_request::beemesh::machine::{
+        root_as_apply_request, ApplyRequest,
+    };
+    pub use crate::generated::generated_apply_response::beemesh::machine::{
+        root_as_apply_response, ApplyResponse,
+    };
     pub use crate::generated::generated_capacity_reply::beemesh::machine::CapacityReplyArgs;
-    pub use crate::generated::generated_apply_request::beemesh::machine::{ ApplyRequest, root_as_apply_request };
-    pub use crate::generated::generated_apply_response::beemesh::machine::{ ApplyResponse, root_as_apply_response };
-    pub use crate::generated::generated_handshake::beemesh::machine::{ Handshake, root_as_handshake };
-    pub use crate::generated::generated_envelope::beemesh::machine::{ Envelope as FbEnvelope, root_as_envelope };
-    pub use crate::generated::generated_keyshare_response::beemesh::machine::{ KeyShareResponse, root_as_key_share_response };
-    pub use crate::generated::generated_keyshare_request::beemesh::machine::{ KeyShareRequest, root_as_key_share_request };
+    pub use crate::generated::generated_capacity_request::beemesh::machine::CapacityRequestArgs;
+    pub use crate::generated::generated_envelope::beemesh::machine::{
+        root_as_envelope, Envelope as FbEnvelope,
+    };
+    pub use crate::generated::generated_handshake::beemesh::machine::{
+        root_as_handshake, Handshake,
+    };
+    pub use crate::generated::generated_keyshare_request::beemesh::machine::{
+        root_as_key_share_request, KeyShareRequest,
+    };
+    pub use crate::generated::generated_keyshare_response::beemesh::machine::{
+        root_as_key_share_response, KeyShareResponse,
+    };
     // Also export Args and helper finish function for builders/tests
-    pub use crate::generated::generated_envelope::beemesh::machine::{ EnvelopeArgs, finish_envelope_buffer };
+    pub use crate::generated::generated_envelope::beemesh::machine::{
+        finish_envelope_buffer, EnvelopeArgs,
+    };
 
     // CapabilityToken for key share authorization (generated)
     #[allow(
@@ -178,39 +250,44 @@ pub mod machine {
         non_snake_case,
         unused_imports,
         unused_variables,
-        mismatched_lifetime_syntaxes,
+        mismatched_lifetime_syntaxes
     )]
     pub mod generated_capability_token {
         pub use crate::generated::generated_capability_token::beemesh::machine::*;
     }
 
-    pub use crate::machine::generated_capability_token::CapabilityToken;
-    pub use crate::machine::generated_capability_token::CapabilityTokenArgs;
+    pub use crate::machine::generated_capability_token::root_as_capability_token;
     pub use crate::machine::generated_capability_token::Capability;
     pub use crate::machine::generated_capability_token::CapabilityArgs;
+    pub use crate::machine::generated_capability_token::CapabilityToken;
+    pub use crate::machine::generated_capability_token::CapabilityTokenArgs;
     pub use crate::machine::generated_capability_token::Caveat;
     pub use crate::machine::generated_capability_token::CaveatArgs;
     pub use crate::machine::generated_capability_token::SignatureEntry;
     pub use crate::machine::generated_capability_token::SignatureEntryArgs;
-    pub use crate::machine::generated_capability_token::root_as_capability_token;
-    
-    // Distribute shares types  
+
+    // Distribute shares types
     pub use crate::generated::generated_distribute_shares_request::beemesh::machine::{
-        DistributeSharesRequest, DistributeSharesRequestArgs, ShareTarget, ShareTargetArgs, 
-        root_as_distribute_shares_request
+        root_as_distribute_shares_request, DistributeSharesRequest, DistributeSharesRequestArgs,
+        ShareTarget, ShareTargetArgs,
     };
-    
+
     // Distribute capabilities types
     pub use crate::generated::generated_distribute_capabilities_request::beemesh::machine::{
-        DistributeCapabilitiesRequest, DistributeCapabilitiesRequestArgs, 
-        CapabilityTarget, CapabilityTargetArgs, root_as_distribute_capabilities_request  
+        root_as_distribute_capabilities_request, CapabilityTarget, CapabilityTargetArgs,
+        DistributeCapabilitiesRequest, DistributeCapabilitiesRequestArgs,
     };
-    
+
     // Assign request types
     pub use crate::generated::generated_assign_request::beemesh::machine::{
-        AssignRequest, AssignRequestArgs, root_as_assign_request
+        root_as_assign_request, AssignRequest, AssignRequestArgs,
     };
-    
+
+    // EncryptedManifest types
+    pub use crate::generated::generated_encrypted_manifest::beemesh::machine::{
+        root_as_encrypted_manifest, EncryptedManifest, EncryptedManifestArgs,
+    };
+
     // AppliedManifest for DHT storage (generated). Wrap include in a module with
     // liberal allow attributes so generated code doesn't emit warnings.
     #[allow(
@@ -219,57 +296,78 @@ pub mod machine {
         non_snake_case,
         unused_imports,
         unused_variables,
-        mismatched_lifetime_syntaxes,
+        mismatched_lifetime_syntaxes
     )]
     pub mod generated_applied_manifest {
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/applied_manifest_generated.rs"));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/applied_manifest_generated.rs"
+        ));
     }
 
     pub use crate::machine::generated_applied_manifest::beemesh::machine::{
-        AppliedManifest,
-        root_as_applied_manifest,
-        AppliedManifestArgs,
-        SignatureScheme,
-        OperationType,
-        KeyValue,
-        KeyValueArgs,
+        root_as_applied_manifest, AppliedManifest, AppliedManifestArgs, KeyValue, KeyValueArgs,
+        OperationType, SignatureScheme,
     };
 
-    use flatbuffers::FlatBufferBuilder;
     use base64::Engine as _;
+    use flatbuffers::FlatBufferBuilder;
 
     // Manual builder functions for commonly used flatbuffers
     pub fn build_health(ok: bool, status: &str) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(128);
         let status_off = fbb.create_string(status);
-        let mut args: crate::generated::generated_health::beemesh::machine::HealthArgs = Default::default();
+        let mut args: crate::generated::generated_health::beemesh::machine::HealthArgs =
+            Default::default();
         args.ok = ok;
         args.status = Some(status_off);
-        let off = crate::generated::generated_health::beemesh::machine::Health::create(&mut fbb, &args);
+        let off =
+            crate::generated::generated_health::beemesh::machine::Health::create(&mut fbb, &args);
         fbb.finish(off, None);
         fbb.finished_data().to_vec()
     }
 
-    pub fn build_capacity_request(cpu_milli: u32, memory_bytes: u64, storage_bytes: u64, replicas: u32) -> Vec<u8> {
+    pub fn build_capacity_request(
+        cpu_milli: u32,
+        memory_bytes: u64,
+        storage_bytes: u64,
+        replicas: u32,
+    ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(128);
         let mut args: crate::generated::generated_capacity_request::beemesh::machine::CapacityRequestArgs = Default::default();
         args.cpu_milli = cpu_milli;
         args.memory_bytes = memory_bytes;
         args.storage_bytes = storage_bytes;
         args.replicas = replicas;
-        let off = crate::generated::generated_capacity_request::beemesh::machine::CapacityRequest::create(&mut fbb, &args);
+        let off =
+            crate::generated::generated_capacity_request::beemesh::machine::CapacityRequest::create(
+                &mut fbb, &args,
+            );
         fbb.finish(off, None);
         fbb.finished_data().to_vec()
     }
 
-    pub fn build_capacity_reply(ok: bool, cpu_available_milli: u32, memory_available_bytes: u64, storage_available_bytes: u64, request_id: &str, node_id: &str, region: &str, kem_pubkey: Option<&str>, capabilities: &[&str]) -> Vec<u8> {
+    pub fn build_capacity_reply(
+        ok: bool,
+        cpu_available_milli: u32,
+        memory_available_bytes: u64,
+        storage_available_bytes: u64,
+        request_id: &str,
+        node_id: &str,
+        region: &str,
+        kem_pubkey: Option<&str>,
+        capabilities: &[&str],
+    ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(256);
         let req_off = fbb.create_string(request_id);
         let node_off = fbb.create_string(node_id);
         let region_off = fbb.create_string(region);
         let kem_off = kem_pubkey.map(|s| fbb.create_string(s));
-        let mut caps_vec: Vec<flatbuffers::WIPOffset<&str>> = Vec::with_capacity(capabilities.len());
-        for &c in capabilities.iter() { caps_vec.push(fbb.create_string(c)); }
+        let mut caps_vec: Vec<flatbuffers::WIPOffset<&str>> =
+            Vec::with_capacity(capabilities.len());
+        for &c in capabilities.iter() {
+            caps_vec.push(fbb.create_string(c));
+        }
         let caps_off = fbb.create_vector(&caps_vec);
         let mut args: crate::generated::generated_capacity_reply::beemesh::machine::CapacityReplyArgs = Default::default();
         args.ok = ok;
@@ -279,14 +377,25 @@ pub mod machine {
         args.request_id = Some(req_off);
         args.node_id = Some(node_off);
         args.region = Some(region_off);
-        if let Some(k) = kem_off { args.kem_pubkey = Some(k); }
+        if let Some(k) = kem_off {
+            args.kem_pubkey = Some(k);
+        }
         args.capabilities = Some(caps_off);
-        let off = crate::generated::generated_capacity_reply::beemesh::machine::CapacityReply::create(&mut fbb, &args);
+        let off =
+            crate::generated::generated_capacity_reply::beemesh::machine::CapacityReply::create(
+                &mut fbb, &args,
+            );
         fbb.finish(off, None);
         fbb.finished_data().to_vec()
     }
 
-    pub fn build_apply_request(replicas: u32, tenant: &str, operation_id: &str, manifest_json: &str, origin_peer: &str) -> Vec<u8> {
+    pub fn build_apply_request(
+        replicas: u32,
+        tenant: &str,
+        operation_id: &str,
+        manifest_json: &str,
+        origin_peer: &str,
+    ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(256);
         let tenant_off = fbb.create_string(tenant);
         let op_off = fbb.create_string(operation_id);
@@ -298,7 +407,9 @@ pub mod machine {
         args.operation_id = Some(op_off);
         args.manifest_json = Some(manifest_off);
         args.origin_peer = Some(origin_off);
-        let off = crate::generated::generated_apply_request::beemesh::machine::ApplyRequest::create(&mut fbb, &args);
+        let off = crate::generated::generated_apply_request::beemesh::machine::ApplyRequest::create(
+            &mut fbb, &args,
+        );
         fbb.finish(off, None);
         fbb.finished_data().to_vec()
     }
@@ -311,7 +422,10 @@ pub mod machine {
         args.ok = ok;
         args.operation_id = Some(op_off);
         args.message = Some(msg_off);
-        let off = crate::generated::generated_apply_response::beemesh::machine::ApplyResponse::create(&mut fbb, &args);
+        let off =
+            crate::generated::generated_apply_response::beemesh::machine::ApplyResponse::create(
+                &mut fbb, &args,
+            );
         fbb.finish(off, None);
         fbb.finished_data().to_vec()
     }
@@ -337,7 +451,10 @@ pub mod machine {
         let mut args: crate::generated::generated_keyshare_request::beemesh::machine::KeyShareRequestArgs = Default::default();
         args.manifest_id = Some(mid);
         args.capability = Some(cap);
-        let off = crate::generated::generated_keyshare_request::beemesh::machine::KeyShareRequest::create(&mut fbb, &args);
+        let off =
+            crate::generated::generated_keyshare_request::beemesh::machine::KeyShareRequest::create(
+                &mut fbb, &args,
+            );
         fbb.finish(off, None);
         fbb.finished_data().to_vec()
     }
@@ -360,7 +477,8 @@ pub mod machine {
         let pubkey_off = fbb.create_string("");
         let peer_id_off = fbb.create_string("");
 
-        let mut args = crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
+        let mut args =
+            crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
         args.payload = Some(payload_vec);
         args.payload_type = Some(payload_type_off);
         args.nonce = Some(nonce_off);
@@ -370,7 +488,9 @@ pub mod machine {
         args.pubkey = Some(pubkey_off);
         args.peer_id = Some(peer_id_off);
 
-        let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(&mut fbb, &args);
+        let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
+            &mut fbb, &args,
+        );
         crate::machine::finish_envelope_buffer(&mut fbb, env_off);
         fbb.finished_data().to_vec()
     }
@@ -394,7 +514,8 @@ pub mod machine {
         let pubkey_off = fbb.create_string(pubkey_b64);
         let peer_id_off = fbb.create_string("");
 
-        let mut args = crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
+        let mut args =
+            crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
         args.payload = Some(payload_vec);
         args.payload_type = Some(payload_type_off);
         args.nonce = Some(nonce_off);
@@ -404,7 +525,9 @@ pub mod machine {
         args.pubkey = Some(pubkey_off);
         args.peer_id = Some(peer_id_off);
 
-        let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(&mut fbb, &args);
+        let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
+            &mut fbb, &args,
+        );
         crate::machine::finish_envelope_buffer(&mut fbb, env_off);
         fbb.finished_data().to_vec()
     }
@@ -413,42 +536,62 @@ pub mod machine {
     /// signature verification together with the decoded signature and pubkey bytes and
     /// the original sig/pub strings. This centralizes the prefix parsing logic (e.g.
     /// handling "ml-dsa-65:BASE64") so callers can use a single trusted implementation.
-    pub fn fb_envelope_extract_sig_pub(buf: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, String, String)> {
-        let fb_env = crate::machine::root_as_envelope(buf).map_err(|e| anyhow::anyhow!("failed to parse envelope flatbuffer: {:?}", e))?;
+    pub fn fb_envelope_extract_sig_pub(
+        buf: &[u8],
+    ) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, String, String)> {
+        let fb_env = crate::machine::root_as_envelope(buf)
+            .map_err(|e| anyhow::anyhow!("failed to parse envelope flatbuffer: {:?}", e))?;
 
-        let payload_vec = fb_env.payload().map(|b| b.iter().collect::<Vec<u8>>()).unwrap_or_default();
+        let payload_vec = fb_env
+            .payload()
+            .map(|b| b.iter().collect::<Vec<u8>>())
+            .unwrap_or_default();
         let payload_type = fb_env.payload_type().unwrap_or("");
         let nonce = fb_env.nonce().unwrap_or("");
         let ts = fb_env.ts();
         let alg = fb_env.alg().unwrap_or("");
 
-        let canonical = crate::machine::build_envelope_canonical(&payload_vec, payload_type, nonce, ts, alg);
+        let canonical =
+            crate::machine::build_envelope_canonical(&payload_vec, payload_type, nonce, ts, alg);
 
         let sig_field = fb_env.sig().unwrap_or("").to_string();
         let pubkey_field = fb_env.pubkey().unwrap_or("").to_string();
 
         // Extract base64 portion of signature (after possible prefix)
-        let sig_b64 = sig_field.splitn(2, ':').nth(if sig_field.contains(':') {1} else {0}).unwrap_or(&sig_field);
-        let sig_bytes = base64::engine::general_purpose::STANDARD.decode(sig_b64)
+        let sig_b64 = sig_field
+            .splitn(2, ':')
+            .nth(if sig_field.contains(':') { 1 } else { 0 })
+            .unwrap_or(&sig_field);
+        let sig_bytes = base64::engine::general_purpose::STANDARD
+            .decode(sig_b64)
             .map_err(|e| anyhow::anyhow!("failed to base64-decode signature: {}", e))?;
 
-        let pub_bytes = base64::engine::general_purpose::STANDARD.decode(&pubkey_field)
+        let pub_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&pubkey_field)
             .map_err(|e| anyhow::anyhow!("failed to base64-decode pubkey: {}", e))?;
 
         Ok((canonical, sig_bytes, pub_bytes, sig_field, pubkey_field))
     }
 
     // Custom handshake builder since it only has string fields
-    pub fn build_handshake(nonce: u32, timestamp: u64, protocol_version: &str, signature: &str) -> Vec<u8> {
+    pub fn build_handshake(
+        nonce: u32,
+        timestamp: u64,
+        protocol_version: &str,
+        signature: &str,
+    ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(128);
         let proto = fbb.create_string(protocol_version);
         let sig = fbb.create_string(signature);
-        let mut args: crate::generated::generated_handshake::beemesh::machine::HandshakeArgs = Default::default();
+        let mut args: crate::generated::generated_handshake::beemesh::machine::HandshakeArgs =
+            Default::default();
         args.nonce = nonce;
         args.timestamp = timestamp;
         args.protocol_version = Some(proto);
         args.signature = Some(sig);
-        let off = crate::generated::generated_handshake::beemesh::machine::Handshake::create(&mut fbb, &args);
+        let off = crate::generated::generated_handshake::beemesh::machine::Handshake::create(
+            &mut fbb, &args,
+        );
         fbb.finish(off, None);
         fbb.finished_data().to_vec()
     }
@@ -471,7 +614,7 @@ pub mod machine {
         content_hash: &str,
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(1024);
-        
+
         // Create string offsets
         let id_offset = fbb.create_string(id);
         let tenant_offset = fbb.create_string(tenant);
@@ -480,22 +623,28 @@ pub mod machine {
         let manifest_json_offset = fbb.create_string(manifest_json);
         let manifest_kind_offset = fbb.create_string(manifest_kind);
         let content_hash_offset = fbb.create_string(content_hash);
-        
+
         // Create byte vectors
         let owner_pubkey_offset = fbb.create_vector(owner_pubkey);
         let signature_offset = fbb.create_vector(signature);
-        
+
         // Create labels vector
-        let label_offsets: Vec<_> = labels.iter().map(|(k, v)| {
-            let key_offset = fbb.create_string(k);
-            let value_offset = fbb.create_string(v);
-            KeyValue::create(&mut fbb, &KeyValueArgs {
-                key: Some(key_offset),
-                value: Some(value_offset),
+        let label_offsets: Vec<_> = labels
+            .iter()
+            .map(|(k, v)| {
+                let key_offset = fbb.create_string(k);
+                let value_offset = fbb.create_string(v);
+                KeyValue::create(
+                    &mut fbb,
+                    &KeyValueArgs {
+                        key: Some(key_offset),
+                        value: Some(value_offset),
+                    },
+                )
             })
-        }).collect();
+            .collect();
         let labels_offset = fbb.create_vector(&label_offsets);
-        
+
         let args = AppliedManifestArgs {
             id: Some(id_offset),
             tenant: Some(tenant_offset),
@@ -512,7 +661,7 @@ pub mod machine {
             ttl_secs,
             content_hash: Some(content_hash_offset),
         };
-        
+
         let manifest = AppliedManifest::create(&mut fbb, &args);
         fbb.finish(manifest, None);
         fbb.finished_data().to_vec()
@@ -524,51 +673,63 @@ pub mod machine {
         targets: &[(String, String)], // (peer_id, payload_json)
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(1024);
-        
+
         let shares_env_offset = fbb.create_string(shares_envelope_json);
-        
+
         // Create ShareTarget vector
-        let target_offsets: Vec<_> = targets.iter().map(|(peer_id, payload_json)| {
-            let peer_id_offset = fbb.create_string(peer_id);
-            let payload_offset = fbb.create_string(payload_json);
-            ShareTarget::create(&mut fbb, &ShareTargetArgs {
-                peer_id: Some(peer_id_offset),
-                payload_json: Some(payload_offset),
+        let target_offsets: Vec<_> = targets
+            .iter()
+            .map(|(peer_id, payload_json)| {
+                let peer_id_offset = fbb.create_string(peer_id);
+                let payload_offset = fbb.create_string(payload_json);
+                ShareTarget::create(
+                    &mut fbb,
+                    &ShareTargetArgs {
+                        peer_id: Some(peer_id_offset),
+                        payload_json: Some(payload_offset),
+                    },
+                )
             })
-        }).collect();
+            .collect();
         let targets_offset = fbb.create_vector(&target_offsets);
-        
+
         let args = DistributeSharesRequestArgs {
             shares_envelope_json: Some(shares_env_offset),
             targets: Some(targets_offset),
         };
-        
+
         let request = DistributeSharesRequest::create(&mut fbb, &args);
         fbb.finish(request, None);
         fbb.finished_data().to_vec()
     }
 
-    // Builder function for DistributeCapabilitiesRequest  
+    // Builder function for DistributeCapabilitiesRequest
     pub fn build_distribute_capabilities_request(
         targets: &[(String, String)], // (peer_id, payload_json)
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(1024);
-        
+
         // Create CapabilityTarget vector
-        let target_offsets: Vec<_> = targets.iter().map(|(peer_id, payload_json)| {
-            let peer_id_offset = fbb.create_string(peer_id);
-            let payload_offset = fbb.create_string(payload_json);
-            CapabilityTarget::create(&mut fbb, &CapabilityTargetArgs {
-                peer_id: Some(peer_id_offset),
-                payload_json: Some(payload_offset),
+        let target_offsets: Vec<_> = targets
+            .iter()
+            .map(|(peer_id, payload_json)| {
+                let peer_id_offset = fbb.create_string(peer_id);
+                let payload_offset = fbb.create_string(payload_json);
+                CapabilityTarget::create(
+                    &mut fbb,
+                    &CapabilityTargetArgs {
+                        peer_id: Some(peer_id_offset),
+                        payload_json: Some(payload_offset),
+                    },
+                )
             })
-        }).collect();
+            .collect();
         let targets_offset = fbb.create_vector(&target_offsets);
-        
+
         let args = DistributeCapabilitiesRequestArgs {
             targets: Some(targets_offset),
         };
-        
+
         let request = DistributeCapabilitiesRequest::create(&mut fbb, &args);
         fbb.finish(request, None);
         fbb.finished_data().to_vec()
@@ -577,29 +738,75 @@ pub mod machine {
     // Builder function for AssignRequest
     pub fn build_assign_request(chosen_peers: &[String]) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(512);
-        
+
         // Create vector of peer ID strings
-        let peer_offsets: Vec<_> = chosen_peers.iter()
+        let peer_offsets: Vec<_> = chosen_peers
+            .iter()
             .map(|peer_id| fbb.create_string(peer_id))
             .collect();
         let peers_offset = fbb.create_vector(&peer_offsets);
-        
+
         let args = AssignRequestArgs {
             chosen_peers: Some(peers_offset),
         };
-        
+
         let request = AssignRequest::create(&mut fbb, &args);
         fbb.finish(request, None);
         fbb.finished_data().to_vec()
     }
+
+    // Builder function for EncryptedManifest
+    pub fn build_encrypted_manifest(
+        nonce: &str,
+        payload: &str,
+        encryption_algorithm: &str,
+        threshold: u32,
+        total_shares: u32,
+        manifest_type: Option<&str>,
+        labels: &[&str],
+        encrypted_at: u64,
+        content_hash: Option<&str>,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+
+        let nonce_offset = fbb.create_string(nonce);
+        let payload_offset = fbb.create_string(payload);
+        let algorithm_offset = fbb.create_string(encryption_algorithm);
+
+        let manifest_type_offset = manifest_type.map(|s| fbb.create_string(s));
+        let content_hash_offset = content_hash.map(|s| fbb.create_string(s));
+
+        // Create labels vector
+        let label_offsets: Vec<_> = labels
+            .iter()
+            .map(|label| fbb.create_string(label))
+            .collect();
+        let labels_offset = fbb.create_vector(&label_offsets);
+
+        let mut args = crate::generated::generated_encrypted_manifest::beemesh::machine::EncryptedManifestArgs::default();
+        args.nonce = Some(nonce_offset);
+        args.payload = Some(payload_offset);
+        args.encryption_algorithm = Some(algorithm_offset);
+        args.threshold = threshold;
+        args.total_shares = total_shares;
+        args.manifest_type = manifest_type_offset;
+        args.labels = Some(labels_offset);
+        args.encrypted_at = encrypted_at;
+        args.content_hash = content_hash_offset;
+        args.version = 1;
+
+        let manifest = crate::generated::generated_encrypted_manifest::beemesh::machine::EncryptedManifest::create(&mut fbb, &args);
+        fbb.finish(manifest, None);
+        fbb.finished_data().to_vec()
+    }
 }
 
+// pub mod json; // Commented out - communication now uses FlatBuffers only
 pub mod libp2p_constants;
-pub mod json;
 
 #[cfg(test)]
 mod test {
-    use crate::machine::{ build_health, root_as_health };
+    use crate::machine::{build_health, root_as_health};
 
     #[test]
     fn flatbuffers_health_roundtrip() {

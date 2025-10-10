@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::Engine;
 use protocol::machine;
 use serde_json::Value as JsonValue;
 
@@ -20,17 +21,22 @@ impl FlatbufferClient {
     pub async fn create_task(
         &self,
         tenant: &str,
-        manifest_bytes: &[u8],  // Raw flatbuffer bytes
+        manifest_bytes: &[u8], // Raw flatbuffer bytes
         manifest_id: Option<String>,
         operation_id: Option<String>,
     ) -> Result<JsonValue> {
         // Send flatbuffer envelope directly as binary data
-        let url = format!("{}/tenant/{}/tasks", self.base_url.trim_end_matches('/'), tenant);
-        let mut req = self.client
+        let url = format!(
+            "{}/tenant/{}/tasks",
+            self.base_url.trim_end_matches('/'),
+            tenant
+        );
+        let mut req = self
+            .client
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(manifest_bytes.to_vec());
-        
+
         // Add metadata as query parameters since we're not using JSON body
         if let Some(mid) = manifest_id {
             req = req.query(&[("manifest_id", mid)]);
@@ -38,7 +44,7 @@ impl FlatbufferClient {
         if let Some(oid) = operation_id {
             req = req.query(&[("operation_id", oid)]);
         }
-        
+
         let resp = req.send().await?;
 
         let status = resp.status();
@@ -52,33 +58,33 @@ impl FlatbufferClient {
     }
 
     /// Get candidates using flatbuffer capacity request
-    pub async fn get_candidates(
-        &self,
-        tenant: &str,
-        task_id: &str,
-    ) -> Result<Vec<String>> {
-        let url = format!("{}/tenant/{}/tasks/{}/candidates", 
-                         self.base_url.trim_end_matches('/'), tenant, task_id);
+    pub async fn get_candidates(&self, tenant: &str, task_id: &str) -> Result<Vec<String>> {
+        let url = format!(
+            "{}/tenant/{}/tasks/{}/candidates",
+            self.base_url.trim_end_matches('/'),
+            tenant,
+            task_id
+        );
         let resp = self.client.get(&url).send().await?;
-        
+
         let status = resp.status();
         if !status.is_success() {
             let body_text = resp.text().await?;
             anyhow::bail!("get_candidates failed: {} {}", status, body_text);
         }
-        
+
         let response_json: JsonValue = resp.json().await?;
         let responders = response_json
             .get("responders")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        
+
         let peers: Vec<String> = responders
             .into_iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
-        
+
         Ok(peers)
     }
 
@@ -87,24 +93,33 @@ impl FlatbufferClient {
         &self,
         tenant: &str,
         task_id: &str,
-        shares_envelope: &JsonValue,
+        shares_envelope_b64: &str,
         targets: &[ShareTarget],
     ) -> Result<JsonValue> {
-        // Convert shares_envelope to JSON string and targets to the required format
-        let shares_envelope_json = serde_json::to_string(shares_envelope)?;
-        let fb_targets: Vec<(String, String)> = targets.iter()
-            .map(|t| (t.peer_id.clone(), serde_json::to_string(&t.payload).unwrap_or_default()))
+        // Use the base64 flatbuffer envelope directly
+        let shares_envelope_json = shares_envelope_b64;
+        let fb_targets: Vec<(String, String)> = targets
+            .iter()
+            .map(|t| {
+                (
+                    t.peer_id.clone(),
+                    serde_json::to_string(&t.payload).unwrap_or_default(),
+                )
+            })
             .collect();
 
         // Create flatbuffer request
-        let flatbuffer_data = machine::build_distribute_shares_request(
-            &shares_envelope_json,
-            &fb_targets,
-        );
+        let flatbuffer_data =
+            machine::build_distribute_shares_request(&shares_envelope_json, &fb_targets);
 
-        let url = format!("{}/tenant/{}/tasks/{}/distribute_shares", 
-                         self.base_url.trim_end_matches('/'), tenant, task_id);
-        let resp = self.client
+        let url = format!(
+            "{}/tenant/{}/tasks/{}/distribute_shares",
+            self.base_url.trim_end_matches('/'),
+            tenant,
+            task_id
+        );
+        let resp = self
+            .client
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(flatbuffer_data)
@@ -121,6 +136,59 @@ impl FlatbufferClient {
         Ok(response_json)
     }
 
+    /// Distribute keyshares using pure flatbuffer envelopes
+    pub async fn distribute_shares_flatbuffer(
+        &self,
+        tenant: &str,
+        task_id: &str,
+        shares_envelope_b64: &str,
+        peer_ids: &[String],
+        flatbuffer_payloads: &[Vec<u8>],
+    ) -> Result<JsonValue> {
+        // Convert flatbuffer payloads to base64 strings for transport
+        let fb_targets: Vec<(String, String)> = peer_ids
+            .iter()
+            .zip(flatbuffer_payloads.iter())
+            .map(|(peer_id, fb_bytes)| {
+                (
+                    peer_id.clone(),
+                    base64::engine::general_purpose::STANDARD.encode(fb_bytes),
+                )
+            })
+            .collect();
+
+        // Create flatbuffer request
+        let flatbuffer_data =
+            machine::build_distribute_shares_request(&shares_envelope_b64, &fb_targets);
+
+        let url = format!(
+            "{}/tenant/{}/tasks/{}/distribute_shares",
+            self.base_url.trim_end_matches('/'),
+            tenant,
+            task_id
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(flatbuffer_data)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body_text = resp.text().await?;
+            anyhow::bail!(
+                "distribute_shares_flatbuffer failed: {} {}",
+                status,
+                body_text
+            );
+        }
+
+        let response_json: JsonValue = resp.json().await?;
+        Ok(response_json)
+    }
+
     /// Distribute capability tokens using flatbuffer envelope
     pub async fn distribute_capabilities(
         &self,
@@ -129,16 +197,27 @@ impl FlatbufferClient {
         targets: &[CapabilityTarget],
     ) -> Result<JsonValue> {
         // Convert targets to the required format for flatbuffer
-        let fb_targets: Vec<(String, String)> = targets.iter()
-            .map(|t| (t.peer_id.clone(), serde_json::to_string(&t.payload).unwrap_or_default()))
+        let fb_targets: Vec<(String, String)> = targets
+            .iter()
+            .map(|t| {
+                (
+                    t.peer_id.clone(),
+                    serde_json::to_string(&t.payload).unwrap_or_default(),
+                )
+            })
             .collect();
 
         // Create flatbuffer request
         let flatbuffer_data = machine::build_distribute_capabilities_request(&fb_targets);
 
-        let url = format!("{}/tenant/{}/tasks/{}/distribute_capabilities", 
-                         self.base_url.trim_end_matches('/'), tenant, task_id);
-        let resp = self.client
+        let url = format!(
+            "{}/tenant/{}/tasks/{}/distribute_capabilities",
+            self.base_url.trim_end_matches('/'),
+            tenant,
+            task_id
+        );
+        let resp = self
+            .client
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(flatbuffer_data)
@@ -165,9 +244,14 @@ impl FlatbufferClient {
         // Create flatbuffer request
         let flatbuffer_data = machine::build_assign_request(&chosen_peers);
 
-        let url = format!("{}/tenant/{}/tasks/{}/assign", 
-                         self.base_url.trim_end_matches('/'), tenant, task_id);
-        let resp = self.client
+        let url = format!(
+            "{}/tenant/{}/tasks/{}/assign",
+            self.base_url.trim_end_matches('/'),
+            tenant,
+            task_id
+        );
+        let resp = self
+            .client
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(flatbuffer_data)
@@ -185,28 +269,28 @@ impl FlatbufferClient {
     }
 
     /// Get manifest ID for a task
-    pub async fn get_task_manifest_id(
-        &self,
-        tenant: &str,
-        task_id: &str,
-    ) -> Result<String> {
-        let url = format!("{}/tenant/{}/tasks/{}/manifest_id", 
-                         self.base_url.trim_end_matches('/'), tenant, task_id);
+    pub async fn get_task_manifest_id(&self, tenant: &str, task_id: &str) -> Result<String> {
+        let url = format!(
+            "{}/tenant/{}/tasks/{}/manifest_id",
+            self.base_url.trim_end_matches('/'),
+            tenant,
+            task_id
+        );
         let resp = self.client.get(&url).send().await?;
-        
+
         let status = resp.status();
         if !status.is_success() {
             let body_text = resp.text().await?;
             anyhow::bail!("get_task_manifest_id failed: {} {}", status, body_text);
         }
-        
+
         let response_json: JsonValue = resp.json().await?;
         let manifest_id = response_json
             .get("manifest_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("no manifest_id in response"))?
             .to_string();
-        
+
         Ok(manifest_id)
     }
 }
@@ -276,9 +360,6 @@ pub fn build_apply_request_flatbuffer(
 }
 
 /// Create a keyshare request flatbuffer
-pub fn build_keyshare_request_flatbuffer(
-    manifest_id: &str,
-    capability: &str,
-) -> Vec<u8> {
+pub fn build_keyshare_request_flatbuffer(manifest_id: &str, capability: &str) -> Vec<u8> {
     machine::build_keyshare_request(manifest_id, capability)
 }
