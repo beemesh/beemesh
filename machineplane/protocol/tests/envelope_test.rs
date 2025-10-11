@@ -3,8 +3,8 @@ use base64::engine::general_purpose;
 use base64::Engine as _;
 use flatbuffers::FlatBufferBuilder;
 
-use protocol::machine::{FbEnvelope, EnvelopeArgs, finish_envelope_buffer};
-use crypto::{ensure_pqc_init, ensure_keypair_ephemeral, sign_envelope, verify_envelope};
+use crypto::{ensure_keypair_ephemeral, ensure_pqc_init, sign_envelope, verify_envelope};
+use protocol::machine::{finish_envelope_buffer, EnvelopeArgs, FbEnvelope};
 
 #[test]
 fn flatbuffer_envelope_sign_and_verify() -> anyhow::Result<()> {
@@ -66,18 +66,22 @@ fn flatbuffer_envelope_sign_and_verify() -> anyhow::Result<()> {
 
     let env_off2 = FbEnvelope::create(&mut fbb2, &args2);
     finish_envelope_buffer(&mut fbb2, env_off2);
-    let signed_buf = fbb2.finished_data();
+    let _signed_buf = fbb2.finished_data();
 
     // Decode signature bytes from base64
     // Note: sign_envelope returned (sig_b64, pub_b64) where sig_b64 is the base64 of raw sig bytes
-    let sig_bytes = general_purpose::STANDARD.decode(&sig_b64).context("decode sig b64")?;
+    let sig_bytes = general_purpose::STANDARD
+        .decode(&sig_b64)
+        .context("decode sig b64")?;
 
     // Verify signature over the canonical bytes using public key bytes
     verify_envelope(&pub_bytes, canonical_bytes, &sig_bytes)?;
 
     // As a negative test, tamper a byte in canonical bytes and verify fails
     let mut tampered = canonical_bytes.to_vec();
-    if !tampered.is_empty() { tampered[0] ^= 0xff; }
+    if !tampered.is_empty() {
+        tampered[0] ^= 0xff;
+    }
     let res = verify_envelope(&pub_bytes, &tampered, &sig_bytes);
     assert!(res.is_err(), "tampered buffer should not verify");
 

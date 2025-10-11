@@ -13,13 +13,6 @@ pub struct FlatbufferEnvelopeBuilder {
 }
 
 impl FlatbufferEnvelopeBuilder {
-    pub fn new() -> Self {
-        Self {
-            peer_id: "cli-client".to_string(),
-            public_key: String::new(),
-        }
-    }
-
     pub fn with_keys(peer_id: String, public_key: String) -> Self {
         Self {
             peer_id,
@@ -34,7 +27,7 @@ impl FlatbufferEnvelopeBuilder {
         nonce_bytes: &[u8],
         n: usize,
         k: usize,
-        count: usize,
+        _count: usize,
     ) -> Result<Vec<u8>> {
         // Create an EncryptedManifest flatbuffer instead of JSON
         let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);

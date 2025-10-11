@@ -1,5 +1,4 @@
-use base64::engine::general_purpose;
-use base64::Engine as _;
+use base64::Engine;
 use libp2p::request_response;
 use log::{info, warn};
 /// Handle inbound key-share request-response messages.

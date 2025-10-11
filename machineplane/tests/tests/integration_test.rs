@@ -1,7 +1,5 @@
 use log::info;
-use std::env;
-use std::fs;
-use std::path::PathBuf;
+
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -20,7 +18,7 @@ async fn test_run_host_application() {
 
     // start three nodes using the reusable helper (first node runs REST+machine, others disabled APIs)
     // node_3000 gets fixed libp2p port 4001, node_3100 gets port 4002, both serve as bootstrap peers
-    let cli1 = make_test_cli(3000, false, false, None, vec![], 4001, 0);
+    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0);
     let cli2 = make_test_cli(
         3100,
         true,

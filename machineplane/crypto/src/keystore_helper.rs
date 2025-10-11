@@ -377,7 +377,7 @@ mod tests {
         // These tests verify the safe wrapper functions don't panic
         // They will return None in test environment due to missing keystore setup
 
-        let result = KeystoreHelper::try_store_encrypted_share(
+        let _result = KeystoreHelper::try_store_encrypted_share(
             b"test data",
             "test_manifest",
             Some("test_metadata"),
@@ -385,7 +385,7 @@ mod tests {
         // In test environment without proper keystore setup, this should return None
         // but not panic
 
-        let result = KeystoreHelper::try_retrieve_and_decrypt_share("test_cid");
+        let _result = KeystoreHelper::try_retrieve_and_decrypt_share("test_cid");
         // Similarly, this should return None but not panic
     }
 }

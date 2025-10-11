@@ -640,7 +640,7 @@ mod tests {
         let mut idx = 1usize;
         let wlen = u16::from_be_bytes([blob[idx], blob[idx + 1]]) as usize;
         idx += 2;
-        let wrapped = &blob[idx..idx + wlen];
+        let _wrapped = &blob[idx..idx + wlen];
         idx += wlen;
         let nlen = blob[idx] as usize;
         idx += 1;

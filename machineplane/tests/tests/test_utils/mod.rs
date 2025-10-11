@@ -7,12 +7,16 @@ use tokio::time::sleep;
 
 static CLEANUP_HOOK_INIT: Once = Once::new();
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub struct NodeGuard {
     pub handles: Vec<JoinHandle<()>>, // spawned background tasks for in-process nodes
     pub processes: Vec<Child>,        // spawned processes for separate-process nodes
 }
 
+#[cfg(test)]
 impl NodeGuard {
+    #[allow(dead_code)]
     pub async fn cleanup(&mut self) {
         // best-effort abort all handles
         for h in self.handles.drain(..) {
@@ -45,6 +49,8 @@ impl Drop for NodeGuard {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn make_test_cli(
     rest_api_port: u16,
     disable_rest: bool,
@@ -73,6 +79,8 @@ pub fn make_test_cli(
 /// Start a list of nodes in separate processes. Returns a NodeGuard which will
 /// kill the spawned processes on cleanup. `startup_delay` is awaited after
 /// each node start to give it a moment to initialize before starting the next.
+#[cfg(test)]
+#[allow(dead_code)]
 pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -> NodeGuard {
     let mut guard = NodeGuard {
         handles: Vec::new(),
@@ -145,6 +153,8 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
 /// Start a list of nodes given their CLIs. Returns a NodeGuard which will abort
 /// the spawned background tasks on cleanup. `startup_delay` is awaited after
 /// each node start to give it a moment to initialize before starting the next.
+#[cfg(test)]
+#[allow(dead_code)]
 pub async fn start_nodes(clis: Vec<Cli>, startup_delay: Duration) -> NodeGuard {
     let mut guard = NodeGuard {
         handles: Vec::new(),
@@ -163,6 +173,8 @@ pub async fn start_nodes(clis: Vec<Cli>, startup_delay: Duration) -> NodeGuard {
 }
 
 /// Setup global panic hook for test cleanup. Call this at the beginning of each test.
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn setup_cleanup_hook() {
     CLEANUP_HOOK_INIT.call_once(|| {
         let default_hook = std::panic::take_hook();

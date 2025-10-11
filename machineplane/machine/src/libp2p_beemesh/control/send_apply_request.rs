@@ -2,16 +2,14 @@ use libp2p::{PeerId, Swarm};
 use log::info;
 use tokio::sync::mpsc;
 
-use base64::engine::general_purpose;
-use base64::Engine as _;
+use base64::Engine;
 use flatbuffers::FlatBufferBuilder;
-use protocol::machine::{CapabilityArgs, CapabilityTokenArgs, CaveatArgs, SignatureEntryArgs};
+use protocol::machine::CaveatArgs;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
-use crate::libp2p_beemesh::security;
 use crypto;
 
 /// Handle SendApplyRequest control message

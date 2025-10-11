@@ -85,7 +85,7 @@ fn test_signature_verification_error_messages() {
 
     // Test 3: Wrong public key (mismatched keypair)
     {
-        let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical_bytes)
+        let (sig_b64, _pub_b64) = sign_envelope(&privb, &pubb, &canonical_bytes)
             .expect("Failed to sign with correct keypair");
         let wrong_pub_b64 = base64::engine::general_purpose::STANDARD.encode(&pubb2); // Different public key
 

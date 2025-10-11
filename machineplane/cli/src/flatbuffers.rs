@@ -2,7 +2,6 @@ use anyhow::Result;
 use base64::Engine;
 use protocol::machine::{self};
 use serde_json::Value as JsonValue;
-use std::sync::Arc;
 
 /// Convert JSON requests into flatbuffer payloads for direct communication with the machine
 pub struct FlatbufferClient {
@@ -41,11 +40,6 @@ impl FlatbufferClient {
             kem_private_key: kem_priv_bytes,
             machine_public_key: None,
         })
-    }
-
-    /// Set the machine's public key for encryption
-    pub fn set_machine_public_key(&mut self, machine_pubkey: Vec<u8>) {
-        self.machine_public_key = Some(machine_pubkey);
     }
 
     /// Fetch the machine's KEM public key from the /api/v1/kem_pubkey endpoint for encryption
@@ -95,17 +89,6 @@ impl FlatbufferClient {
         );
         self.machine_public_key = Some(pubkey_bytes);
         Ok(())
-    }
-
-    /// Encrypt a payload for the machine
-    fn encrypt_for_machine(&self, payload: &[u8]) -> Result<Vec<u8>> {
-        match &self.machine_public_key {
-            Some(machine_pubkey) => crypto::encrypt_payload_for_recipient(machine_pubkey, payload),
-            None => {
-                // No encryption if machine pubkey not available
-                Ok(payload.to_vec())
-            }
-        }
     }
 
     /// Decrypt a response from the machine
@@ -536,55 +519,6 @@ impl FlatbufferClient {
         }
     }
 
-    /// Distribute keyshares using flatbuffer envelope
-    pub async fn distribute_shares(
-        &self,
-        tenant: &str,
-        task_id: &str,
-        shares_envelope_b64: &str,
-        targets: &[ShareTarget],
-    ) -> Result<JsonValue> {
-        // Use the base64 flatbuffer envelope directly
-        let shares_envelope_json = shares_envelope_b64;
-        let fb_targets: Vec<(String, String)> = targets
-            .iter()
-            .map(|t| {
-                (
-                    t.peer_id.clone(),
-                    serde_json::to_string(&t.payload).unwrap_or_default(),
-                )
-            })
-            .collect();
-
-        // Create flatbuffer request
-        let flatbuffer_data =
-            machine::build_distribute_shares_request(&shares_envelope_json, &fb_targets);
-
-        let url = format!(
-            "{}/tenant/{}/tasks/{}/distribute_shares",
-            self.base_url.trim_end_matches('/'),
-            tenant,
-            task_id
-        );
-
-        let response_bytes = self
-            .send_encrypted_request(&url, &flatbuffer_data, "distribute_shares_request")
-            .await?;
-
-        // Try to parse as flatbuffer DistributeSharesResponse first
-        let shares_response =
-            protocol::machine::root_as_distribute_shares_response(&response_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to parse DistributeSharesResponse: {}", e))?;
-
-        let results_json = shares_response.results_json().unwrap_or("{}");
-        let results: JsonValue =
-            serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
-        Ok(serde_json::json!({
-            "ok": shares_response.ok(),
-            "results": results
-        }))
-    }
-
     /// Distribute keyshares using pure flatbuffer envelopes
     pub async fn distribute_shares_flatbuffer(
         &self,
@@ -743,169 +677,11 @@ impl FlatbufferClient {
             "per_peer": per_peer
         }))
     }
-
-    /// Get manifest ID for a task
-    pub async fn get_task_manifest_id(&self, tenant: &str, task_id: &str) -> Result<String> {
-        let url = format!(
-            "{}/tenant/{}/tasks/{}/manifest_id",
-            self.base_url.trim_end_matches('/'),
-            tenant,
-            task_id
-        );
-
-        let response_bytes = self
-            .send_encrypted_request(&url, &[], "manifest_id_request")
-            .await?;
-
-        // Parse as plain string response for now
-        let response_str = String::from_utf8(response_bytes)?;
-        Ok(response_str.trim_matches('"').to_string())
-    }
-
-    /// Apply manifest using flatbuffer envelope
-    pub async fn apply_manifest(
-        &self,
-        tenant: &str,
-        manifest_envelope_json: &str,
-        shares_envelope_json: Option<&str>,
-    ) -> Result<JsonValue> {
-        // Create flatbuffer ApplyManifestRequest
-        let flatbuffer_data =
-            machine::build_apply_manifest_request(manifest_envelope_json, shares_envelope_json);
-
-        let url = format!(
-            "{}/tenant/{}/apply_manifest",
-            self.base_url.trim_end_matches('/'),
-            tenant
-        );
-
-        let response_bytes = self
-            .send_encrypted_request(&url, &flatbuffer_data, "apply_manifest_request")
-            .await?;
-
-        // Try to parse as flatbuffer ApplyManifestResponse first
-        let manifest_response = protocol::machine::root_as_apply_manifest_response(&response_bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to parse ApplyManifestResponse: {}", e))?;
-
-        let assigned_peers: Vec<String> = manifest_response
-            .assigned_peers()
-            .map(|v| v.iter().map(|s| s.to_string()).collect())
-            .unwrap_or_default();
-        let per_peer_json = manifest_response.per_peer_results_json().unwrap_or("{}");
-        let per_peer: JsonValue =
-            serde_json::from_str(per_peer_json).unwrap_or(serde_json::json!({}));
-
-        Ok(serde_json::json!({
-            "ok": manifest_response.ok(),
-            "tenant": manifest_response.tenant().unwrap_or(""),
-            "replicas_requested": manifest_response.replicas_requested(),
-            "assigned_peers": assigned_peers,
-            "per_peer": per_peer
-        }))
-    }
-
-    /// Apply keyshares using flatbuffer envelope
-    pub async fn apply_keyshares(
-        &self,
-        tenant: &str,
-        shares_envelope_json: &str,
-        targets_json: &str,
-    ) -> Result<JsonValue> {
-        // Create flatbuffer ApplyKeySharesRequest
-        let flatbuffer_data =
-            machine::build_apply_keyshares_request(shares_envelope_json, targets_json);
-
-        let url = format!(
-            "{}/tenant/{}/apply_keyshares",
-            self.base_url.trim_end_matches('/'),
-            tenant
-        );
-
-        let response_bytes = self
-            .send_encrypted_request(&url, &flatbuffer_data, "apply_keyshares_request")
-            .await?;
-
-        // Try to parse as flatbuffer ApplyKeySharesResponse first
-        let keyshares_response =
-            protocol::machine::root_as_apply_key_shares_response(&response_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to parse ApplyKeySharesResponse: {}", e))?;
-
-        let results_json = keyshares_response.results_json().unwrap_or("{}");
-        let results: JsonValue =
-            serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
-        Ok(serde_json::json!({
-            "ok": keyshares_response.ok(),
-            "results": results
-        }))
-    }
 }
 
-/// Helper structures for building flatbuffer requests
-#[derive(Debug, Clone)]
-pub struct ShareTarget {
-    pub peer_id: String,
-    pub payload: JsonValue,
-}
-
+/// Helper structure for capability distribution
 #[derive(Debug, Clone)]
 pub struct CapabilityTarget {
     pub peer_id: String,
     pub payload: Vec<u8>,
-}
-
-/// Build a flatbuffer envelope from JSON envelope data
-pub fn build_flatbuffer_envelope(
-    payload: &[u8],
-    payload_type: &str,
-    nonce: &str,
-    ts: u64,
-    alg: &str,
-    sig: &str,
-    pubkey: &str,
-) -> Vec<u8> {
-    // Parse signature to extract prefix and base64 part
-    let (sig_prefix, sig_b64) = if sig.contains(':') {
-        let parts: Vec<&str> = sig.splitn(2, ':').collect();
-        (parts[0], parts[1])
-    } else {
-        ("ml-dsa-65", sig)
-    };
-
-    machine::build_envelope_signed(
-        payload,
-        payload_type,
-        nonce,
-        ts,
-        alg,
-        sig_prefix,
-        sig_b64,
-        pubkey,
-        None,
-    )
-}
-
-/// Create a capacity request flatbuffer
-pub fn build_capacity_request_flatbuffer(
-    cpu_milli: u32,
-    memory_bytes: u64,
-    storage_bytes: u64,
-    replicas: u32,
-) -> Vec<u8> {
-    machine::build_capacity_request(cpu_milli, memory_bytes, storage_bytes, replicas)
-}
-
-/// Create an apply request flatbuffer from manifest data
-pub fn build_apply_request_flatbuffer(
-    replicas: u32,
-    tenant: &str,
-    operation_id: &str,
-    manifest_json: &str,
-    origin_peer: &str,
-) -> Vec<u8> {
-    machine::build_apply_request(replicas, tenant, operation_id, manifest_json, origin_peer)
-}
-
-/// Create a keyshare request flatbuffer
-pub fn build_keyshare_request_flatbuffer(manifest_id: &str, capability: &str) -> Vec<u8> {
-    machine::build_keyshare_request(manifest_id, capability)
 }

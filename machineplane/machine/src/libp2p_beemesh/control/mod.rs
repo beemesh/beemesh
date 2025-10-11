@@ -1,15 +1,15 @@
+use libp2p::kad::{store::RecordStore, Record, RecordKey};
 use libp2p::{gossipsub, PeerId, Swarm};
-use libp2p::kad::{Record, RecordKey, store::RecordStore};
-use std::time::{Instant, Duration};
 use log::{info, warn};
-use std::collections::HashMap as StdHashMap;
-use tokio::sync::mpsc;
 use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use std::collections::HashMap as StdHashMap;
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 type KadQuerySender = mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>;
 
-use crate::libp2p_beemesh::{behaviour::MyBehaviour};
+use crate::libp2p_beemesh::behaviour::MyBehaviour;
 use libp2p::kad::QueryId;
 
 mod query_capacity;
@@ -26,7 +26,7 @@ fn calculate_manifest_cid(data: &[u8]) -> Option<String> {
     // Use a stable cryptographic hash (blake3) so that the same bytes produce the
     // same CID across different processes and runs. DefaultHasher is randomized
     // per-process and therefore unsuitable for cross-process identifiers.
-    
+
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -43,16 +43,39 @@ pub async fn handle_control_message(
     pending_queries: &mut StdHashMap<String, Vec<mpsc::UnboundedSender<String>>>,
 ) {
     match msg {
-        Libp2pControl::QueryCapacityWithPayload { request_id, reply_tx, payload } => {
-            handle_query_capacity_with_payload(request_id, reply_tx, payload, swarm, topic, pending_queries).await;
+        Libp2pControl::QueryCapacityWithPayload {
+            request_id,
+            reply_tx,
+            payload,
+        } => {
+            handle_query_capacity_with_payload(
+                request_id,
+                reply_tx,
+                payload,
+                swarm,
+                topic,
+                pending_queries,
+            )
+            .await;
         }
-        Libp2pControl::SendApplyRequest { peer_id, manifest, reply_tx } => {
+        Libp2pControl::SendApplyRequest {
+            peer_id,
+            manifest,
+            reply_tx,
+        } => {
             handle_send_apply_request(peer_id, manifest, reply_tx, swarm).await;
         }
-        Libp2pControl::SendKeyShare { peer_id, share_payload, reply_tx } => {
+        Libp2pControl::SendKeyShare {
+            peer_id,
+            share_payload,
+            reply_tx,
+        } => {
             handle_send_key_share(peer_id, share_payload, reply_tx, swarm).await;
         }
-        Libp2pControl::StoreAppliedManifest { manifest_data, reply_tx } => {
+        Libp2pControl::StoreAppliedManifest {
+            manifest_data,
+            reply_tx,
+        } => {
             // Store the manifest content in the DHT
             if let Some(cid) = calculate_manifest_cid(&manifest_data) {
                 let record_key = RecordKey::new(&format!("manifest:{}", cid));
@@ -62,9 +85,14 @@ pub async fn handle_control_message(
                     publisher: Some(swarm.local_peer_id().clone()),
                     expires: None, // No expiration for manifests
                 };
-                
+
                 // Store locally first (critical for small networks where local node might be closest)
-                match swarm.behaviour_mut().kademlia.store_mut().put(record.clone()) {
+                match swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .store_mut()
+                    .put(record.clone())
+                {
                     Ok(()) => {
                         info!("DHT: stored manifest locally with cid={}", cid);
                         // Also store the manifest under the logical manifest id (tenant+operation+manifest_json)
@@ -78,11 +106,15 @@ pub async fn handle_control_message(
                         let mut maybe_operation: Option<String> = None;
                         let mut maybe_manifest_json: Option<String> = None;
 
-                        if let Ok(applied) = protocol::machine::root_as_applied_manifest(&manifest_data) {
+                        if let Ok(applied) =
+                            protocol::machine::root_as_applied_manifest(&manifest_data)
+                        {
                             maybe_tenant = applied.tenant().map(|s| s.to_string());
                             maybe_operation = applied.operation_id().map(|s| s.to_string());
                             maybe_manifest_json = applied.manifest_json().map(|s| s.to_string());
-                        } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&manifest_data) {
+                        } else if let Ok(val) =
+                            serde_json::from_slice::<serde_json::Value>(&manifest_data)
+                        {
                             // Try common JSON shapes used when storing raw manifests
                             if let Some(t) = val.get("tenant").and_then(|v| v.as_str()) {
                                 maybe_tenant = Some(t.to_string());
@@ -94,23 +126,27 @@ pub async fn handle_control_message(
                             maybe_manifest_json = Some(val.to_string());
                         }
 
-                        if let (Some(tenant_s), Some(operation_id_s), Some(manifest_json_s)) = (maybe_tenant.clone(), maybe_operation.clone(), maybe_manifest_json.clone()) {
-                                // Compute a stable manifest id deterministically from the
-                                // tenant, operation_id and manifest_json. Use a
-                                // cryptographic hash (blake3) so different processes
-                                // compute the same id for the same inputs.
-                                let mut buf = Vec::new();
-                                buf.extend_from_slice(tenant_s.as_bytes());
-                                buf.push(0);
-                                buf.extend_from_slice(operation_id_s.as_bytes());
-                                buf.push(0);
-                                buf.extend_from_slice(manifest_json_s.as_bytes());
-                                use std::collections::hash_map::DefaultHasher;
-                                use std::hash::{Hash, Hasher};
-                                let mut hasher = DefaultHasher::new();
-                                buf.hash(&mut hasher);
-                                let mid = hasher.finish();
-                                let manifest_id = mid.to_be().to_string();
+                        if let (Some(tenant_s), Some(operation_id_s), Some(manifest_json_s)) = (
+                            maybe_tenant.clone(),
+                            maybe_operation.clone(),
+                            maybe_manifest_json.clone(),
+                        ) {
+                            // Compute a stable manifest id deterministically from the
+                            // tenant, operation_id and manifest_json. Use a
+                            // cryptographic hash (blake3) so different processes
+                            // compute the same id for the same inputs.
+                            let mut buf = Vec::new();
+                            buf.extend_from_slice(tenant_s.as_bytes());
+                            buf.push(0);
+                            buf.extend_from_slice(operation_id_s.as_bytes());
+                            buf.push(0);
+                            buf.extend_from_slice(manifest_json_s.as_bytes());
+                            use std::collections::hash_map::DefaultHasher;
+                            use std::hash::{Hash, Hasher};
+                            let mut hasher = DefaultHasher::new();
+                            buf.hash(&mut hasher);
+                            let mid = hasher.finish();
+                            let manifest_id = mid.to_be().to_string();
 
                             // store an alias record keyed by manifest_id so GetManifestFromDht can find it
                             let manifest_key = RecordKey::new(&format!("manifest:{}", manifest_id));
@@ -121,14 +157,22 @@ pub async fn handle_control_message(
                                 expires: None,
                             };
                             match swarm.behaviour_mut().kademlia.store_mut().put(alias_record) {
-                                Ok(()) => info!("DHT: stored manifest locally under manifest_id={}", manifest_id),
-                                Err(e) => warn!("DHT: failed to store alias manifest_id locally: {:?}", e),
+                                Ok(()) => info!(
+                                    "DHT: stored manifest locally under manifest_id={}",
+                                    manifest_id
+                                ),
+                                Err(e) => {
+                                    warn!("DHT: failed to store alias manifest_id locally: {:?}", e)
+                                }
                             }
 
                             // Fire-and-forget spawning helper: attempt decryption based on tenant/opid/manifest_json
                             // TODO: implement spawn_decrypt_task function
                             // let _ = crate::libp2p_beemesh::behaviour::apply_message::spawn_decrypt_task(Some(tenant_s), Some(operation_id_s), Some(manifest_json_s)).await;
-                        } else if maybe_tenant.is_some() || maybe_operation.is_some() || maybe_manifest_json.is_some() {
+                        } else if maybe_tenant.is_some()
+                            || maybe_operation.is_some()
+                            || maybe_manifest_json.is_some()
+                        {
                             // We have partial info; still attempt to spawn decrypt task with whatever we found
                             // TODO: implement spawn_decrypt_task function
                             // let _ = crate::libp2p_beemesh::behaviour::apply_message::spawn_decrypt_task(maybe_tenant, maybe_operation, maybe_manifest_json).await;
@@ -136,15 +180,25 @@ pub async fn handle_control_message(
                     }
                     Err(e) => warn!("DHT: failed to store manifest locally: {:?}", e),
                 }
-                
+
                 // Also try to store on network
-                match swarm.behaviour_mut().kademlia.put_record(record, libp2p::kad::Quorum::One) {
+                match swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .put_record(record, libp2p::kad::Quorum::One)
+                {
                     Ok(_query_id) => {
-                        info!("DHT: initiated network storage for manifest with cid={}", cid);
+                        info!(
+                            "DHT: initiated network storage for manifest with cid={}",
+                            cid
+                        );
                         let _ = reply_tx.send(Ok(()));
                     }
                     Err(e) => {
-                        warn!("DHT: failed to initiate network storage for manifest: {:?}", e);
+                        warn!(
+                            "DHT: failed to initiate network storage for manifest: {:?}",
+                            e
+                        );
                         // Still return success since we stored it locally
                         let _ = reply_tx.send(Ok(()));
                     }
@@ -154,37 +208,66 @@ pub async fn handle_control_message(
                 let _ = reply_tx.send(Err("Failed to calculate manifest CID".to_string()));
             }
         }
-        Libp2pControl::GetManifestFromDht { manifest_id, reply_tx } => {
+        Libp2pControl::GetManifestFromDht {
+            manifest_id,
+            reply_tx,
+        } => {
             // Create the record key used by manifests
             let record_key = RecordKey::new(&format!("manifest:{}", manifest_id));
             // Initiate kademlia get_record query
             let query_id = swarm.behaviour_mut().kademlia.get_record(record_key);
             // Register pending sender so the kademlia_event handler can reply when results arrive
             insert_pending_kad_query(query_id, reply_tx);
-            info!("DHT: initiated get_record for manifest (query_id={:?})", query_id);
+            info!(
+                "DHT: initiated get_record for manifest (query_id={:?})",
+                query_id
+            );
         }
-        Libp2pControl::FindManifestHolders { manifest_id, reply_tx } => {
+        Libp2pControl::FindManifestHolders {
+            manifest_id,
+            reply_tx,
+        } => {
             // Use Kademlia providers API by issuing a get_providers for the manifest key
             let record_key = RecordKey::new(&format!("manifest:{}", manifest_id));
-            info!("DHT: attempting get_providers for key=manifest:{}", manifest_id);
+            info!(
+                "DHT: attempting get_providers for key=manifest:{}",
+                manifest_id
+            );
             let query_id = swarm.behaviour_mut().kademlia.get_providers(record_key);
             // Register pending sender so the kademlia_event handler can reply when results arrive
             insert_pending_providers_query(query_id, reply_tx);
-            info!("DHT: initiated find_providers for manifest (query_id={:?})", query_id);
+            info!(
+                "DHT: initiated find_providers for manifest (query_id={:?})",
+                query_id
+            );
         }
-        Libp2pControl::FetchKeyshare { peer_id, request_fb, reply_tx } => {
+        Libp2pControl::FetchKeyshare {
+            peer_id,
+            request_fb,
+            reply_tx,
+        } => {
             // register pending sender keyed by peer id string and send request via request-response
             let peer_key = peer_id.to_string();
             insert_pending_keyshare_for_peer(peer_key.clone(), reply_tx);
-            let req_id = swarm.behaviour_mut().keyshare_rr.send_request(&peer_id, request_fb);
-            info!("libp2p: sent keyshare fetch request to peer={} req_id={:?}", peer_id, req_id);
+            let req_id = swarm
+                .behaviour_mut()
+                .keyshare_rr
+                .send_request(&peer_id, request_fb);
+            info!(
+                "libp2p: sent keyshare fetch request to peer={} req_id={:?}",
+                peer_id, req_id
+            );
         }
         Libp2pControl::BootstrapDht { reply_tx } => {
             // Bootstrap the Kademlia DHT
             let _ = swarm.behaviour_mut().kademlia.bootstrap();
             let _ = reply_tx.send(Ok(()));
         }
-        Libp2pControl::AnnounceProvider { cid, ttl_ms, reply_tx } => {
+        Libp2pControl::AnnounceProvider {
+            cid,
+            ttl_ms,
+            reply_tx,
+        } => {
             // perform announce and register for periodic renewal
             match announce_provider_direct(swarm, cid.clone(), ttl_ms) {
                 Ok(()) => {
@@ -196,7 +279,13 @@ pub async fn handle_control_message(
                         Instant::now() + Duration::from_millis(std::cmp::max(1000, ttl / 2))
                     };
                     let mut map = ACTIVE_ANNOUNCES.lock().unwrap();
-                    map.insert(cid.clone(), AnnounceEntry { ttl_ms: ttl_ms, next_due: next });
+                    map.insert(
+                        cid.clone(),
+                        AnnounceEntry {
+                            ttl_ms: ttl_ms,
+                            next_due: next,
+                        },
+                    );
                     let _ = reply_tx.send(Ok(()));
                 }
                 Err(e) => {
@@ -229,10 +318,14 @@ pub async fn handle_control_message(
 
 /// Announce a provider record directly using the swarm's Kademlia behaviour.
 /// This helper centralizes the key/record format used for provider announcements.
-pub fn announce_provider_direct(swarm: &mut Swarm<MyBehaviour>, cid: String, ttl_ms: u64) -> Result<(), String> {
+pub fn announce_provider_direct(
+    swarm: &mut Swarm<MyBehaviour>,
+    cid: String,
+    _ttl_ms: u64,
+) -> Result<(), String> {
     // Use Kademlia's provider mechanism instead of records
     let record_key = RecordKey::new(&cid);
-    
+
     match swarm.behaviour_mut().kademlia.start_providing(record_key) {
         Ok(_query_id) => {
             log::debug!("DHT: announced provider for cid={}", cid);
@@ -249,26 +342,36 @@ struct AnnounceEntry {
 }
 
 /// Map of active announces: cid -> entry
-static ACTIVE_ANNOUNCES: Lazy<Mutex<HashMap<String, AnnounceEntry>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static ACTIVE_ANNOUNCES: Lazy<Mutex<HashMap<String, AnnounceEntry>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Queue for control messages enqueued from inside the libp2p behaviours.
-static ENQUEUED_CONTROLS: Lazy<Mutex<std::collections::VecDeque<Libp2pControl>>> = Lazy::new(|| Mutex::new(std::collections::VecDeque::new()));
+static ENQUEUED_CONTROLS: Lazy<Mutex<std::collections::VecDeque<Libp2pControl>>> =
+    Lazy::new(|| Mutex::new(std::collections::VecDeque::new()));
 
 /// Pending Kademlia GetRecord queries: query_id debug string -> reply sender
-static PENDING_KAD_QUERIES: Lazy<Mutex<std::collections::HashMap<String, KadQuerySender>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+static PENDING_KAD_QUERIES: Lazy<Mutex<std::collections::HashMap<String, KadQuerySender>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Pending provider lookup queries: QueryId string -> reply sender (Vec<PeerId>)
-static PENDING_PROVIDERS_QUERIES: Lazy<Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Vec<libp2p::PeerId>>>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+static PENDING_PROVIDERS_QUERIES: Lazy<
+    Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Vec<libp2p::PeerId>>>>,
+> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Insert a pending providers query sender for the given QueryId
-pub fn insert_pending_providers_query(id: QueryId, sender: mpsc::UnboundedSender<Vec<libp2p::PeerId>>) {
+pub fn insert_pending_providers_query(
+    id: QueryId,
+    sender: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
+) {
     let key = format!("{:?}", id);
     let mut map = PENDING_PROVIDERS_QUERIES.lock().unwrap();
     map.insert(key, sender);
 }
 
 /// Take and remove a pending providers query sender by QueryId
-pub fn take_pending_providers_query(id: &QueryId) -> Option<mpsc::UnboundedSender<Vec<libp2p::PeerId>>> {
+pub fn take_pending_providers_query(
+    id: &QueryId,
+) -> Option<mpsc::UnboundedSender<Vec<libp2p::PeerId>>> {
     let key = format!("{:?}", id);
     let mut map = PENDING_PROVIDERS_QUERIES.lock().unwrap();
     map.remove(&key)
@@ -276,29 +379,41 @@ pub fn take_pending_providers_query(id: &QueryId) -> Option<mpsc::UnboundedSende
 
 /// Pending KeyShare request responses: request_id string -> reply sender
 /// Pending KeyShare request responses keyed by peer id string
-static PENDING_KEYSHARE_BY_PEER: Lazy<Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Result<Vec<u8>, String>>>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+static PENDING_KEYSHARE_BY_PEER: Lazy<
+    Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Result<Vec<u8>, String>>>>,
+> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Insert a pending keyshare request sender for a given peer id string
-pub fn insert_pending_keyshare_for_peer(peer_key: String, sender: mpsc::UnboundedSender<Result<Vec<u8>, String>>) {
+pub fn insert_pending_keyshare_for_peer(
+    peer_key: String,
+    sender: mpsc::UnboundedSender<Result<Vec<u8>, String>>,
+) {
     let mut map = PENDING_KEYSHARE_BY_PEER.lock().unwrap();
     map.insert(peer_key, sender);
 }
 
 /// Take and remove a pending keyshare request sender by peer id string
-pub fn take_pending_keyshare_for_peer(peer_key: &str) -> Option<mpsc::UnboundedSender<Result<Vec<u8>, String>>> {
+pub fn take_pending_keyshare_for_peer(
+    peer_key: &str,
+) -> Option<mpsc::UnboundedSender<Result<Vec<u8>, String>>> {
     let mut map = PENDING_KEYSHARE_BY_PEER.lock().unwrap();
     map.remove(peer_key)
 }
 
 /// Insert a pending kad query sender for the given QueryId
-pub fn insert_pending_kad_query(id: QueryId, sender: mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>) {
+pub fn insert_pending_kad_query(
+    id: QueryId,
+    sender: mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>,
+) {
     let key = format!("{:?}", id);
     let mut map = PENDING_KAD_QUERIES.lock().unwrap();
     map.insert(key, sender);
 }
 
 /// Take and remove a pending kad query sender by QueryId
-pub fn take_pending_kad_query(id: &QueryId) -> Option<mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>> {
+pub fn take_pending_kad_query(
+    id: &QueryId,
+) -> Option<mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>> {
     let key = format!("{:?}", id);
     let mut map = PENDING_KAD_QUERIES.lock().unwrap();
     map.remove(&key)
@@ -340,14 +455,18 @@ pub fn renew_due_providers(swarm: &mut Swarm<MyBehaviour>) {
         }
         if entry.next_due <= now {
             let _ = announce_provider_direct(swarm, cid.clone(), entry.ttl_ms);
-            entry.next_due = Instant::now() + Duration::from_millis(std::cmp::max(1000, entry.ttl_ms / 2));
+            entry.next_due =
+                Instant::now() + Duration::from_millis(std::cmp::max(1000, entry.ttl_ms / 2));
         }
     }
 }
 
 /// Withdraw all announces (used on shutdown)
 pub fn withdraw_all_providers(swarm: &mut Swarm<MyBehaviour>) {
-    let keys: Vec<String> = { let mut m = ACTIVE_ANNOUNCES.lock().unwrap(); m.drain().map(|(k, _)| k).collect() };
+    let keys: Vec<String> = {
+        let mut m = ACTIVE_ANNOUNCES.lock().unwrap();
+        m.drain().map(|(k, _)| k).collect()
+    };
     for cid in keys {
         let _ = announce_provider_direct(swarm, cid.clone(), 0);
         info!("DHT: withdrew provider for cid={}", cid);

@@ -1,7 +1,4 @@
-use base64::engine::general_purpose;
-use base64::Engine;
 use libp2p::request_response;
-use log::{debug, error, info};
 use std::time::Duration;
 use tokio::time::Instant;
 

@@ -1,31 +1,15 @@
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
-
-use anyhow::Context;
+use std::time::Duration;
 
 /// Keep nonces for a short window to mitigate replay attacks.
 /// Simple in-memory map: nonce_str -> Instant inserted_at.
 ///
 /// This is intentionally small and simple. In production you may want an
 /// LRU cache, sharded maps, or a persistent store for high-throughput nodes.
-static NONCE_STORE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
 /// Signature verification is required unconditionally to ensure messages
 /// are always authenticated and cannot be silently accepted.
 pub fn require_signed_messages() -> bool {
     true
-}
-
-fn nonce_store() -> &'static Mutex<HashMap<String, Instant>> {
-    NONCE_STORE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Remove expired entries older than `max_age`
-fn prune_nonces(max_age: Duration) {
-    let mut store = nonce_store().lock().unwrap();
-    let now = Instant::now();
-    store.retain(|_, &mut t| now.duration_since(t) <= max_age);
 }
 
 /// Verify a FlatBuffer envelope and check nonce for replay protection.

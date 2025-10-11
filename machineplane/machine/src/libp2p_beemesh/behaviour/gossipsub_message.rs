@@ -1,7 +1,7 @@
 use crate::libp2p_beemesh::NODE_KEYPAIR;
 use base64::Engine;
 use libp2p::gossipsub;
-use log::{debug, info, warn};
+use log::warn;
 use protocol::machine::{build_envelope_signed, fb_envelope_extract_sig_pub};
 
 pub fn gossipsub_message(

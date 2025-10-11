@@ -6,16 +6,6 @@ use protocol::machine::{
 };
 use std::time::Duration;
 
-// Mock swarm and peer setup for testing
-struct MockSwarm;
-impl MockSwarm {
-    fn new() -> Self {
-        Self
-    }
-}
-
-struct MockChannel;
-
 #[tokio::test]
 async fn test_keyshare_simple_envelope_handling() {
     // Test that simple flatbuffer envelopes are accepted and stored
@@ -126,7 +116,7 @@ fn test_keyshare_format_rejection() {
         None,
     );
 
-    let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("signing failed");
+    let (_sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("signing failed");
 
     // Create envelope with tampered signature
     let invalid_envelope = build_envelope_signed(

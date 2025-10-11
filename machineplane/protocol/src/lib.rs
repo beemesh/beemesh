@@ -711,9 +711,7 @@ pub mod machine {
         args.alg = Some(alg_off);
         args.sig = Some(sig_off);
         args.pubkey = Some(pubkey_off);
-        // Set the optional kem_pub field in the FlatBuffer args
-        // TODO: Fix envelope schema to include kem_pub field
-        // args.kem_pub = Some(kem_pub_off);
+        args.kem_pubkey = Some(kem_pub_off);
         args.peer_id = Some(peer_id_off);
 
         let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
@@ -754,9 +752,7 @@ pub mod machine {
         args.alg = Some(alg_off);
         args.sig = Some(sig_full);
         args.pubkey = Some(pubkey_off);
-        // set optional kem_pub field
-        // TODO: Fix envelope schema to include kem_pub field
-        // args.kem_pub = Some(kem_pub_off);
+        args.kem_pubkey = Some(kem_pub_off);
         args.peer_id = Some(peer_id_off);
 
         let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
@@ -796,9 +792,7 @@ pub mod machine {
         args.alg = Some(alg_off);
         args.sig = Some(sig_off);
         args.pubkey = Some(pubkey_off);
-        // set optional kem_pub
-        // TODO: Fix envelope schema to include kem_pub field
-        // args.kem_pub = Some(kem_pub_off);
+        args.kem_pubkey = Some(kem_pub_off);
         args.peer_id = Some(peer_id_off);
 
         let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
@@ -839,9 +833,7 @@ pub mod machine {
         args.alg = Some(alg_off);
         args.sig = Some(sig_full);
         args.pubkey = Some(pubkey_off);
-        // set optional kem_pub
-        // TODO: Fix envelope schema to include kem_pub field
-        // args.kem_pub = Some(kem_pub_off);
+        args.kem_pubkey = Some(kem_pub_off);
         args.peer_id = Some(peer_id_off);
 
         let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
@@ -1248,7 +1240,7 @@ pub mod machine {
     pub fn build_distribute_shares_response(ok: bool, results: &[(String, String)]) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(512);
 
-        let result_strings: Vec<_> = results
+        let _result_strings: Vec<_> = results
             .iter()
             .map(|(peer, result)| {
                 let peer_off = fbb.create_string(peer);

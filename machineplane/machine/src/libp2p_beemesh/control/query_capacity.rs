@@ -1,5 +1,5 @@
 use libp2p::{gossipsub, Swarm};
-use log::{debug, error, info};
+
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 

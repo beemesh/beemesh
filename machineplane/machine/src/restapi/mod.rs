@@ -16,12 +16,8 @@ use protocol::libp2p_constants::{
 use protocol::machine::{
     root_as_apply_key_shares_request, root_as_apply_manifest_request, root_as_assign_request,
     root_as_distribute_capabilities_request, root_as_distribute_shares_request, root_as_envelope,
-    ApplyKeySharesRequest, ApplyManifestRequest, AssignRequest, DistributeCapabilitiesRequest,
-    DistributeSharesRequest, FbEnvelope,
 };
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -45,11 +41,6 @@ async fn get_nodes(
         peer_id.as_deref(),
     )
     .await
-}
-
-async fn get_public_key(State(state): State<RestState>) -> String {
-    // Get the machine's public key from the envelope handler
-    state.envelope_handler.get_public_key().to_string()
 }
 
 async fn get_kem_public_key(State(_state): State<RestState>) -> String {
@@ -180,7 +171,7 @@ pub async fn get_candidates(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
     headers: HeaderMap,
-    body: Bytes,
+    _body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     log::info!("get_candidates: called for task_id={}", task_id);
     // lookup task
@@ -210,7 +201,7 @@ pub async fn get_candidates(
 
     // Extract replicas from the flatbuffer manifest
     let replicas = match protocol::machine::root_as_encrypted_manifest(&task.manifest_bytes) {
-        Ok(encrypted_manifest) => {
+        Ok(_encrypted_manifest) => {
             // For encrypted manifests, default to 1 replica
             1
         }
@@ -379,7 +370,7 @@ pub async fn apply_manifest(
             ) {
                 Ok((payload_bytes, _pub, _sig)) => {
                     // Try to parse payload as EncryptedManifest flatbuffer
-                    if let Ok(encrypted_manifest) =
+                    if let Ok(_encrypted_manifest) =
                         protocol::machine::root_as_encrypted_manifest(&payload_bytes)
                     {
                         // For now, return empty manifest - decryption logic should be handled elsewhere
@@ -539,7 +530,7 @@ pub async fn apply_manifest(
 
     info!("apply_manifest: collected {} responders", responders.len());
 
-    let mut per_peer = serde_json::Map::new();
+    let _per_peer = serde_json::Map::new();
 
     // pick up to `replicas` peers from responders
     let assigned: Vec<String> = responders.into_iter().take(replicas).collect();
@@ -739,7 +730,7 @@ pub async fn create_task(
     store_operation_manifest_mapping(&operation_id, &manifest_id).await;
 
     // Store manifest in DHT and calculate CID
-    let manifest_cid = {
+    let _manifest_cid = {
         let manifest_bytes = &payload_bytes_for_parsing;
 
         // Calculate CID first using the same hash calculation as in the control module
@@ -1456,7 +1447,7 @@ pub async fn distribute_capabilities(
 
     // lookup task
     let maybe = { state.task_store.read().await.get(&task_id).cloned() };
-    let task_record = match maybe {
+    let _task_record = match maybe {
         Some(record) => record,
         None => {
             let error_response =
@@ -1656,7 +1647,7 @@ pub async fn assign_task(
     // Build capacity request and collect responders (reuse existing logic from apply_manifest)
     // Extract replicas from the flatbuffer manifest
     let replicas = match protocol::machine::root_as_encrypted_manifest(&task.manifest_bytes) {
-        Ok(encrypted_manifest) => {
+        Ok(_encrypted_manifest) => {
             // For encrypted manifests, default to 1 replica
             1
         }

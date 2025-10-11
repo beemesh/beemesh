@@ -152,7 +152,6 @@ impl EnvelopeHandler {
                 // Expected ml_kem_512 public key length (bytes). If this doesn't match we likely
                 // have a signing public key stored (or some other non-KEM key) and should not
                 // attempt to use it for KEM-based encryption.
-                const EXPECTED_KEM_PUBKEY_LEN: usize = 800;
                 debug!(
                     "Using stored pubkey for peer {} of length {} bytes",
                     recipient_peer_id,
@@ -403,7 +402,7 @@ pub fn get_peer_id_from_request(headers: &HeaderMap) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crypto::{ensure_keypair_ephemeral, ensure_pqc_init};
 
     #[tokio::test]

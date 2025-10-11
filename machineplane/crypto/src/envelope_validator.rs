@@ -190,7 +190,6 @@ pub type ValidationResult<T> = Result<T, EnvelopeError>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_require_signed_messages() {

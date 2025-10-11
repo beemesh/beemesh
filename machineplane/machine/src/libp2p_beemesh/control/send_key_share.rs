@@ -45,7 +45,7 @@ pub async fn handle_send_key_share(
 
                 // Store the payload directly using keystore (same logic as keyshare_message handler)
                 match crypto::open_keystore_default() {
-                    Ok(mut ks) => {
+                    Ok(ks) => {
                         // For capability tokens, store the complete envelope; for keyshares, store the payload
                         let bytes_to_store = if payload_type == "capability" {
                             // Store the complete signed envelope for capability tokens
@@ -56,7 +56,7 @@ pub async fn handle_send_key_share(
                         };
 
                         // Use the same storage logic as keyshare_message handler
-                        let (blob, cid) = crypto::encrypt_share_for_keystore(&bytes_to_store)
+                        let (_blob, _cid) = crypto::encrypt_share_for_keystore(&bytes_to_store)
                             .unwrap_or_else(|_| (Vec::new(), String::new()));
 
                         // Extract manifest_id from payload based on type

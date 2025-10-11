@@ -1,6 +1,6 @@
-use libp2p::{kad, PeerId};
-use log::{info, warn, debug};
 use crate::libp2p_beemesh::control;
+use libp2p::{kad, PeerId};
+use log::{debug, info, warn};
 
 /// Handle Kademlia DHT events
 pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
@@ -17,15 +17,17 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
             }))) => {
                 info!(
                     "DHT: Retrieved record with key: {:?} from query: {:?}",
-                    record.key,
-                    id
+                    record.key, id
                 );
                 // If there is a pending control query waiting for this kademlia QueryId, reply with bytes
                 if let Some(tx) = control::take_pending_kad_query(&id) {
                     let _ = tx.send(Ok(Some(record.value.clone())));
                 }
             }
-            kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { key: _key, providers })) => {
+            kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
+                key: _key,
+                providers,
+            })) => {
                 info!("DHT: Found providers for query {:?}: {:?}", id, providers);
                 if let Some(tx) = control::take_pending_providers_query(&id) {
                     let _ = tx.send(providers.into_iter().collect());
@@ -67,9 +69,9 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
             }
         },
         kad::Event::RoutingUpdated {
-            peer,
+            peer: _,
             is_new_peer,
-            addresses,
+            addresses: _,
             bucket_range: _,
             old_peer: _,
         } => {
@@ -89,19 +91,31 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
         kad::Event::PendingRoutablePeer { peer, address } => {
             info!("DHT: Peer {} is pending routable at {}", peer, address);
         }
-        kad::Event::InboundRequest { request } => {
-            match request {
-                kad::InboundRequest::GetRecord { num_closer_peers, present_locally } => {
-                    debug!("DHT: Received GetRecord request (closer_peers: {}, local: {})", num_closer_peers, present_locally);
-                }
-                kad::InboundRequest::PutRecord { source, connection: _, record } => {
-                    info!("DHT: Received PutRecord from {} for key: {:?}", source, record.as_ref().map(|r| &r.key));
-                }
-                _ => {
-                    debug!("DHT: Other inbound request: {:?}", request);
-                }
+        kad::Event::InboundRequest { request } => match request {
+            kad::InboundRequest::GetRecord {
+                num_closer_peers,
+                present_locally,
+            } => {
+                debug!(
+                    "DHT: Received GetRecord request (closer_peers: {}, local: {})",
+                    num_closer_peers, present_locally
+                );
             }
-        }
+            kad::InboundRequest::PutRecord {
+                source,
+                connection: _,
+                record,
+            } => {
+                info!(
+                    "DHT: Received PutRecord from {} for key: {:?}",
+                    source,
+                    record.as_ref().map(|r| &r.key)
+                );
+            }
+            _ => {
+                debug!("DHT: Other inbound request: {:?}", request);
+            }
+        },
         kad::Event::ModeChanged { new_mode } => {
             info!("DHT: Mode changed to {:?}", new_mode);
         }

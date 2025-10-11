@@ -4,7 +4,7 @@
 //! and eliminates duplication of keypair generation and handling patterns.
 
 use crate::logging::CryptoLogger;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use log::{info, warn};
 use once_cell::sync::OnceCell;
 use std::sync::Mutex;
@@ -153,7 +153,7 @@ impl KeypairManager {
         // Generate new ephemeral KEM keypair
         crate::ensure_pqc_init().map_err(|e| KeypairError::PqcInitFailed(e.to_string()))?;
 
-        use saorsa_pqc::api::kem::{ml_kem_512, MlKemVariant};
+        use saorsa_pqc::api::kem::ml_kem_512;
         let kem = ml_kem_512();
         let (pubk, privk) = kem.generate_keypair().map_err(|e| {
             KeypairError::GenerationFailed(format!("KEM keypair generation: {:?}", e))
@@ -183,7 +183,7 @@ impl KeypairManager {
 
         match keypair_type {
             KeypairType::Signing => {
-                use saorsa_pqc::api::sig::{ml_dsa_65, MlDsaVariant};
+                use saorsa_pqc::api::sig::ml_dsa_65;
                 let dsa = ml_dsa_65();
                 let (pubk, privk) = dsa.generate_keypair().map_err(|e| {
                     KeypairError::GenerationFailed(format!("signing keypair: {:?}", e))
@@ -200,7 +200,7 @@ impl KeypairManager {
                 Ok((pub_bytes, priv_bytes))
             }
             KeypairType::Kem => {
-                use saorsa_pqc::api::kem::{ml_kem_512, MlKemVariant};
+                use saorsa_pqc::api::kem::ml_kem_512;
                 let kem = ml_kem_512();
                 let (pubk, privk) = kem
                     .generate_keypair()

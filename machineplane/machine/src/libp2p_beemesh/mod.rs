@@ -1,6 +1,5 @@
 use anyhow::Result;
-use base64::engine::general_purpose;
-use base64::Engine;
+
 use futures::stream::StreamExt;
 use libp2p::{
     gossipsub, kad, noise, request_response, swarm::SwarmEvent, tcp, yamux, PeerId, Swarm,
@@ -173,7 +172,7 @@ pub static KEYSTORE_SHARED_NAME: OnceCell<Option<String>> = OnceCell::new();
 
 // Global behaviour-level cache for peer KEM public keys populated from capacity replies
 use once_cell::sync::Lazy;
-use std::time::{SystemTime, UNIX_EPOCH};
+
 pub static PEER_KEM_PUBKEYS: Lazy<RwLock<StdHashMap<libp2p::PeerId, Vec<u8>>>> =
     Lazy::new(|| RwLock::new(StdHashMap::new()));
 
@@ -220,7 +219,7 @@ pub async fn start_libp2p_node(
     topic: gossipsub::IdentTopic,
     peer_tx: watch::Sender<Vec<String>>,
     mut control_rx: mpsc::UnboundedReceiver<Libp2pControl>,
-    keystore_shared_name: Option<String>,
+    _keystore_shared_name: Option<String>,
 ) -> Result<()> {
     use std::collections::HashMap;
     use tokio::time::Instant;
