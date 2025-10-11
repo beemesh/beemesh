@@ -53,7 +53,7 @@ The machine plane must balance competing requirements:
 We accept **minimal, bounded compromises** to enable essential functionality:
 
 - ✅ **Reactive monitoring** triggered by actual failures (not proactive)
-- ✅ **Temporary coordination** for capability recovery (30 seconds max, auto-cleanup)  
+- ✅ **Temporary coordination** for capability recovery (30 seconds max, auto-cleanup)
 - ✅ **Minimal state** for active manifest capability health (expires automatically)
 - ✅ **Emergency authority** during capability recovery (cryptographically validated)
 - ❌ **Continuous monitoring** or persistent coordination infrastructure
@@ -69,11 +69,11 @@ Rebalancing is triggered **only** by concrete operational failures:
 enum RebalancingTrigger {
     // Node stops responding to lease renewal, task communication, etc.
     NodeTimeout(PeerId),
-    
+
     // Encrypted task published but no capable nodes bid
     SchedulingFailure { task_id: String, manifest_id: String },
-    
-    // DHT provider announcements show capability holder loss  
+
+    // DHT provider announcements show capability holder loss
     CapabilityProviderLoss { manifest_id: String, provider_type: CapabilityType },
 }
 ```
@@ -87,7 +87,7 @@ When rebalancing is triggered, discover current state on-demand:
 ```rust
 struct CapabilityDistributionState {
     keyshare_holders: Vec<PeerId>,           // Current responsive keyshare holders
-    manifest_holders: Vec<PeerId>,           // Current responsive manifest holders  
+    manifest_holders: Vec<PeerId>,           // Current responsive manifest holders
     reconstruction_threshold: usize,         // Minimum keyshares needed for decryption
     scheduling_viable: bool,                 // Can tasks be scheduled?
     security_compliant: bool,                // Distribution meets security constraints?
@@ -111,14 +111,14 @@ enum MinimalRebalancingAction {
         additional_shares_needed: usize,
         target_nodes: Vec<PeerId>,
     },
-    
+
     // Duplicate manifest capability to more nodes
     DuplicateManifestCapability {
-        manifest_id: String, 
+        manifest_id: String,
         source_holder: PeerId,
         target_nodes: Vec<PeerId>,
     },
-    
+
     // Transfer existing capability between nodes
     TransferCapability {
         manifest_id: String,
@@ -126,7 +126,7 @@ enum MinimalRebalancingAction {
         from_node: PeerId,
         to_node: PeerId,
     },
-    
+
     // Insufficient surviving capabilities - cannot recover
     Unrecoverable,
 }
@@ -144,7 +144,7 @@ Every rebalancing action must pass security validation:
 ```rust
 struct ZeroTrustConstraints {
     min_reconstruction_threshold: usize,      // Never compromise threshold requirements
-    max_capabilities_per_node: usize,        // Prevent dangerous capability concentration  
+    max_capabilities_per_node: usize,        // Prevent dangerous capability concentration
     geographic_distribution_rules: Vec<Rule>, // Maintain data residency requirements
     organizational_separation: Vec<Policy>,   // Prevent single-org capability control
 }
@@ -152,7 +152,7 @@ struct ZeroTrustConstraints {
 
 **Security checks**:
 - Reconstruction threshold maintained
-- No dangerous capability concentration created  
+- No dangerous capability concentration created
 - Geographic and regulatory constraints preserved
 - Organizational distribution policies enforced
 
@@ -173,7 +173,7 @@ struct EmergencyCapabilityRecovery {
 **Coordination process**:
 1. **Acquire coordination lease** (30 seconds max, auto-expires)
 2. **Verify participant availability** and collect commitments
-3. **Execute recovery action** with multi-party cooperation  
+3. **Execute recovery action** with multi-party cooperation
 4. **Validate result** against security constraints
 5. **Cleanup coordination state** regardless of success/failure
 
@@ -184,11 +184,11 @@ When keyshare holders fail but reconstruction is still possible:
 
 1. **Collect existing keyshares** from surviving holders (need threshold count)
 2. **Cooperatively reconstruct secret** using multi-party computation
-3. **Generate additional keyshares** to restore desired distribution  
+3. **Generate additional keyshares** to restore desired distribution
 4. **Distribute new keyshares** to selected target nodes
 5. **Verify distribution** and cleanup coordination
 
-#### Manifest Capability Duplication  
+#### Manifest Capability Duplication
 When manifest holders become unavailable:
 
 1. **Request encrypted manifest** from surviving holder
@@ -200,7 +200,7 @@ When manifest holders become unavailable:
 When nodes need to transfer capabilities (e.g., node shutdown, rebalancing):
 
 1. **Validate transfer safety** against security constraints
-2. **Generate new capability token** for target node  
+2. **Generate new capability token** for target node
 3. **Securely transfer capability** with cryptographic proof
 4. **Revoke old capability** from source node
 5. **Verify transfer completion** and cleanup coordination
@@ -212,7 +212,7 @@ When nodes need to transfer capabilities (e.g., node shutdown, rebalancing):
 Rebalancing extends existing machine plane mechanisms:
 
 - **Leverage existing timeout detection** for node failure identification
-- **Extend task scheduling failure handling** to include capability analysis  
+- **Extend task scheduling failure handling** to include capability analysis
 - **Use existing DHT lease patterns** for coordination authority
 - **Build on current peer communication** for capability operations
 
@@ -225,9 +225,9 @@ struct EssentialCapabilityState {
     // Only track capabilities for recently active manifests
     active_manifests: HashMap<ManifestId, CapabilityHealth>,
     manifest_ttl: Duration::from_hours(24),           // Auto-expire entries
-    
+
     // Track active recovery operations to prevent conflicts
-    active_recoveries: HashMap<ManifestId, RecoveryLease>,  
+    active_recoveries: HashMap<ManifestId, RecoveryLease>,
     max_recovery_duration: Duration::from_secs(30),  // Force cleanup
 }
 ```
@@ -252,7 +252,7 @@ struct EssentialCapabilityState {
 
 Capability rebalancing **enhances security** against compromised nodes:
 
-- **Proactive redistribution** away from suspicious nodes  
+- **Proactive redistribution** away from suspicious nodes
 - **Emergency capability revocation** for confirmed compromised nodes
 - **Compromise-aware recovery** that excludes suspicious participants
 - **Capability rotation** to limit blast radius of compromises
@@ -262,7 +262,7 @@ Capability rebalancing **enhances security** against compromised nodes:
 Rebalancing operations minimize trust requirements:
 
 - **Multi-party execution** - no single node has unilateral authority
-- **Cryptographic validation** - all operations verified against security constraints  
+- **Cryptographic validation** - all operations verified against security constraints
 - **Automatic cleanup** - coordination authority expires automatically
 - **Participant consensus** - recovery requires agreement from multiple nodes
 
@@ -272,7 +272,7 @@ The system resists various attack vectors:
 
 - **Capability hoarding** - Concentration limits prevent accumulation
 - **False failure reports** - Direct verification of node responsiveness
-- **Malicious coordination** - Security validation prevents unsafe operations  
+- **Malicious coordination** - Security validation prevents unsafe operations
 - **Social engineering** - Cryptographic proofs required for all operations
 
 ## Monitoring and Observability
@@ -291,7 +291,7 @@ Key events for monitoring system health:
 
 Essential metrics for capability distribution health:
 
-- **Manifest scheduling viability** - Can encrypted tasks be scheduled  
+- **Manifest scheduling viability** - Can encrypted tasks be scheduled
 - **Capability distribution ratio** - Current vs. optimal distribution
 - **Recovery frequency** - How often rebalancing is triggered
 - **Recovery latency** - Time from trigger to restored scheduling capability
@@ -304,11 +304,11 @@ Essential metrics for capability distribution health:
 As the system scales, consider:
 
 - **Capability discovery efficiency** - DHT queries at scale
-- **Coordination scalability** - Multi-party operations with many participants  
+- **Coordination scalability** - Multi-party operations with many participants
 - **Network partition resilience** - Larger networks, more partition scenarios
 - **Cross-tenant isolation** - Capability management across tenant boundaries
 
-### Security Evolution  
+### Security Evolution
 
 Potential security enhancements:
 
@@ -324,3 +324,38 @@ The machine plane capability rebalancing approach represents a **carefully balan
 The key insight is that **some coordination is inevitable** for maintaining security properties in a zero-trust system - the goal is to make that coordination as **minimal, reactive, and bounded** as possible while still preventing catastrophic capability loss that would render the system unusable.
 
 This approach provides **essential self-healing capability** without turning the machine plane into a full orchestration system, maintaining its focus on **ephemeral scheduling** while adding just enough **capability management** to ensure scheduling remains possible in the face of node failures and compromises.
+
+# Future Directions
+## 1. Suggested Enhancements (Actionable)
+
+Prioritized list (higher value earlier):
+
+1. Introduce a formal “RecoveryProposal” message schema (signed) and embed it into machineplane README (Protocols section).
+2. Replace (or offer option to replace) secret reconstruction step with a resharing protocol (document normative security recommendation: reconstruction SHOULD NOT expose plaintext secret to any single node).
+3. Specify lease data structure and acquisition algorithm (tie-breaker + backoff).
+4. Define “capability distribution entropy” metric (e.g., normalized Shannon entropy across failure domains) and optional soft floor for opportunistic correction.
+5. Add rate limiting / hysteresis around triggers (e.g., minimum interval per manifest between recoveries).
+6. Extend compliance checklist (machineplane README) with: “Capability recovery MUST enforce: threshold invariants; concentration limits; signed recovery artifact; ≤30s lease duration.”
+7. Document a revocation flow for capability supersession (how old keyshare or manifest capability is invalidated & how that is cryptographically proven to others).
+8. Add partition-safe merge rule post-reconciliation (deterministic pruning order).
+9. Provide observability event names and sample payloads: CapabilityRecoveryStarted, CapabilityRecoveryResult {success|failure|unrecoverable}, CapabilityDistributionStateSnapshot, CapabilitySecurityViolation.
+10. Clarify security constraints source of truth (static config? signed policy object? per-tenant?).
+
+---
+
+## 2. Where the Current Design Is Strong
+
+- Explicitly scoped minimal deviation from pure statelessness.
+- Reactive-only philosophy preserves simplicity and operational frugality.
+- Clear separation from the Workplane; no trust boundary erosion.
+- Security-first failure mode (fail closed rather than degrade confidentiality).
+- Provides an extensible mental model (Trigger → Assess → Plan → Validate → Execute → Cleanup).
+
+---
+
+## 3. Potential Oversights (Worth Calling Out Early)
+
+- Lack of mention of how new nodes prove suitability (e.g., hardware attestation, jurisdiction metadata) before receiving capabilities.
+- No anti-entropy reconciliation loop described to correct silent drift (e.g., a holder that still advertises but actually lost local state).
+- Missing explicit cryptographic binding between manifest version and capability distribution snapshot (for replay protection).
+- Recovery operation outcome verification relies on “validate result” but not enumerated invariants; formalizing invariants helps with testing and compliance automation.
