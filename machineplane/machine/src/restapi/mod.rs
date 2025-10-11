@@ -13,6 +13,11 @@ use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
 use protocol::libp2p_constants::{
     FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS, REPLICAS_FIELD, SPEC_REPLICAS_FIELD,
 };
+use scheduler::{DistributionConfig, DistributionPlan, SecurityLevel};
+
+// Zero-trust configuration constants
+const DEFAULT_TOTAL_CAPABILITY_TOKENS: usize = 6;
+const DEFAULT_FAULT_TOLERANCE_THRESHOLD: usize = 2;
 use protocol::machine::{
     root_as_apply_key_shares_request, root_as_apply_manifest_request, root_as_assign_request,
     root_as_distribute_capabilities_request, root_as_distribute_manifests_request,
@@ -252,9 +257,57 @@ pub async fn get_candidates(
         Err(_) => 3, // default to 3 if parsing fails
     };
 
-    // Use max(replicas, shares_n) to ensure we have enough nodes for both
-    // workload replication and secret reconstruction
-    let min_required_responders = std::cmp::max(replicas, shares_n);
+    // Calculate total capability tokens from task record
+    let total_capability_tokens = task.shares_distributed.len() + task.manifests_distributed.len();
+    let total_capability_tokens = if total_capability_tokens == 0 {
+        DEFAULT_TOTAL_CAPABILITY_TOKENS
+    } else {
+        total_capability_tokens
+    };
+
+    // Use scheduler for optimal responder calculation
+    let distribution_config = DistributionConfig {
+        min_threshold: (shares_n + 1) / 2, // Convert shares_n to reasonable threshold
+        max_fault_tolerance: DEFAULT_FAULT_TOLERANCE_THRESHOLD,
+        security_level: SecurityLevel::Standard,
+    };
+
+    // We don't know exact candidate count yet, but we can estimate based on total_capability_tokens
+    // This gives us a baseline calculation that will be refined during actual candidate gathering
+    let estimated_candidates = std::cmp::max(total_capability_tokens, 5); // At least 5 for reasonable distribution
+
+    let min_required_responders = match DistributionPlan::calculate_optimal_distribution(
+        estimated_candidates,
+        &distribution_config,
+    ) {
+        Ok(plan) => {
+            log::info!(
+                "get_candidates: scheduler calculated optimal plan: keyshares={}, threshold={}, manifests={}, min_responders={}, byzantine_ft={}",
+                plan.keyshare_count, plan.reconstruction_threshold, plan.manifest_count, plan.min_required_responders, plan.byzantine_fault_tolerance
+            );
+            plan.min_required_responders
+        }
+        Err(e) => {
+            log::warn!("get_candidates: scheduler calculation failed: {}, falling back to legacy calculation", e);
+
+            // Fallback to legacy calculation
+            let min_for_key_reconstruction = (shares_n + 1) / 2;
+            let min_for_manifest_access = 1;
+            let fault_tolerance_buffer = DEFAULT_FAULT_TOLERANCE_THRESHOLD;
+
+            let balanced_min = std::cmp::min(
+                min_for_key_reconstruction + min_for_manifest_access + fault_tolerance_buffer,
+                total_capability_tokens.saturating_sub(1),
+            );
+
+            std::cmp::max(balanced_min, std::cmp::max(replicas, shares_n))
+        }
+    };
+
+    log::info!(
+        "get_candidates: final min_required_responders={} (total_tokens={}, replicas={}, shares_n={})",
+        min_required_responders, total_capability_tokens, replicas, shares_n
+    );
 
     let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
     let capacity_fb = protocol::machine::build_capacity_request(
@@ -288,7 +341,7 @@ pub async fn get_candidates(
                 if !responders.contains(&peer) {
                     responders.push(peer);
                 }
-                // TODO: Handle case when not enough responders respond in time
+                // TODO: Handle case when not enough responders respond in time, always wait
                 if responders.len() >= min_required_responders {
                     log::info!(
                         "get_candidates: got enough responders ({}), breaking",

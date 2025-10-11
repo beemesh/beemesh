@@ -1,5 +1,6 @@
 use env_logger::Env;
 use futures::future::join_all;
+use scheduler::{DistributionConfig, DistributionPlan, SecurityLevel};
 use serial_test::serial;
 
 use std::path::PathBuf;
@@ -135,7 +136,7 @@ async fn test_apply_functionality() {
         let client = client.clone();
         async move {
             let base = format!("http://127.0.0.1:{}", port);
-            let mut result = (port, false, false, false); // (port, has_capability, has_keyshare, has_announces)
+            let mut result = (port, false, false, false, 0, 0, 0); // (port, has_capability, has_keyshare, has_announces, keyshare_cap_count, manifest_cap_count, legacy_cap_count)
 
             // Check for keystore entries with detailed metadata
             for attempt in 0..15 {
@@ -205,6 +206,8 @@ async fn test_apply_functionality() {
 
                                     result.1 = has_capability;
                                     result.2 = has_keyshare;
+                                    // Store capability counts for later verification
+                                    result = (port, has_capability, has_keyshare, false, keyshare_capabilities, manifest_capabilities, legacy_capabilities);
                                     break;
                                 }
                             }
@@ -232,6 +235,7 @@ async fn test_apply_functionality() {
                         if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                             if let Some(arr) = j.get("cids").and_then(|v| v.as_array()) {
                                 if !arr.is_empty() {
+                                    // Update announces flag in the extended result tuple
                                     result.3 = true; // has_announces
                                     break;
                                 }
@@ -249,12 +253,26 @@ async fn test_apply_functionality() {
     // Execute all keystore checks in parallel
     let results = join_all(keystore_tasks).await;
 
-    // Collect results
+    // Collect results and capability counts
     let mut nodes_with_announces: Vec<u16> = Vec::new();
     let mut nodes_with_capabilities: Vec<u16> = Vec::new();
     let mut nodes_with_keyshares: Vec<u16> = Vec::new();
+    let mut total_keyshare_capabilities = 0;
+    let mut total_manifest_capabilities = 0;
+    let mut total_legacy_capabilities = 0;
+    let mut nodes_with_keyshare_caps: Vec<u16> = Vec::new();
+    let mut nodes_with_manifest_caps: Vec<u16> = Vec::new();
 
-    for (port, has_capability, has_keyshare, has_announces) in results {
+    for (
+        port,
+        has_capability,
+        has_keyshare,
+        has_announces,
+        keyshare_cap_count,
+        manifest_cap_count,
+        legacy_cap_count,
+    ) in results
+    {
         if has_capability {
             nodes_with_capabilities.push(port);
         }
@@ -264,11 +282,41 @@ async fn test_apply_functionality() {
         if has_announces {
             nodes_with_announces.push(port);
         }
+
+        // Track capability distribution
+        if keyshare_cap_count > 0 {
+            nodes_with_keyshare_caps.push(port);
+            total_keyshare_capabilities += keyshare_cap_count;
+        }
+        if manifest_cap_count > 0 {
+            nodes_with_manifest_caps.push(port);
+            total_manifest_capabilities += manifest_cap_count;
+        }
+        if legacy_cap_count > 0 {
+            total_legacy_capabilities += legacy_cap_count;
+        }
     }
 
     println!("  Nodes with capabilities: {:?}", nodes_with_capabilities);
     println!("  Nodes with keyshares: {:?}", nodes_with_keyshares);
     println!("  Nodes with announces: {:?}", nodes_with_announces);
+    println!("  Capability distribution summary:");
+    println!(
+        "    Keyshare capabilities: {} total on {} nodes {:?}",
+        total_keyshare_capabilities,
+        nodes_with_keyshare_caps.len(),
+        nodes_with_keyshare_caps
+    );
+    println!(
+        "    Manifest capabilities: {} total on {} nodes {:?}",
+        total_manifest_capabilities,
+        nodes_with_manifest_caps.len(),
+        nodes_with_manifest_caps
+    );
+    println!(
+        "    Legacy capabilities: {} total",
+        total_legacy_capabilities
+    );
 
     // Check which nodes are storing the manifest (manifest holders)
     println!("Checking all nodes for manifest holders in parallel...");
@@ -314,35 +362,100 @@ async fn test_apply_functionality() {
 
     println!("  Nodes with manifests: {:?}", nodes_with_manifests);
 
-    // With the new capability system, we expect:
-    // - 3 nodes to get keyshare capability tokens (for the first n peers)
-    // - 5 nodes to get manifest capability tokens (all peers)
-    // So we should see 5 nodes with at least one capability token
-    assert!(
-        nodes_with_capabilities.len() >= 3,
-        "expected at least 3 nodes to have capability tokens, but {} nodes had them: {:?}",
-        nodes_with_capabilities.len(),
-        nodes_with_capabilities
+    // Calculate expected values using scheduler for dynamic verification
+    let config = DistributionConfig {
+        min_threshold: 2,
+        max_fault_tolerance: 3,
+        security_level: SecurityLevel::Standard,
+    };
+
+    let expected_plan = DistributionPlan::calculate_optimal_distribution(ports.len(), &config)
+        .expect("Should calculate distribution plan for test nodes");
+
+    println!("Expected distribution plan from scheduler:");
+    println!(
+        "  - Keyshares: {}, Threshold: {}",
+        expected_plan.keyshare_count, expected_plan.reconstruction_threshold
+    );
+    println!(
+        "  - Manifests: {}, Total tokens: {}",
+        expected_plan.manifest_count, expected_plan.total_capability_tokens
+    );
+
+    println!("Verifying capability distribution matches scheduler expectations...");
+
+    assert_eq!(
+        total_keyshare_capabilities, expected_plan.keyshare_count,
+        "expected {} keyshare capability tokens (scheduler calculated), but found {}",
+        expected_plan.keyshare_count, total_keyshare_capabilities
     );
 
     assert_eq!(
+        nodes_with_keyshare_caps.len(),
+        expected_plan.keyshare_count,
+        "expected {} nodes to have keyshare capabilities (scheduler calculated), but {} nodes had them: {:?}",
+        expected_plan.keyshare_count, nodes_with_keyshare_caps.len(), nodes_with_keyshare_caps
+    );
+
+    assert_eq!(
+        total_manifest_capabilities, expected_plan.manifest_count,
+        "expected {} manifest capability tokens (scheduler calculated), but found {}",
+        expected_plan.manifest_count, total_manifest_capabilities
+    );
+
+    assert_eq!(
+        nodes_with_manifest_caps.len(),
+        expected_plan.manifest_count,
+        "expected {} nodes to have manifest capabilities (scheduler calculated), but {} nodes had them: {:?}",
+        expected_plan.manifest_count, nodes_with_manifest_caps.len(), nodes_with_manifest_caps
+    );
+
+    // Verify the total matches scheduler calculation
+    let total_capabilities =
+        total_keyshare_capabilities + total_manifest_capabilities + total_legacy_capabilities;
+    assert_eq!(
+        total_capabilities, expected_plan.total_capability_tokens,
+        "expected {} total capability tokens (scheduler calculated), but found {}",
+        expected_plan.total_capability_tokens, total_capabilities
+    );
+
+    // Verify keyshares match keyshare capabilities (each keyshare gets a capability)
+    assert_eq!(
         nodes_with_keyshares.len(),
-        3,
-        "expected exactly 3 nodes to have keyshares, but {} nodes had them: {:?}",
+        expected_plan.keyshare_count,
+        "expected {} nodes to have keyshares (scheduler calculated), but {} nodes had them: {:?}",
+        expected_plan.keyshare_count,
         nodes_with_keyshares.len(),
         nodes_with_keyshares
     );
 
     assert_eq!(
         nodes_with_manifests.len(),
-        3,
-        "expected exactly 3 nodes to hold the manifest, but {} nodes had it: {:?}",
+        expected_plan.manifest_count,
+        "expected {} nodes to hold the manifest (scheduler calculated), but {} nodes had it: {:?}",
+        expected_plan.manifest_count,
         nodes_with_manifests.len(),
         nodes_with_manifests
     );
     assert!(
         !nodes_with_announces.is_empty(),
         "no node had active announces"
+    );
+
+    println!("✓ Capability distribution verification passed (scheduler calculated):");
+    println!(
+        "  - {} keyshare capabilities distributed to {} nodes (matches scheduler plan)",
+        total_keyshare_capabilities,
+        nodes_with_keyshare_caps.len()
+    );
+    println!(
+        "  - {} manifest capabilities distributed to {} nodes (matches scheduler plan)",
+        total_manifest_capabilities,
+        nodes_with_manifest_caps.len()
+    );
+    println!(
+        "  - Total {} capabilities matches expected {} (scheduler zero-trust calculation)",
+        total_capabilities, expected_plan.total_capability_tokens
     );
 
     // Verify manifest storage by finding the manifest CID and testing cross-node queries

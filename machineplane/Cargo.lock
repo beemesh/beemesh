@@ -600,6 +600,7 @@ dependencies = [
  "rand 0.8.5",
  "reqwest",
  "saorsa-pqc",
+ "scheduler",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1905,6 +1906,7 @@ dependencies = [
  "log",
  "machine",
  "reqwest",
+ "scheduler",
  "serde_json",
  "serde_yaml",
  "serial_test",
@@ -2478,6 +2480,7 @@ dependencies = [
  "protocol",
  "rand 0.8.5",
  "saorsa-pqc",
+ "scheduler",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3613,6 +3616,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
 dependencies = [
  "windows-sys 0.61.0",
+]
+
+[[package]]
+name = "scheduler"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "tokio",
 ]
 
 [[package]]

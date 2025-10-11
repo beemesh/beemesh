@@ -24,6 +24,7 @@ kyber-rust = "0.2"
 saorsa-pqc = "0.3"
 crypto = { path = "../crypto" }
 protocol = { path = "../protocol" }
+scheduler = { path = "../scheduler" }
 log = "0.4"
 env_logger = "0.10"
 uuid = { version = "1.0", features = ["v4"] }

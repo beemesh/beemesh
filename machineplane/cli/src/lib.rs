@@ -4,6 +4,7 @@ use dirs::home_dir;
 use log::debug;
 use log::error;
 use log::info;
+use scheduler::{DistributionConfig, DistributionPlan, SecurityLevel};
 use serde_json::Value as JsonValue;
 use serde_yaml;
 use std::env;
@@ -47,10 +48,26 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     // encrypt manifest
     let (ciphertext, nonce_bytes, sym, _nonce) = encrypt_manifest(&manifest_json)?;
 
-    // split symmetric key into shares (n=3, k=2)
-    debug!("apply_file: splitting symmetric key...");
-    let n = 3usize;
-    let k = 2usize;
+    // Calculate optimal distribution with default parameters first
+    // We'll get actual candidates later and may adjust if needed
+    let default_config = DistributionConfig {
+        min_threshold: 2,
+        max_fault_tolerance: 3,
+        security_level: SecurityLevel::Standard,
+    };
+
+    // For now, use default 5 candidates assumption (will be refined after getting actual candidates)
+    let initial_plan = DistributionPlan::calculate_optimal_distribution(5, &default_config)
+        .map_err(|e| anyhow::anyhow!("Failed to calculate initial distribution plan: {}", e))?;
+
+    // Use calculated optimal values for shares
+    let n = initial_plan.keyshare_count;
+    let k = initial_plan.reconstruction_threshold;
+
+    debug!(
+        "apply_file: splitting symmetric key into {} shares with threshold {} (initial plan)",
+        n, k
+    );
     let shares_vec = split_symmetric_key(&sym, n, k);
     debug!(
         "apply_file: symmetric key split into {} shares",
@@ -187,6 +204,33 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         "apply_file: get_candidates completed successfully, found {} peers",
         peers.len()
     );
+
+    // Recalculate optimal distribution with actual candidate count
+    let final_distribution_plan =
+        DistributionPlan::calculate_optimal_distribution(peers.len(), &default_config)
+            .map_err(|e| anyhow::anyhow!("Failed to calculate final distribution plan: {}", e))?;
+
+    info!(
+        "Final distribution plan: keyshares={}, threshold={}, manifests={}, byzantine_ft={} (for {} candidates)",
+        final_distribution_plan.keyshare_count,
+        final_distribution_plan.reconstruction_threshold,
+        final_distribution_plan.manifest_count,
+        final_distribution_plan.byzantine_fault_tolerance,
+        peers.len()
+    );
+
+    // Validate our initial plan was sufficient, warn if not
+    if final_distribution_plan.keyshare_count != n
+        || final_distribution_plan.reconstruction_threshold != k
+    {
+        info!(
+            "Distribution plan updated from initial: keyshares {}→{}, threshold {}→{}",
+            n,
+            final_distribution_plan.keyshare_count,
+            k,
+            final_distribution_plan.reconstruction_threshold
+        );
+    }
     debug!("get_candidates completed successfully");
     debug!("Candidates: {:?}", peers);
 
@@ -271,12 +315,19 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let manifest_envelope_b64 =
         base64::engine::general_purpose::STANDARD.encode(&signed_manifest_envelope);
 
+    // Create manifest target peers based on final distribution plan
+    let manifest_target_peers: Vec<String> = peers
+        .iter()
+        .take(final_distribution_plan.manifest_count)
+        .cloned()
+        .collect();
+
     let manifest_dist_resp = fb_client
         .distribute_manifests(
             tenant,
             &returned_manifest_id,
             &manifest_envelope_b64,
-            &target_peer_ids,
+            &manifest_target_peers,
         )
         .await?;
     debug!("Distribute manifests response: {:?}", manifest_dist_resp);
@@ -305,15 +356,14 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         keyshare_capability_resp
     );
 
-    // Also create capability tokens for manifest access (for all peers)
-    // This allows any node to fetch manifests from the manifest holders
     debug!(
-        "Creating manifest capability tokens for {} peers: {:?}",
-        peers.len(),
-        peers
+        "Creating manifest capability tokens for {} peers (plan specifies {} manifests): {:?}",
+        manifest_target_peers.len(),
+        final_distribution_plan.manifest_count,
+        manifest_target_peers
     );
     let manifest_capability_targets = create_manifest_capability_tokens(
-        &peers, // All peers get manifest access tokens
+        &manifest_target_peers, // Nodes based on distribution plan
         &returned_manifest_id,
         &pk_bytes,
         &sk_bytes,

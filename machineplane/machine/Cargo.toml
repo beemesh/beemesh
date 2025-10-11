@@ -22,6 +22,7 @@ flatbuffers = "25.2.10"
 base64 = "0.21"
 async-trait = "0.1"
 crypto = { path = "../crypto" }
+scheduler = { path = "../scheduler" }
 log = "0.4"
 env_logger = "0.10"
 saorsa-pqc = "0.3"
