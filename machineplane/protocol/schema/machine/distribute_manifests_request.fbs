@@ -1,0 +1,16 @@
+namespace beemesh.machine;
+
+// ManifestTarget represents a target node and encrypted manifest payload for distribution
+table ManifestTarget {
+  peer_id: string;
+  payload_json: string; // Encrypted manifest data as JSON string
+}
+
+// DistributeManifestsRequest distributes encrypted manifests to multiple target nodes
+table DistributeManifestsRequest {
+  manifest_id: string; // The manifest ID to use when storing
+  manifest_envelope_json: string; // Base64-encoded manifest envelope
+  targets: [ManifestTarget]; // Array of target nodes with encrypted payloads
+}
+
+root_type DistributeManifestsRequest;

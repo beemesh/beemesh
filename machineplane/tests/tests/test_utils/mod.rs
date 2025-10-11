@@ -134,7 +134,8 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
         }
 
         // Set environment variables for this process
-        cmd.env("RUST_LOG", "info,libp2p=warn,quinn=warn");
+        cmd.env("RUST_LOG", "info,libp2p=warn,quinn=warn")
+            .env("BEEMESH_KEM_EPHEMERAL", "1");
 
         //println!("Starting machine process on port {}", cli.rest_api_port);
         match cmd.spawn() {

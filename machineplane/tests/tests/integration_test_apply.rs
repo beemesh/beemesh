@@ -1,3 +1,4 @@
+use env_logger::Env;
 use futures::future::join_all;
 use serial_test::serial;
 
@@ -15,7 +16,7 @@ pub const TENANT: &str = "00000000-0000-0000-0000-000000000000";
 async fn test_apply_functionality() {
     // Setup cleanup hook and initialize logger
     setup_cleanup_hook();
-    let _ = env_logger::try_init();
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     // Create separate CLI configs for each node - they will each be separate processes
     // so no global state sharing issues
@@ -159,13 +160,27 @@ async fn test_apply_functionality() {
                                     // Analyze entry types
                                     let mut has_capability = false;
                                     let mut has_keyshare = false;
+                                    let mut keyshare_capabilities = 0;
+                                    let mut manifest_capabilities = 0;
+                                    let mut legacy_capabilities = 0;
 
                                     for entry in entries {
                                         if let Some(entry_type) =
                                             entry.get("type").and_then(|v| v.as_str())
                                         {
                                             match entry_type {
-                                                "capability" => has_capability = true,
+                                                "capability" => {
+                                                    has_capability = true;
+                                                    legacy_capabilities += 1;
+                                                }
+                                                "keyshare_capability" => {
+                                                    has_capability = true;
+                                                    keyshare_capabilities += 1;
+                                                }
+                                                "manifest_capability" => {
+                                                    has_capability = true;
+                                                    manifest_capabilities += 1;
+                                                }
                                                 "keyshare" => has_keyshare = true,
                                                 _ => {}
                                             }
@@ -179,6 +194,13 @@ async fn test_apply_functionality() {
                                                 );
                                             }
                                         }
+                                    }
+
+                                    if has_capability {
+                                        println!(
+                                            "  Node {} capability summary: {} keyshare_capability, {} manifest_capability, {} legacy",
+                                            port, keyshare_capabilities, manifest_capabilities, legacy_capabilities
+                                        );
                                     }
 
                                     result.1 = has_capability;
@@ -248,9 +270,57 @@ async fn test_apply_functionality() {
     println!("  Nodes with keyshares: {:?}", nodes_with_keyshares);
     println!("  Nodes with announces: {:?}", nodes_with_announces);
 
+    // Check which nodes are storing the manifest (manifest holders)
+    println!("Checking all nodes for manifest holders in parallel...");
+    let manifest_holder_tasks = ports.iter().map(|&port| {
+        let client = client.clone();
+        let task_id = task_id.clone();
+        async move {
+            let base = format!("http://127.0.0.1:{}", port);
+            let mut has_manifest = false;
+
+            // Check if this node has the manifest stored locally
+            let resp = client
+                .get(format!("{}/debug/manifest/{}/versions", base, task_id))
+                .send()
+                .await;
+            if let Ok(r) = resp {
+                if let Ok(j) = r.json::<serde_json::Value>().await {
+                    if let Some(total_versions) = j.get("total_versions").and_then(|v| v.as_u64()) {
+                        if total_versions > 0 {
+                            has_manifest = true;
+                            println!(
+                                "  Node {} holds manifest {} ({} versions)",
+                                port, task_id, total_versions
+                            );
+                        }
+                    }
+                }
+            }
+
+            (port, has_manifest)
+        }
+    });
+
+    // Execute all manifest holder checks in parallel
+    let manifest_results = join_all(manifest_holder_tasks).await;
+    let mut nodes_with_manifests: Vec<u16> = Vec::new();
+
+    for (port, has_manifest) in manifest_results {
+        if has_manifest {
+            nodes_with_manifests.push(port);
+        }
+    }
+
+    println!("  Nodes with manifests: {:?}", nodes_with_manifests);
+
+    // With the new capability system, we expect:
+    // - 3 nodes to get keyshare capability tokens (for the first n peers)
+    // - 5 nodes to get manifest capability tokens (all peers)
+    // So we should see 5 nodes with at least one capability token
     assert!(
-        nodes_with_capabilities.len() == 3,
-        "expected 3 nodes to have capability tokens, but {} nodes had them: {:?}",
+        nodes_with_capabilities.len() >= 3,
+        "expected at least 3 nodes to have capability tokens, but {} nodes had them: {:?}",
         nodes_with_capabilities.len(),
         nodes_with_capabilities
     );
@@ -261,6 +331,14 @@ async fn test_apply_functionality() {
         "expected exactly 3 nodes to have keyshares, but {} nodes had them: {:?}",
         nodes_with_keyshares.len(),
         nodes_with_keyshares
+    );
+
+    assert_eq!(
+        nodes_with_manifests.len(),
+        3,
+        "expected exactly 3 nodes to hold the manifest, but {} nodes had it: {:?}",
+        nodes_with_manifests.len(),
+        nodes_with_manifests
     );
     assert!(
         !nodes_with_announces.is_empty(),

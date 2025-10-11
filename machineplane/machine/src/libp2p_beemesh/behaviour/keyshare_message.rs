@@ -242,7 +242,10 @@ pub fn keyshare_message(
                                                 let payload_type = env.payload_type().unwrap_or("");
 
                                                 warn!("libp2p: keyshare processing envelope payload_type={}", payload_type);
-                                                if payload_type == "capability" {
+                                                if payload_type == "capability"
+                                                    || payload_type == "keyshare_capability"
+                                                    || payload_type == "manifest_capability"
+                                                {
                                                     // Handle capability tokens
                                                     let store_meta = if let Ok(capability_token) =
                                                         protocol::machine::root_as_capability_token(
@@ -254,10 +257,20 @@ pub fn keyshare_message(
                                                             if let Some(manifest_id) =
                                                                 root_capability.manifest_id()
                                                             {
-                                                                let meta = format!(
-                                                                    "capability:{}",
-                                                                    manifest_id
-                                                                );
+                                                                let meta = match payload_type {
+                                                                    "keyshare_capability" => format!(
+                                                                        "keyshare_capability:{}",
+                                                                        manifest_id
+                                                                    ),
+                                                                    "manifest_capability" => format!(
+                                                                        "manifest_capability:{}",
+                                                                        manifest_id
+                                                                    ),
+                                                                    _ => format!(
+                                                                        "capability:{}",
+                                                                        manifest_id
+                                                                    ), // legacy support
+                                                                };
                                                                 warn!("libp2p: keyshare extracted capability manifest_id={}, storing with metadata: {}", manifest_id, meta);
                                                                 Some(meta)
                                                             } else {

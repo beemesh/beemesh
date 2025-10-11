@@ -200,6 +200,70 @@ impl FlatbufferEnvelopeBuilder {
         ))
     }
 
+    /// Build a keyshare capability token envelope - allows fetching keyshares for decryption
+    pub fn build_keyshare_capability_envelope(
+        &mut self,
+        manifest_id: &str,
+        peer_id: &str,
+        ts: u64,
+    ) -> Result<Vec<u8>> {
+        // Create capability token using flatbuffer (not JSON)
+        let expires_at = ts + 300_000; // 5 minutes from now
+        let token_bytes = protocol::machine::build_capability_token(
+            manifest_id,
+            "cli",   // issuer
+            peer_id, // authorized_peer
+            ts,      // issued_at
+            expires_at,
+        );
+
+        let envelope_nonce: [u8; 16] = rand::random();
+        let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
+
+        // Create flatbuffer envelope for keyshare capability
+        Ok(build_envelope_canonical_with_peer(
+            &token_bytes,
+            "keyshare_capability",
+            &nonce_str,
+            ts,
+            "ml-dsa-65",
+            &self.peer_id,
+            None,
+        ))
+    }
+
+    /// Build a manifest capability token envelope - allows fetching manifests
+    pub fn build_manifest_capability_envelope(
+        &mut self,
+        manifest_id: &str,
+        peer_id: &str,
+        ts: u64,
+    ) -> Result<Vec<u8>> {
+        // Create capability token using flatbuffer (not JSON)
+        let expires_at = ts + 300_000; // 5 minutes from now
+        let token_bytes = protocol::machine::build_capability_token(
+            manifest_id,
+            "cli",   // issuer
+            peer_id, // authorized_peer
+            ts,      // issued_at
+            expires_at,
+        );
+
+        let envelope_nonce: [u8; 16] = rand::random();
+        let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
+
+        // Create flatbuffer envelope for manifest capability
+        Ok(build_envelope_canonical_with_peer(
+            &token_bytes,
+            "manifest_capability",
+            &nonce_str,
+            ts,
+            "ml-dsa-65",
+            &self.peer_id,
+            None,
+        ))
+    }
+
     /// Add signature and pubkey to an existing envelope
     pub fn sign_envelope(
         &self,

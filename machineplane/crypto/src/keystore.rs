@@ -132,13 +132,17 @@ impl Keystore {
                 "meta": meta,
                 "created_at": created_at,
                 "type": if let Some(ref m) = meta {
-                    if m.starts_with("capability:") {
+                    if m.starts_with("keyshare_capability:") {
+                        "keyshare_capability"
+                    } else if m.starts_with("manifest_capability:") {
+                        "manifest_capability"
+                    } else if m.starts_with("capability:") {
                         "capability"
                     } else {
                         "keyshare"
                     }
                 } else {
-                    "unknown"
+                    "keyshare"
                 }
             });
             out.push(entry);

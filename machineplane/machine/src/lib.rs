@@ -1,6 +1,7 @@
 // logging macros are used in submodules; keep root lean
 use base64::Engine;
 use clap::Parser;
+use env_logger::Env;
 use std::io::Write;
 
 mod hostapi;
@@ -63,7 +64,7 @@ pub struct Cli {
 /// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
 pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     // initialize logger but don't panic if already initialized
-    let _ = env_logger::try_init();
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     // initialize PQC once at process startup; fail early if it doesn't initialize
     crypto::ensure_pqc_init().map_err(|e| anyhow::anyhow!("pqc initialization failed: {}", e))?;

@@ -44,9 +44,16 @@ pub fn scheduler_message(
                     // build CapacityReply using protocol helper and include local KEM pubkey if available
                     let kem_b64 = match crypto::ensure_kem_keypair_on_disk() {
                         Ok((pubb, _priv)) => {
+                            debug!(
+                                "libp2p: scheduler capacity reply including KEM pubkey for peer {}",
+                                local_peer
+                            );
                             Some(base64::engine::general_purpose::STANDARD.encode(&pubb))
                         }
-                        Err(_) => None,
+                        Err(e) => {
+                            warn!("libp2p: scheduler capacity reply failed to load KEM keypair for peer {}: {:?}", local_peer, e);
+                            None
+                        }
                     };
                     let finished = protocol::machine::build_capacity_reply(
                         has_capacity,

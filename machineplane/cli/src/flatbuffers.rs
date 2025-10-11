@@ -598,6 +598,60 @@ impl FlatbufferClient {
         }))
     }
 
+    /// Distribute encrypted manifests to candidate nodes
+    pub async fn distribute_manifests(
+        &self,
+        tenant: &str,
+        task_id: &str,
+        encrypted_manifest_b64: &str,
+        target_peer_ids: &[String],
+    ) -> Result<JsonValue> {
+        log::debug!(
+            "distribute_manifests called with tenant={}, task_id={}, targets={}",
+            tenant,
+            task_id,
+            target_peer_ids.len()
+        );
+
+        // Create manifest distribution targets
+        let mut fb_targets = Vec::new();
+        for peer_id in target_peer_ids {
+            fb_targets.push((peer_id.clone(), encrypted_manifest_b64.to_string()));
+        }
+
+        // Create flatbuffer request
+        let flatbuffer_data = machine::build_distribute_manifests_request(
+            task_id,
+            encrypted_manifest_b64,
+            &fb_targets,
+        );
+
+        let url = format!(
+            "{}/tenant/{}/tasks/{}/distribute_manifests",
+            self.base_url.trim_end_matches('/'),
+            tenant,
+            task_id
+        );
+
+        let response_bytes = self
+            .send_encrypted_request(&url, &flatbuffer_data, "distribute_manifests_request")
+            .await?;
+
+        // Try to parse as flatbuffer DistributeManifestsResponse first
+        let manifests_response = protocol::machine::root_as_distribute_manifests_response(
+            &response_bytes,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to parse DistributeManifestsResponse: {}", e))?;
+
+        let results_json = manifests_response.results_json().unwrap_or("{}");
+        let results: JsonValue =
+            serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+        Ok(serde_json::json!({
+            "ok": manifests_response.ok(),
+            "results": results
+        }))
+    }
+
     /// Assign task using flatbuffer apply request
     pub async fn assign_task(
         &self,

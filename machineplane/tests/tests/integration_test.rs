@@ -1,3 +1,4 @@
+use env_logger::Env;
 use log::info;
 
 use std::time::Duration;
@@ -14,7 +15,7 @@ pub const TENANT: &str = "00000000-0000-0000-0000-000000000000";
 async fn test_run_host_application() {
     // Setup cleanup hook and initialize logger
     setup_cleanup_hook();
-    let _ = env_logger::try_init();
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     // start three nodes using the reusable helper (first node runs REST+machine, others disabled APIs)
     // node_3000 gets fixed libp2p port 4001, node_3100 gets port 4002, both serve as bootstrap peers

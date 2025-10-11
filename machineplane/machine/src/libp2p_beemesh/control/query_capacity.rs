@@ -1,3 +1,4 @@
+use base64::Engine;
 use libp2p::{gossipsub, Swarm};
 
 use std::collections::HashMap as StdHashMap;
@@ -124,9 +125,21 @@ pub async fn handle_query_capacity_with_payload(
             // Also notify local pending senders directly so the originator is always considered
             // a potential responder. This ensures single-node operation and makes the
             // origining host countable when collecting responders.
+            // Include the local KEM public key in the same format as remote responses.
             if let Some(senders) = pending_queries.get_mut(&request_id) {
+                let local_kem_b64 = match crypto::ensure_kem_keypair_on_disk() {
+                    Ok((pubb, _priv)) => base64::engine::general_purpose::STANDARD.encode(&pubb),
+                    Err(e) => {
+                        log::warn!(
+                            "libp2p: local capacity response failed to load KEM keypair: {:?}",
+                            e
+                        );
+                        String::new()
+                    }
+                };
+                let local_response = format!("{}:{}", swarm.local_peer_id(), local_kem_b64);
                 for tx in senders.iter() {
-                    let _ = tx.send(swarm.local_peer_id().to_string());
+                    let _ = tx.send(local_response.clone());
                 }
             }
         }

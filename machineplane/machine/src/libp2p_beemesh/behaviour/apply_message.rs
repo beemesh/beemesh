@@ -1,7 +1,7 @@
 use crate::libp2p_beemesh::error_helpers;
 use base64::prelude::*;
 use libp2p::request_response;
-use log::{info, warn};
+use log::{debug, info, warn};
 use protocol::machine::build_keyshare_request;
 use rand;
 use std::collections::hash_map::DefaultHasher;
@@ -159,22 +159,26 @@ async fn decrypt_encrypted_manifest_with_id(
 
             // Attempt to attach a locally-held capability token (if present) so
             // the remote peer can authorize this fetch. The capability token is
-            // stored in the keystore under metadata `capability:<manifest_id>` by
+            // stored in the keystore under metadata `keyshare_capability:<manifest_id>` by
             // the originator when it distributed capabilities during apply.
             let mut request_fb_to_send = keyshare_request_fb.clone();
             if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
-                let cap_meta = format!("capability:{}", manifest_id);
+                // Try keyshare_capability first, then fall back to legacy capability format
+                let keyshare_cap_meta = format!("keyshare_capability:{}", manifest_id);
+                let legacy_cap_meta = format!("capability:{}", manifest_id);
+
                 log::debug!(
-                    "libp2p: attempting keystore capability lookup for meta='{}'",
-                    cap_meta
+                    "libp2p: attempting keystore capability lookup for meta='{}' (legacy fallback: '{}')",
+                    keyshare_cap_meta, legacy_cap_meta
                 );
-                match ks.find_cid_for_manifest(&cap_meta) {
+
+                let cap_lookup_result = ks
+                    .find_cid_for_manifest(&keyshare_cap_meta)
+                    .or_else(|_| ks.find_cid_for_manifest(&legacy_cap_meta));
+
+                match cap_lookup_result {
                     Ok(Some(cap_cid)) => {
-                        log::debug!(
-                            "libp2p: keystore lookup succeeded for meta='{}' -> cid={}",
-                            cap_meta,
-                            cap_cid
-                        );
+                        log::debug!("libp2p: keystore lookup succeeded -> cid={}", cap_cid);
 
                         if let Ok(Some(cap_blob)) = ks.get(&cap_cid) {
                             // Decrypt the stored capability blob using our KEM privkey
@@ -219,15 +223,11 @@ async fn decrypt_encrypted_manifest_with_id(
                         }
                     }
                     Ok(None) => {
-                        log::debug!(
-                            "libp2p: keystore lookup found no cid for meta='{}'",
-                            cap_meta
-                        );
+                        log::debug!("libp2p: keystore lookup found no cid for keyshare capability");
                     }
                     Err(e) => {
                         log::warn!(
-                            "libp2p: keystore lookup error for meta='{}': {:?}",
-                            cap_meta,
+                            "libp2p: keystore lookup error for keyshare capability: {:?}",
                             e
                         );
                     }
@@ -552,6 +552,41 @@ pub fn apply_message(
                     if success {
                         // Store the applied manifest in the DHT
                         store_applied_manifest_in_dht(swarm, &apply_req, local_peer);
+
+                        // Also store the encrypted manifest locally to become a manifest holder
+                        // The manifest_json field contains the base64-encoded encrypted envelope
+                        if let Some(manifest_json) = apply_req.manifest_json() {
+                            if let Ok(encrypted_envelope_bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(manifest_json)
+                            {
+                                // Calculate manifest_id from tenant, operation_id, and manifest_json
+                                let manifest_id = if let (Some(tenant), Some(operation_id)) =
+                                    (apply_req.tenant(), apply_req.operation_id())
+                                {
+                                    let mut hasher = DefaultHasher::new();
+                                    tenant.hash(&mut hasher);
+                                    operation_id.hash(&mut hasher);
+                                    manifest_json.hash(&mut hasher);
+                                    format!("{:x}", hasher.finish())
+                                } else {
+                                    format!("{:x}", DefaultHasher::new().finish())
+                                };
+
+                                debug!(
+                                    "libp2p: apply request storing manifest locally for manifest_id={}",
+                                    manifest_id
+                                );
+                                // TODO: Store manifest locally in manifest store
+                                // For now, just log that we would store it
+                                debug!(
+                                    "libp2p: would store encrypted manifest locally (size={} bytes) for manifest_id={}",
+                                    encrypted_envelope_bytes.len(),
+                                    manifest_id
+                                );
+                            } else {
+                                warn!("libp2p: failed to decode base64 manifest_json in apply request");
+                            }
+                        }
                     }
 
                     // Create a response
@@ -784,19 +819,24 @@ async fn find_manifest_holders(manifest_id: &str) -> Result<Vec<libp2p::PeerId>,
     for attempt in 1..=5 {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        // Send control message to find manifest holders
-        let control_msg = crate::libp2p_beemesh::control::Libp2pControl::FindManifestHolders {
-            manifest_id: manifest_id.to_string(),
-            reply_tx: tx,
-        };
+        // Send control message to find manifest holders using new announcement system
+        let control_msg =
+            crate::libp2p_beemesh::control::Libp2pControl::FindManifestHoldersWithVersion {
+                manifest_id: manifest_id.to_string(),
+                version: None, // Find any version
+                reply_tx: tx,
+            };
         crate::libp2p_beemesh::control::enqueue_control(control_msg);
 
         // Wait for response with longer timeout for local tests
         match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
-            Ok(Some(peer_ids)) => {
-                if !peer_ids.is_empty() {
-                    for peer_id in peer_ids {
-                        all_holders.insert(peer_id);
+            Ok(Some(holder_infos)) => {
+                if !holder_infos.is_empty() {
+                    for holder_info in holder_infos {
+                        // Convert holder info to PeerId
+                        if let Ok(peer_id) = holder_info.peer_id.parse::<libp2p::PeerId>() {
+                            all_holders.insert(peer_id);
+                        }
                     }
                     log::info!("libp2p: find_manifest_holders found {} total holders for manifest_id={} (attempt {})", all_holders.len(), manifest_id, attempt);
 
@@ -843,6 +883,65 @@ async fn find_manifest_holders(manifest_id: &str) -> Result<Vec<libp2p::PeerId>,
         all_holders.len()
     );
     Ok(all_holders.into_iter().collect())
+}
+
+/// Fetch manifest from holders using the new peer-based system
+async fn fetch_manifest_from_holders(
+    manifest_id: &str,
+    version: Option<u64>,
+) -> Result<Vec<u8>, anyhow::Error> {
+    use tokio::sync::mpsc;
+
+    // First, find manifest holders
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let control_msg =
+        crate::libp2p_beemesh::control::Libp2pControl::FindManifestHoldersWithVersion {
+            manifest_id: manifest_id.to_string(),
+            version,
+            reply_tx: tx,
+        };
+    crate::libp2p_beemesh::control::enqueue_control(control_msg);
+
+    // Wait for response
+    let holders = match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+        Ok(Some(holder_infos)) => holder_infos,
+        Ok(None) => {
+            return Err(anyhow::anyhow!(
+                "No response received when finding manifest holders"
+            ));
+        }
+        Err(_) => {
+            return Err(anyhow::anyhow!("Timeout when finding manifest holders"));
+        }
+    };
+
+    if holders.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No holders found for manifest {}",
+            manifest_id
+        ));
+    }
+
+    // Try to fetch from the first available holder
+    for holder in holders {
+        if let Ok(peer_id) = holder.peer_id.parse::<libp2p::PeerId>() {
+            log::info!(
+                "Attempting to fetch manifest {} version {:?} from peer {}",
+                manifest_id,
+                version,
+                peer_id
+            );
+
+            // For now, return an error since we need async coordination with the swarm
+            // In a full implementation, this would use the manifest_fetch protocol
+            return Err(anyhow::anyhow!(
+                "Manifest fetching from peer {} not yet implemented",
+                peer_id
+            ));
+        }
+    }
+
+    Err(anyhow::anyhow!("No valid peer IDs found in holders list"))
 }
 
 /// Get list of currently connected peers as fallback when DHT provider discovery fails

@@ -161,6 +161,21 @@ mod generated {
         ));
     }
 
+    pub mod generated_manifest_fetch {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/manifest_fetch_generated.rs"
+        ));
+    }
+
     pub mod generated_distribute_shares_request {
         #![allow(
             dead_code,
@@ -173,6 +188,21 @@ mod generated {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/generated/distribute_shares_request_generated.rs"
+        ));
+    }
+
+    pub mod generated_distribute_manifests_request {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/distribute_manifests_request_generated.rs"
         ));
     }
 
@@ -293,6 +323,21 @@ mod generated {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/generated/distribute_shares_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_distribute_manifests_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/distribute_manifests_response_generated.rs"
         ));
     }
 
@@ -420,6 +465,9 @@ pub mod machine {
     pub use crate::generated::generated_keyshare_response::beemesh::machine::{
         root_as_key_share_response, KeyShareResponse,
     };
+    pub use crate::generated::generated_manifest_fetch::beemesh::machine::{
+        root_as_manifest_fetch_request, ManifestFetchRequest, ManifestFetchResponse,
+    };
     // Also export Args and helper finish function for builders/tests
     pub use crate::generated::generated_envelope::beemesh::machine::{
         finish_envelope_buffer, EnvelopeArgs,
@@ -452,6 +500,12 @@ pub mod machine {
     pub use crate::generated::generated_distribute_shares_request::beemesh::machine::{
         root_as_distribute_shares_request, DistributeSharesRequest, DistributeSharesRequestArgs,
         ShareTarget, ShareTargetArgs,
+    };
+
+    // Distribute manifests types
+    pub use crate::generated::generated_distribute_manifests_request::beemesh::machine::{
+        root_as_distribute_manifests_request, DistributeManifestsRequest,
+        DistributeManifestsRequestArgs, ManifestTarget, ManifestTargetArgs,
     };
 
     // Distribute capabilities types
@@ -492,6 +546,10 @@ pub mod machine {
     pub use crate::generated::generated_distribute_capabilities_response::beemesh::machine::{
         root_as_distribute_capabilities_response, DistributeCapabilitiesResponse,
         DistributeCapabilitiesResponseArgs,
+    };
+    pub use crate::generated::generated_distribute_manifests_response::beemesh::machine::{
+        root_as_distribute_manifests_response, DistributeManifestsResponse,
+        DistributeManifestsResponseArgs,
     };
     pub use crate::generated::generated_distribute_shares_response::beemesh::machine::{
         root_as_distribute_shares_response, DistributeSharesResponse, DistributeSharesResponseArgs,
@@ -1023,6 +1081,50 @@ pub mod machine {
         fbb.finished_data().to_vec()
     }
 
+    // Builder function for DistributeManifestsRequest
+    pub fn build_distribute_manifests_request(
+        manifest_id: &str,
+        manifest_envelope_json: &str,
+        targets: &[(String, String)], // (peer_id, payload_json)
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+
+        let manifest_id_offset = fbb.create_string(manifest_id);
+        let manifest_env_offset = fbb.create_string(manifest_envelope_json);
+
+        // Create ManifestTarget vector
+        let target_offsets: Vec<_> = targets
+            .iter()
+            .map(|(peer_id, payload_json)| {
+                let peer_id_offset = fbb.create_string(peer_id);
+                let payload_offset = fbb.create_string(payload_json);
+                ManifestTarget::create(
+                    &mut fbb,
+                    &ManifestTargetArgs {
+                        peer_id: Some(peer_id_offset),
+                        payload_json: Some(payload_offset),
+                    },
+                )
+            })
+            .collect();
+        let targets_offset = fbb.create_vector(&target_offsets);
+
+        let args = DistributeManifestsRequestArgs {
+            manifest_id: Some(manifest_id_offset),
+            manifest_envelope_json: Some(manifest_env_offset),
+            targets: Some(targets_offset),
+        };
+
+        let request = DistributeManifestsRequest::create(&mut fbb, &args);
+        fbb.finish(request, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Helper function to build a ManifestTarget (returns the tuple for the builder)
+    pub fn build_manifest_target(peer_id: &str, payload_json: &str) -> (String, String) {
+        (peer_id.to_string(), payload_json.to_string())
+    }
+
     // Builder function for DistributeCapabilitiesRequest
     pub fn build_distribute_capabilities_request(
         targets: &[(String, String)], // (peer_id, payload_json)
@@ -1264,6 +1366,37 @@ pub mod machine {
             results_json: Some(results_off),
         });
         fbb.finish(shares_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for DistributeManifestsResponse
+    pub fn build_distribute_manifests_response(ok: bool, results: &[(String, String)]) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+
+        let _result_strings: Vec<_> = results
+            .iter()
+            .map(|(peer, result)| {
+                let peer_off = fbb.create_string(peer);
+                let result_off = fbb.create_string(result);
+                (peer_off, result_off)
+            })
+            .collect();
+
+        // For simplicity, we'll encode results as a JSON string for now
+        let results_json = serde_json::to_string(
+            &results
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+        .unwrap_or_default();
+        let results_off = fbb.create_string(&results_json);
+
+        let manifests_response = crate::generated::generated_distribute_manifests_response::beemesh::machine::DistributeManifestsResponse::create(&mut fbb, &crate::generated::generated_distribute_manifests_response::beemesh::machine::DistributeManifestsResponseArgs {
+            ok,
+            results_json: Some(results_off),
+        });
+        fbb.finish(manifests_response, None);
         fbb.finished_data().to_vec()
     }
 
@@ -1715,6 +1848,84 @@ pub mod machine {
 
         fbb.finish(capability_token, None);
         fbb.finished_data().to_vec()
+    }
+
+    // Builder functions for ManifestFetchRequest and ManifestFetchResponse
+    pub fn build_manifest_fetch_request(
+        manifest_id: &str,
+        version: u64,
+        capability_token: &str,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+
+        let manifest_id_off = fbb.create_string(manifest_id);
+        let capability_token_off = fbb.create_string(capability_token);
+
+        let request = crate::generated::generated_manifest_fetch::beemesh::machine::ManifestFetchRequest::create(
+            &mut fbb,
+            &crate::generated::generated_manifest_fetch::beemesh::machine::ManifestFetchRequestArgs {
+                manifest_id: Some(manifest_id_off),
+                version,
+                capability_token: Some(capability_token_off),
+            },
+        );
+
+        fbb.finish(request, None);
+        fbb.finished_data().to_vec()
+    }
+
+    pub fn build_manifest_fetch_response(
+        success: bool,
+        manifest_data: Option<&[u8]>,
+        version: u64,
+        error: Option<&str>,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+
+        let manifest_data_off = manifest_data.map(|data| fbb.create_vector(data));
+        let error_off = error.map(|err| fbb.create_string(err));
+
+        let response = crate::generated::generated_manifest_fetch::beemesh::machine::ManifestFetchResponse::create(
+            &mut fbb,
+            &crate::generated::generated_manifest_fetch::beemesh::machine::ManifestFetchResponseArgs {
+                success,
+                manifest_data: manifest_data_off,
+                version,
+                error: error_off,
+            },
+        );
+
+        fbb.finish(response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    /// Extract name from manifest JSON/YAML content
+    pub fn extract_manifest_name(manifest_json: &serde_json::Value) -> Option<String> {
+        manifest_json
+            .get("metadata")
+            .and_then(|m| m.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
+    }
+
+    /// Centralized manifest_id computation function
+    /// This ensures all parts of the system compute manifest_id consistently
+    /// Similar to Kubernetes, based on stable identifiers (name + tenant)
+    pub fn compute_manifest_id(name: &str, tenant: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        tenant.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    }
+
+    /// Compute manifest_id from manifest content and tenant
+    pub fn compute_manifest_id_from_content(
+        manifest_json: &serde_json::Value,
+        tenant: &str,
+    ) -> Option<String> {
+        extract_manifest_name(manifest_json).map(|name| compute_manifest_id(&name, tenant))
     }
 }
 

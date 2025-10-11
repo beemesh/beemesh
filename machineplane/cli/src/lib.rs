@@ -104,6 +104,11 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         .map(|s| base64::engine::general_purpose::STANDARD.encode(s))
         .collect();
 
+    // Compute stable manifest_id from manifest content (like Kubernetes)
+    let manifest_id = protocol::machine::compute_manifest_id_from_content(&manifest_json, tenant)
+        .ok_or_else(|| anyhow::anyhow!("Failed to extract name from manifest"))?;
+    debug!("Computed manifest_id: {}", manifest_id);
+
     // API base URL can be overridden with BEEMESH_API env var
     let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
     debug!(
@@ -128,7 +133,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         .create_task(
             tenant,
             &encrypted_manifest_bytes,
-            None, // Let server compute manifest_id
+            Some(manifest_id.clone()), // Use computed manifest_id
             Some(operation_id.clone()),
         )
         .await?;
@@ -138,7 +143,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let returned_manifest_id = create_resp
         .get("manifest_id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("no manifest_id in response"))?
+        .unwrap_or(&manifest_id) // Fallback to computed manifest_id
         .to_string();
     let returned_task_id = create_resp
         .get("task_id")
@@ -240,23 +245,90 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         .await?;
     debug!("Distribute shares response: {:?}", dist_resp);
 
-    // 4) Distribute capability tokens using flatbuffers
-    // Only create capability tokens for the first n peers (where n = number of shares)
-    let capability_peers: Vec<String> = peers.iter().take(n).cloned().collect();
-    let capability_targets = create_capability_tokens(
-        &capability_peers,
+    // 4) Distribute manifests to the same nodes that received shares
+    debug!("About to call distribute_manifests...");
+
+    // Create manifest envelope with the encrypted manifest (use raw bytes, not base64)
+    // We need to use the same envelope format as create_task to ensure consistency
+    let envelope_nonce: [u8; 16] = rand::random();
+    let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let manifest_envelope_bytes = protocol::machine::build_envelope_canonical(
+        &encrypted_manifest_bytes,
+        "manifest",
+        &nonce_str,
+        ts,
+        "ml-dsa-65",
+        None,
+    );
+
+    // Sign the manifest envelope
+    let signed_manifest_envelope =
+        envelope_builder.sign_envelope(&manifest_envelope_bytes, &sk_bytes, &pk_bytes)?;
+    let manifest_envelope_b64 =
+        base64::engine::general_purpose::STANDARD.encode(&signed_manifest_envelope);
+
+    let manifest_dist_resp = fb_client
+        .distribute_manifests(
+            tenant,
+            &returned_manifest_id,
+            &manifest_envelope_b64,
+            &target_peer_ids,
+        )
+        .await?;
+    debug!("Distribute manifests response: {:?}", manifest_dist_resp);
+
+    // 5) Distribute capability tokens using flatbuffers
+    // Create capability tokens for keyshare access (for the first n peers that received shares)
+    let keyshare_capability_peers: Vec<String> = peers.iter().take(n).cloned().collect();
+    debug!(
+        "Creating keyshare capability tokens for {} peers: {:?}",
+        keyshare_capability_peers.len(),
+        keyshare_capability_peers
+    );
+    let keyshare_capability_targets = create_keyshare_capability_tokens(
+        &keyshare_capability_peers,
         &returned_manifest_id,
         &pk_bytes,
         &sk_bytes,
     )
     .await?;
-    debug!("About to call distribute_capabilities...");
-    let capability_resp = fb_client
-        .distribute_capabilities(tenant, &returned_manifest_id, &capability_targets)
+    debug!("About to call distribute_capabilities for keyshare access...");
+    let keyshare_capability_resp = fb_client
+        .distribute_capabilities(tenant, &returned_manifest_id, &keyshare_capability_targets)
         .await?;
-    debug!("Distribute capabilities response: {:?}", capability_resp);
+    debug!(
+        "Distribute keyshare capabilities response: {:?}",
+        keyshare_capability_resp
+    );
 
-    // 5) Assign task to replicas using flatbuffers
+    // Also create capability tokens for manifest access (for all peers)
+    // This allows any node to fetch manifests from the manifest holders
+    debug!(
+        "Creating manifest capability tokens for {} peers: {:?}",
+        peers.len(),
+        peers
+    );
+    let manifest_capability_targets = create_manifest_capability_tokens(
+        &peers, // All peers get manifest access tokens
+        &returned_manifest_id,
+        &pk_bytes,
+        &sk_bytes,
+    )
+    .await?;
+    debug!("About to call distribute_capabilities for manifest access...");
+    let manifest_capability_resp = fb_client
+        .distribute_capabilities(tenant, &returned_manifest_id, &manifest_capability_targets)
+        .await?;
+    debug!(
+        "Distribute manifest capabilities response: {:?}",
+        manifest_capability_resp
+    );
+
+    // 6) Assign task to replicas using flatbuffers
     // Determine replicas desired from manifest
     let replicas = manifest_json
         .get("replicas")
@@ -296,7 +368,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 }
 
 /// Create capability tokens for peers using flatbuffers
-async fn create_capability_tokens(
+async fn create_keyshare_capability_tokens(
     peers: &[String],
     manifest_id: &str,
     pk_bytes: &[u8],
@@ -308,22 +380,21 @@ async fn create_capability_tokens(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    // Create capability tokens for each peer
+    // Create keyshare capability tokens for each peer
     let mut targets: Vec<CapabilityTarget> = Vec::new();
 
     for peer_id in peers {
-        // Create capability envelope using flatbuffers
+        // Create keyshare capability envelope using flatbuffers
         let pk_b64 = base64::engine::general_purpose::STANDARD.encode(pk_bytes);
         let mut envelope_builder =
-            FlatbufferEnvelopeBuilder::with_keys("cli-client".to_string(), pk_b64);
+            FlatbufferEnvelopeBuilder::with_keys("cli-client".to_string(), pk_b64.clone());
         let capability_envelope_bytes =
-            envelope_builder.build_capability_envelope(manifest_id, peer_id, ts_millis)?;
+            envelope_builder.build_keyshare_capability_envelope(manifest_id, peer_id, ts_millis)?;
 
         // Sign capability envelope
         let capability_envelope_signed_bytes =
             envelope_builder.sign_envelope(&capability_envelope_bytes, sk_bytes, pk_bytes)?;
 
-        // Create target for this peer with flatbuffer bytes
         let target = CapabilityTarget {
             peer_id: peer_id.clone(),
             payload: capability_envelope_signed_bytes,
@@ -332,4 +403,90 @@ async fn create_capability_tokens(
     }
 
     Ok(targets)
+}
+
+async fn create_manifest_capability_tokens(
+    peers: &[String],
+    manifest_id: &str,
+    pk_bytes: &[u8],
+    sk_bytes: &[u8],
+) -> anyhow::Result<Vec<CapabilityTarget>> {
+    // Get current timestamp
+    let ts_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    // Create manifest capability tokens for each peer
+    let mut targets: Vec<CapabilityTarget> = Vec::new();
+
+    for peer_id in peers {
+        // Create manifest capability envelope using flatbuffers
+        let pk_b64 = base64::engine::general_purpose::STANDARD.encode(pk_bytes);
+        let mut envelope_builder =
+            FlatbufferEnvelopeBuilder::with_keys("cli-client".to_string(), pk_b64.clone());
+        let capability_envelope_bytes =
+            envelope_builder.build_manifest_capability_envelope(manifest_id, peer_id, ts_millis)?;
+
+        // Sign capability envelope
+        let capability_envelope_signed_bytes =
+            envelope_builder.sign_envelope(&capability_envelope_bytes, sk_bytes, pk_bytes)?;
+
+        let target = CapabilityTarget {
+            peer_id: peer_id.clone(),
+            payload: capability_envelope_signed_bytes,
+        };
+        targets.push(target);
+    }
+
+    Ok(targets)
+}
+
+/// Create a manifest access capability token
+fn create_manifest_access_capability_token(
+    manifest_id: String,
+    allowed_peer_id: String,
+    expires_at: u64,
+    issuer_privkey: &[u8],
+    issuer_pubkey: Vec<u8>,
+) -> anyhow::Result<serde_json::Value> {
+    // Create permissions for the token
+    let permissions = serde_json::json!({
+        "can_read": true,
+        "can_execute": true,
+        "specific_version": null
+    });
+
+    // Create the token data to be signed
+    let token_data = format!(
+        "{}:{}:{}:{}:{}:{}",
+        manifest_id,
+        allowed_peer_id,
+        expires_at,
+        true, // can_read
+        true, // can_execute
+        0     // specific_version (0 means any)
+    );
+
+    // Simple signature (in production, use proper crypto)
+    let signature = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        token_data.hash(&mut hasher);
+        issuer_privkey.hash(&mut hasher);
+        let hash = hasher.finish();
+        hash.to_be_bytes().to_vec()
+    };
+
+    let token = serde_json::json!({
+        "manifest_id": manifest_id,
+        "allowed_peer_id": allowed_peer_id,
+        "expires_at": expires_at,
+        "permissions": permissions,
+        "issuer_pubkey": base64::engine::general_purpose::STANDARD.encode(&issuer_pubkey),
+        "signature": base64::engine::general_purpose::STANDARD.encode(&signature)
+    });
+
+    Ok(token)
 }

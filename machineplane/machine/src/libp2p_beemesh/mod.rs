@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::Engine;
 
 use futures::stream::StreamExt;
 use libp2p::{
@@ -35,7 +36,11 @@ pub mod dht_helpers;
 pub mod dht_manager;
 pub mod envelope;
 pub mod error_helpers;
+pub mod manifest_announcement;
+pub mod manifest_fetch;
+pub mod manifest_store;
 pub mod security;
+pub mod versioning;
 
 // Handshake state used by the handshake behaviour handlers
 #[derive(Debug)]
@@ -72,9 +77,10 @@ pub fn setup_libp2p_node(
                 .heartbeat_interval(Duration::from_secs(10))
                 // require validation so we have an opportunity to reject invalid messages early
                 .validation_mode(gossipsub::ValidationMode::Strict)
-                .mesh_n_low(0) // don’t try to maintain minimum peers
-                .mesh_n(0) // target mesh size = 0
-                .mesh_n_high(0)
+                .mesh_n_low(1) // minimum peers in mesh
+                .mesh_n(3) // target mesh size
+                .mesh_n_high(6) // maximum peers in mesh
+                .mesh_outbound_min(1) // minimum outbound connections
                 .message_id_fn(message_id_fn)
                 .allow_self_origin(true)
                 .build()
@@ -120,6 +126,24 @@ pub fn setup_libp2p_node(
                 request_response::Config::default(),
             );
 
+            // Create the request-response behavior for manifest announcement protocol
+            let manifest_announcement_rr = request_response::Behaviour::new(
+                std::iter::once((
+                    "/beemesh/manifest-announcement/1.0.0",
+                    request_response::ProtocolSupport::Full,
+                )),
+                request_response::Config::default(),
+            );
+
+            // Create the request-response behavior for manifest fetch protocol
+            let manifest_fetch_rr = request_response::Behaviour::new(
+                std::iter::once((
+                    "/beemesh/manifest-fetch/1.0.0",
+                    request_response::ProtocolSupport::Full,
+                )),
+                request_response::Config::default(),
+            );
+
             // Create Kademlia DHT behavior with configuration suitable for small networks
             let store = kad::store::MemoryStore::new(key.public().to_peer_id());
             let mut kademlia_config = kad::Config::default();
@@ -145,6 +169,8 @@ pub fn setup_libp2p_node(
                 handshake_rr,
                 keyshare_rr,
                 scheduler_rr,
+                manifest_announcement_rr,
+                manifest_fetch_rr,
                 kademlia,
             })
         })?
@@ -236,6 +262,7 @@ pub async fn start_libp2p_node(
     let mut handshake_states: HashMap<PeerId, HandshakeState> = HashMap::new();
     let mut handshake_interval = tokio::time::interval(Duration::from_secs(1));
     let mut renew_interval = tokio::time::interval(Duration::from_millis(500));
+    let mut cleanup_interval = tokio::time::interval(Duration::from_secs(2));
     //let mut mesh_alive_interval = tokio::time::interval(Duration::from_secs(1));
 
     loop {
@@ -296,6 +323,31 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::SchedulerRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         let local_peer = *swarm.local_peer_id();
                         behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);
+                    }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::ManifestAnnouncementRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
+                        behaviour::manifest_announcement_message(message, peer, &mut swarm);
+                    }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
+                        // Delegate all manifest fetch requests to the fetch handler
+                        behaviour::manifest_fetch_message(message, peer, &mut swarm);
+                    }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::OutboundFailure { peer, request_id, error, connection_id: _ })) => {
+                        warn!("libp2p: manifest fetch outbound failure for peer {}: {:?}", peer, error);
+                        // Handle failed manifest distribution requests
+                        let reply_sender = {
+                            let mut pending_requests = crate::libp2p_beemesh::control::get_pending_manifest_requests()
+                                .lock()
+                                .unwrap();
+                            pending_requests
+                                .remove(&request_id)
+                                .map(|(sender, _)| sender)
+                        };
+                        if let Some(reply_tx) = reply_sender {
+                            let _ = reply_tx.send(Err(format!("Outbound failure: {:?}", error)));
+                        }
+                    }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::InboundFailure { peer, error, .. })) => {
+                        warn!("libp2p: manifest fetch inbound failure for peer {}: {:?}", peer, error);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id: _, endpoint, num_established: _, concurrent_dial_errors: _, established_in: _ } => {
                         info!("DHT: Connection established with peer {}, adding to Kademlia", peer_id);
@@ -419,6 +471,10 @@ pub async fn start_libp2p_node(
                 control::drain_enqueued_controls(&mut swarm, &topic, &mut pending_queries).await;
                 // renew any due provider announcements
                 control::renew_due_providers(&mut swarm);
+            }
+            _ = cleanup_interval.tick() => {
+                // Clean up timed-out manifest distribution requests
+                control::cleanup_timed_out_manifest_requests();
             }
             /*_ = mesh_alive_interval.tick() => {
                 // Periodically publish a 'mesh-alive' message to the topic

@@ -47,7 +47,10 @@ pub async fn handle_send_key_share(
                 match crypto::open_keystore_default() {
                     Ok(ks) => {
                         // For capability tokens, store the complete envelope; for keyshares, store the payload
-                        let bytes_to_store = if payload_type == "capability" {
+                        let bytes_to_store = if payload_type == "capability"
+                            || payload_type == "keyshare_capability"
+                            || payload_type == "manifest_capability"
+                        {
                             // Store the complete signed envelope for capability tokens
                             request_bytes.clone()
                         } else {
@@ -60,7 +63,10 @@ pub async fn handle_send_key_share(
                             .unwrap_or_else(|_| (Vec::new(), String::new()));
 
                         // Extract manifest_id from payload based on type
-                        let manifest_id_for_storage = if payload_type == "capability" {
+                        let manifest_id_for_storage = if payload_type == "capability"
+                            || payload_type == "keyshare_capability"
+                            || payload_type == "manifest_capability"
+                        {
                             // Handle capability token
                             if let Ok(capability_token) =
                                 protocol::machine::root_as_capability_token(&payload_bytes)
@@ -235,10 +241,17 @@ pub async fn handle_send_key_share(
                         };
 
                         // For capability tokens, still store the complete envelope with the proper metadata
-                        if payload_type == "capability" {
-                            let store_meta = manifest_id_for_storage
-                                .as_ref()
-                                .map(|id| format!("capability:{}", id));
+                        if payload_type == "capability"
+                            || payload_type == "keyshare_capability"
+                            || payload_type == "manifest_capability"
+                        {
+                            let store_meta = manifest_id_for_storage.as_ref().map(|mid| {
+                                match payload_type {
+                                    "keyshare_capability" => format!("keyshare_capability:{}", mid),
+                                    "manifest_capability" => format!("manifest_capability:{}", mid),
+                                    _ => format!("capability:{}", mid), // legacy support
+                                }
+                            });
 
                             let (blob, cid) = crypto::encrypt_share_for_keystore(&bytes_to_store)
                                 .unwrap_or_else(|_| (Vec::new(), String::new()));

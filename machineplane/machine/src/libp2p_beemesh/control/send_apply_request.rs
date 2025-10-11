@@ -30,6 +30,7 @@ pub async fn handle_send_apply_request(
 
         // Now that the local capability (if any) has been stored, perform the self-apply
         // which may request key shares and will be able to find the capability in the keystore.
+        // Note: process_self_apply_request expects raw flatbuffer bytes, not signed envelopes
         crate::libp2p_beemesh::behaviour::apply_message::process_self_apply_request(
             &manifest, swarm,
         );
@@ -176,11 +177,59 @@ pub async fn handle_send_apply_request(
         }
     }
 
-    // Finally send the apply request itself
+    // Sign the apply request in an envelope before sending
+    let signed_apply_request = if let Ok((pubb, privb)) = crypto::ensure_keypair_on_disk() {
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0u64);
+        let payload_type = "apply_request";
+        let alg = "ml-dsa-65";
+
+        // Create canonical bytes and sign
+        let canonical_bytes = protocol::machine::build_envelope_canonical(
+            &manifest,
+            payload_type,
+            &nonce,
+            timestamp,
+            alg,
+            None,
+        );
+
+        match crypto::sign_envelope(&privb, &pubb, &canonical_bytes) {
+            Ok((sig_b64, pub_b64)) => {
+                // Build signed envelope
+                protocol::machine::build_envelope_signed(
+                    &manifest,
+                    payload_type,
+                    &nonce,
+                    timestamp,
+                    alg,
+                    "ml-dsa-65",
+                    &sig_b64,
+                    &pub_b64,
+                    None,
+                )
+            }
+            Err(e) => {
+                log::warn!("failed to sign apply request for peer {}: {:?}", peer_id, e);
+                manifest // fallback to unsigned
+            }
+        }
+    } else {
+        log::warn!(
+            "failed to load keypair for signing apply request to peer {}",
+            peer_id
+        );
+        manifest // fallback to unsigned
+    };
+
+    // Finally send the (now signed) apply request
     let request_id = swarm
         .behaviour_mut()
         .apply_rr
-        .send_request(&peer_id, manifest);
+        .send_request(&peer_id, signed_apply_request);
     info!(
         "libp2p: sent apply request to peer={} request_id={:?}",
         peer_id, request_id
