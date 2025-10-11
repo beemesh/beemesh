@@ -17,8 +17,14 @@ fn test_signature_verification_error_messages() {
     let (pubb2, _privb2) = ensure_keypair_ephemeral().expect("Failed to generate second keypair");
 
     let payload = b"error handling test payload";
-    let canonical_bytes =
-        build_envelope_canonical(payload, "test", "error-test-nonce", 1234567890, "ml-dsa-65");
+    let canonical_bytes = build_envelope_canonical(
+        payload,
+        "test",
+        "error-test-nonce",
+        1234567890,
+        "ml-dsa-65",
+        None,
+    );
 
     // Test 1: Invalid signature bytes (not base64)
     {
@@ -34,6 +40,7 @@ fn test_signature_verification_error_messages() {
             "ml-dsa-65",
             invalid_sig,
             &pub_b64,
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&invalid_sig_envelope, Duration::from_secs(300));
@@ -62,6 +69,7 @@ fn test_signature_verification_error_messages() {
             "ml-dsa-65",
             &invalid_sig,
             &pub_b64,
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&invalid_length_envelope, Duration::from_secs(300));
@@ -90,6 +98,7 @@ fn test_signature_verification_error_messages() {
             "ml-dsa-65",
             &sig_b64,
             &wrong_pub_b64,
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&wrong_key_envelope, Duration::from_secs(300));
@@ -114,6 +123,7 @@ fn test_signature_verification_error_messages() {
             "tamper-nonce",
             1234567890,
             "ml-dsa-65",
+            None,
         );
 
         let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &original_canonical)
@@ -129,6 +139,7 @@ fn test_signature_verification_error_messages() {
             "ml-dsa-65",
             &sig_b64,
             &pub_b64,
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&tampered_envelope, Duration::from_secs(300));
@@ -158,6 +169,7 @@ fn test_signature_verification_error_messages() {
             "ml-dsa-65",
             &sig_b64,
             &invalid_pub,
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&invalid_pub_envelope, Duration::from_secs(300));
@@ -247,6 +259,7 @@ fn test_envelope_parsing_robustness() {
             "ml-dsa-65",
             "", // Empty signature
             "", // Empty pubkey
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&envelope_with_empty_sig, Duration::from_secs(300));
@@ -276,6 +289,7 @@ fn test_envelope_parsing_robustness() {
             "ml-dsa-65",
             "malformed-base64-!!!",
             "also-malformed-base64-@@@",
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&malformed_b64_envelope, Duration::from_secs(300));
@@ -309,6 +323,7 @@ fn test_nonce_validation_errors() {
             "duplicate-nonce-123",
             1234567890,
             "ml-dsa-65",
+            None,
         );
 
         let (sig_b64, pub_b64) =
@@ -323,6 +338,7 @@ fn test_nonce_validation_errors() {
             "ml-dsa-65",
             &sig_b64,
             &pub_b64,
+            None,
         );
 
         // First verification should succeed
@@ -352,6 +368,7 @@ fn test_nonce_validation_errors() {
             "", // Empty nonce
             1234567890,
             "ml-dsa-65",
+            None,
         );
 
         let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical_empty_nonce)
@@ -366,6 +383,7 @@ fn test_nonce_validation_errors() {
             "ml-dsa-65",
             &sig_b64,
             &pub_b64,
+            None,
         );
 
         // Empty nonce should still verify (no replay protection)
@@ -393,6 +411,7 @@ fn test_algorithm_mismatch_errors() {
         "alg-test-nonce",
         1234567890,
         "different-algorithm", // Different algorithm string
+        None,
     );
 
     let (sig_b64, pub_b64) =
@@ -407,6 +426,7 @@ fn test_algorithm_mismatch_errors() {
         "ml-dsa-65", // Still use ml-dsa-65 for signature
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     let result = verify_flatbuffer_envelope(&envelope, Duration::from_secs(300));
@@ -433,6 +453,7 @@ fn test_timestamp_edge_cases() {
             "zero-ts-nonce",
             0, // Zero timestamp
             "ml-dsa-65",
+            None,
         );
 
         let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical_zero_ts)
@@ -447,6 +468,7 @@ fn test_timestamp_edge_cases() {
             "ml-dsa-65",
             &sig_b64,
             &pub_b64,
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&envelope_zero_ts, Duration::from_secs(300));
@@ -460,8 +482,14 @@ fn test_timestamp_edge_cases() {
     // Test with maximum timestamp
     {
         let max_timestamp = u64::MAX;
-        let canonical_max_ts =
-            build_envelope_canonical(payload, "test", "max-ts-nonce", max_timestamp, "ml-dsa-65");
+        let canonical_max_ts = build_envelope_canonical(
+            payload,
+            "test",
+            "max-ts-nonce",
+            max_timestamp,
+            "ml-dsa-65",
+            None,
+        );
 
         let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical_max_ts)
             .expect("Failed to sign envelope with max timestamp");
@@ -475,6 +503,7 @@ fn test_timestamp_edge_cases() {
             "ml-dsa-65",
             &sig_b64,
             &pub_b64,
+            None,
         );
 
         let result = verify_flatbuffer_envelope(&envelope_max_ts, Duration::from_secs(300));
@@ -516,6 +545,7 @@ fn test_concurrent_nonce_validation() {
                 &nonce,
                 1234567890 + i as u64,
                 "ml-dsa-65",
+                None,
             );
 
             let (sig_b64, pub_b64) = sign_envelope(&privb_clone, &pubb_clone, &canonical)
@@ -530,6 +560,7 @@ fn test_concurrent_nonce_validation() {
                 "ml-dsa-65",
                 &sig_b64,
                 &pub_b64,
+                None,
             );
 
             let result = verify_flatbuffer_envelope(&envelope, Duration::from_secs(300));

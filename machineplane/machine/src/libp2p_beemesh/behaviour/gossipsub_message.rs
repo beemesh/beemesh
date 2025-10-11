@@ -62,6 +62,7 @@ pub fn gossipsub_message(
                             "ml-dsa-65",
                             &sig_b64,
                             &pub_b64,
+                            None,
                         );
                         Some(fb)
                     }

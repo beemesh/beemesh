@@ -1,3 +1,4 @@
+use serial_test::serial;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -7,6 +8,7 @@ use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes_as_processes};
 
 pub const TENANT: &str = "00000000-0000-0000-0000-000000000000";
 
+#[serial]
 #[tokio::test]
 async fn test_apply_functionality() {
     // Setup cleanup hook and initialize logger
@@ -64,46 +66,92 @@ async fn test_apply_functionality() {
         "{}/sample_manifests/nginx",
         env!("CARGO_MANIFEST_DIR")
     ));
-    let task_id = cli::apply_file(manifest_path.clone())
-        .await
-        .expect("apply failed");
+    println!(
+        "About to call cli::apply_file with path: {:?}",
+        manifest_path
+    );
+    let task_id = match cli::apply_file(manifest_path.clone()).await {
+        Ok(id) => {
+            println!("apply_file succeeded with task_id: {}", id);
+            id
+        }
+        Err(e) => {
+            println!("apply_file failed with error: {:?}", e);
+            panic!("apply failed: {}", e);
+        }
+    };
 
     // Wait a short while for keyshare distribution and DHT activity
     sleep(Duration::from_secs(2)).await;
 
-    // Poll each node for keystore shares - each should have exactly 1 CID in their own keystore
+    // Poll each node for keystore shares and capability tokens
     let ports = vec![3000u16, 3100u16, 3200u16];
     let client = reqwest::Client::new();
     let mut nodes_with_cids: Vec<u16> = Vec::new();
     let mut nodes_with_announces: Vec<u16> = Vec::new();
+    let mut nodes_with_capabilities: Vec<u16> = Vec::new();
+    let mut nodes_with_keyshares: Vec<u16> = Vec::new();
 
-    // Check each node for its own keystore share
+    // Check each node for its keystore contents (both keyshares and capability tokens)
     for port in &ports {
-        println!("Checking node {} for keystore shares...", port);
+        println!("Checking node {} for keystore contents...", port);
         let base = format!("http://127.0.0.1:{}", port);
 
-        // Check for keystore shares (each node should have exactly 1 CID - their own share)
-        let mut found_cids = false;
+        // Check for keystore entries with detailed metadata
+        let mut found_entries = false;
         for attempt in 0..15 {
             let resp = client
-                .get(format!("{}/debug/keystore/shares", base))
+                .get(format!("{}/debug/keystore/entries", base))
                 .send()
                 .await;
             if let Ok(r) = resp {
                 if let Ok(j) = r.json::<serde_json::Value>().await {
                     if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                        if let Some(arr) = j.get("cids").and_then(|v| v.as_array()) {
-                            if !arr.is_empty() {
+                        if let Some(entries) = j.get("entries").and_then(|v| v.as_array()) {
+                            if !entries.is_empty() {
                                 if attempt > 5 {
                                     println!(
-                                        "Node {} keystore has {} CIDs after {} attempts",
+                                        "Node {} keystore has {} entries after {} attempts",
                                         port,
-                                        arr.len(),
+                                        entries.len(),
                                         attempt + 1
                                     );
                                 }
+
+                                // Analyze entry types
+                                let mut has_capability = false;
+                                let mut has_keyshare = false;
+
+                                for entry in entries {
+                                    if let Some(entry_type) =
+                                        entry.get("type").and_then(|v| v.as_str())
+                                    {
+                                        match entry_type {
+                                            "capability" => has_capability = true,
+                                            "keyshare" => has_keyshare = true,
+                                            _ => {}
+                                        }
+
+                                        if let Some(meta) =
+                                            entry.get("meta").and_then(|v| v.as_str())
+                                        {
+                                            println!(
+                                                "  Node {} has {} with metadata: {}",
+                                                port, entry_type, meta
+                                            );
+                                        }
+                                    }
+                                }
+
+                                if has_capability {
+                                    nodes_with_capabilities.push(*port);
+                                }
+                                if has_keyshare {
+                                    nodes_with_keyshares.push(*port);
+                                }
+
                                 nodes_with_cids.push(*port);
-                                found_cids = true;
+                                found_entries = true;
                                 break;
                             }
                         }
@@ -113,8 +161,11 @@ async fn test_apply_functionality() {
             sleep(Duration::from_millis(500)).await;
         }
 
-        if !found_cids {
-            println!("⚠ Node {} has no CIDs in keystore after 15 attempts", port);
+        if !found_entries {
+            println!(
+                "⚠ Node {} has no entries in keystore after 15 attempts",
+                port
+            );
         }
 
         // Check for active announces
@@ -145,6 +196,20 @@ async fn test_apply_functionality() {
         "expected all 3 nodes to have keystore cids, but only {} nodes had them: {:?}",
         nodes_with_cids.len(),
         nodes_with_cids
+    );
+    assert_eq!(
+        nodes_with_capabilities.len(),
+        3,
+        "expected all 3 nodes to have capability tokens, but only {} nodes had them: {:?}",
+        nodes_with_capabilities.len(),
+        nodes_with_capabilities
+    );
+    assert_eq!(
+        nodes_with_keyshares.len(),
+        3,
+        "expected all 3 nodes to have keyshares, but only {} nodes had them: {:?}",
+        nodes_with_keyshares.len(),
+        nodes_with_keyshares
     );
     assert!(
         !nodes_with_announces.is_empty(),
@@ -340,6 +405,16 @@ async fn test_apply_functionality() {
             nodes_with_cids.len(),
             3,
             "All nodes should have keystore functionality even without manifest CID"
+        );
+        assert_eq!(
+            nodes_with_capabilities.len(),
+            3,
+            "All nodes should have capability tokens even without manifest CID"
+        );
+        assert_eq!(
+            nodes_with_keyshares.len(),
+            3,
+            "All nodes should have keyshares even without manifest CID"
         );
     }
 

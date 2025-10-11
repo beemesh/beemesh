@@ -98,8 +98,11 @@ pub fn scheduler_message(
                     }
                 }
                 if let Some(senders) = pending_queries.get_mut(&request_part) {
+                    // Extract public key from the capacity reply
+                    let peer_pubkey = cap_reply.kem_pubkey().unwrap_or("").to_string();
+                    let peer_with_key = format!("{}:{}", peer.to_string(), peer_pubkey);
                     for tx in senders.iter() {
-                        let _ = tx.send(peer.to_string());
+                        let _ = tx.send(peer_with_key.clone());
                     }
                 }
             }

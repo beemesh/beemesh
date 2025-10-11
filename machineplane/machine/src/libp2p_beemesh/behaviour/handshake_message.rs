@@ -69,6 +69,7 @@ pub fn handshake_request<F>(
                         &nonce,
                         timestamp,
                         "ml-dsa-65",
+                        None,
                     );
 
                     match crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
@@ -82,6 +83,7 @@ pub fn handshake_request<F>(
                                 "ml-dsa-65",
                                 &sig_b64,
                                 &pub_b64,
+                                None,
                             );
                             send_response(signed_envelope);
                         }

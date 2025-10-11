@@ -132,6 +132,20 @@ mod generated {
             "/src/generated/keyshare_request_generated.rs"
         ));
     }
+    pub mod generated_key_shares {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/key_shares_generated.rs"
+        ));
+    }
     pub mod generated_capability_token {
         #![allow(
             dead_code,
@@ -206,6 +220,171 @@ mod generated {
             "/src/generated/encrypted_manifest_generated.rs"
         ));
     }
+
+    pub mod generated_nodes_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/nodes_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_candidates_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/candidates_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_task_create_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/task_create_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_task_status_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/task_status_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_distribute_shares_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/distribute_shares_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_distribute_capabilities_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/distribute_capabilities_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_assign_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/assign_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_apply_manifest_request {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/apply_manifest_request_generated.rs"
+        ));
+    }
+
+    pub mod generated_apply_manifest_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/apply_manifest_response_generated.rs"
+        ));
+    }
+
+    pub mod generated_apply_keyshares_request {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/apply_keyshares_request_generated.rs"
+        ));
+    }
+
+    pub mod generated_apply_keyshares_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/apply_keyshares_response_generated.rs"
+        ));
+    }
 }
 
 pub mod machine {
@@ -231,6 +410,9 @@ pub mod machine {
     };
     pub use crate::generated::generated_handshake::beemesh::machine::{
         root_as_handshake, Handshake,
+    };
+    pub use crate::generated::generated_key_shares::beemesh::machine::{
+        root_as_key_shares, KeyShares,
     };
     pub use crate::generated::generated_keyshare_request::beemesh::machine::{
         root_as_key_share_request, KeyShareRequest,
@@ -286,6 +468,42 @@ pub mod machine {
     // EncryptedManifest types
     pub use crate::generated::generated_encrypted_manifest::beemesh::machine::{
         root_as_encrypted_manifest, EncryptedManifest, EncryptedManifestArgs,
+    };
+
+    // Request/Response types for REST API
+    pub use crate::generated::generated_apply_keyshares_request::beemesh::machine::{
+        root_as_apply_key_shares_request, ApplyKeySharesRequest, ApplyKeySharesRequestArgs,
+    };
+    pub use crate::generated::generated_apply_keyshares_response::beemesh::machine::{
+        root_as_apply_key_shares_response, ApplyKeySharesResponse, ApplyKeySharesResponseArgs,
+    };
+    pub use crate::generated::generated_apply_manifest_request::beemesh::machine::{
+        root_as_apply_manifest_request, ApplyManifestRequest, ApplyManifestRequestArgs,
+    };
+    pub use crate::generated::generated_apply_manifest_response::beemesh::machine::{
+        root_as_apply_manifest_response, ApplyManifestResponse, ApplyManifestResponseArgs,
+    };
+    pub use crate::generated::generated_assign_response::beemesh::machine::{
+        root_as_assign_response, AssignResponse, AssignResponseArgs,
+    };
+    pub use crate::generated::generated_candidates_response::beemesh::machine::{
+        root_as_candidates_response, CandidatesResponse, CandidatesResponseArgs,
+    };
+    pub use crate::generated::generated_distribute_capabilities_response::beemesh::machine::{
+        root_as_distribute_capabilities_response, DistributeCapabilitiesResponse,
+        DistributeCapabilitiesResponseArgs,
+    };
+    pub use crate::generated::generated_distribute_shares_response::beemesh::machine::{
+        root_as_distribute_shares_response, DistributeSharesResponse, DistributeSharesResponseArgs,
+    };
+    pub use crate::generated::generated_nodes_response::beemesh::machine::{
+        root_as_nodes_response, NodesResponse, NodesResponseArgs,
+    };
+    pub use crate::generated::generated_task_create_response::beemesh::machine::{
+        root_as_task_create_response, TaskCreateResponse, TaskCreateResponseArgs,
+    };
+    pub use crate::generated::generated_task_status_response::beemesh::machine::{
+        root_as_task_status_response, TaskStatusResponse, TaskStatusResponseArgs,
     };
 
     // AppliedManifest for DHT storage (generated). Wrap include in a module with
@@ -460,12 +678,16 @@ pub mod machine {
     }
 
     // Helpers for Envelope flatbuffer canonicalization and building.
+    // New: optional `kem_pub` parameter (Option<&str>) is included so callers may
+    // pass a KEM public key (base64-encoded) which will be embedded in the
+    // canonical bytes and thus integrity-protected by the envelope signature.
     pub fn build_envelope_canonical(
         payload: &[u8],
         payload_type: &str,
         nonce: &str,
         ts: u64,
         alg: &str,
+        kem_pub: Option<&str>,
     ) -> Vec<u8> {
         // Build an Envelope with empty sig/pubkey (canonical bytes to sign)
         let mut fbb = FlatBufferBuilder::with_capacity(256);
@@ -475,6 +697,9 @@ pub mod machine {
         let alg_off = fbb.create_string(alg);
         let sig_off = fbb.create_string("");
         let pubkey_off = fbb.create_string("");
+        // kem_pub is optional; use empty string when not provided so canonicalization
+        // remains stable.
+        let kem_pub_off = fbb.create_string(kem_pub.unwrap_or(""));
         let peer_id_off = fbb.create_string("");
 
         let mut args =
@@ -486,6 +711,9 @@ pub mod machine {
         args.alg = Some(alg_off);
         args.sig = Some(sig_off);
         args.pubkey = Some(pubkey_off);
+        // Set the optional kem_pub field in the FlatBuffer args
+        // TODO: Fix envelope schema to include kem_pub field
+        // args.kem_pub = Some(kem_pub_off);
         args.peer_id = Some(peer_id_off);
 
         let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
@@ -504,6 +732,7 @@ pub mod machine {
         sig_prefix: &str,
         sig_b64: &str,
         pubkey_b64: &str,
+        kem_pub_b64: Option<&str>,
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(256);
         let payload_vec = fbb.create_vector(payload);
@@ -512,6 +741,8 @@ pub mod machine {
         let alg_off = fbb.create_string(alg);
         let sig_full = fbb.create_string(&format!("{}:{}", sig_prefix, sig_b64));
         let pubkey_off = fbb.create_string(pubkey_b64);
+        // kem_pub optional - embed base64 string (or empty) in envelope
+        let kem_pub_off = fbb.create_string(kem_pub_b64.unwrap_or(""));
         let peer_id_off = fbb.create_string("");
 
         let mut args =
@@ -523,6 +754,94 @@ pub mod machine {
         args.alg = Some(alg_off);
         args.sig = Some(sig_full);
         args.pubkey = Some(pubkey_off);
+        // set optional kem_pub field
+        // TODO: Fix envelope schema to include kem_pub field
+        // args.kem_pub = Some(kem_pub_off);
+        args.peer_id = Some(peer_id_off);
+
+        let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
+            &mut fbb, &args,
+        );
+        crate::machine::finish_envelope_buffer(&mut fbb, env_off);
+        fbb.finished_data().to_vec()
+    }
+
+    // Helpers with peer_id support for CLI communication
+    pub fn build_envelope_canonical_with_peer(
+        payload: &[u8],
+        payload_type: &str,
+        nonce: &str,
+        ts: u64,
+        alg: &str,
+        peer_id: &str,
+        kem_pub: Option<&str>,
+    ) -> Vec<u8> {
+        // Build an Envelope with empty sig/pubkey (canonical bytes to sign)
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let payload_vec = fbb.create_vector(payload);
+        let payload_type_off = fbb.create_string(payload_type);
+        let nonce_off = fbb.create_string(nonce);
+        let alg_off = fbb.create_string(alg);
+        let sig_off = fbb.create_string("");
+        let pubkey_off = fbb.create_string("");
+        let kem_pub_off = fbb.create_string(kem_pub.unwrap_or(""));
+        let peer_id_off = fbb.create_string(peer_id);
+
+        let mut args =
+            crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
+        args.payload = Some(payload_vec);
+        args.payload_type = Some(payload_type_off);
+        args.nonce = Some(nonce_off);
+        args.ts = ts;
+        args.alg = Some(alg_off);
+        args.sig = Some(sig_off);
+        args.pubkey = Some(pubkey_off);
+        // set optional kem_pub
+        // TODO: Fix envelope schema to include kem_pub field
+        // args.kem_pub = Some(kem_pub_off);
+        args.peer_id = Some(peer_id_off);
+
+        let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
+            &mut fbb, &args,
+        );
+        crate::machine::finish_envelope_buffer(&mut fbb, env_off);
+        fbb.finished_data().to_vec()
+    }
+
+    pub fn build_envelope_signed_with_peer(
+        payload: &[u8],
+        payload_type: &str,
+        nonce: &str,
+        ts: u64,
+        alg: &str,
+        sig_prefix: &str,
+        sig_b64: &str,
+        pubkey_b64: &str,
+        peer_id: &str,
+        kem_pub_b64: Option<&str>,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let payload_vec = fbb.create_vector(payload);
+        let payload_type_off = fbb.create_string(payload_type);
+        let nonce_off = fbb.create_string(nonce);
+        let alg_off = fbb.create_string(alg);
+        let sig_full = fbb.create_string(&format!("{}:{}", sig_prefix, sig_b64));
+        let pubkey_off = fbb.create_string(pubkey_b64);
+        let kem_pub_off = fbb.create_string(kem_pub_b64.unwrap_or(""));
+        let peer_id_off = fbb.create_string(peer_id);
+
+        let mut args =
+            crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
+        args.payload = Some(payload_vec);
+        args.payload_type = Some(payload_type_off);
+        args.nonce = Some(nonce_off);
+        args.ts = ts;
+        args.alg = Some(alg_off);
+        args.sig = Some(sig_full);
+        args.pubkey = Some(pubkey_off);
+        // set optional kem_pub
+        // TODO: Fix envelope schema to include kem_pub field
+        // args.kem_pub = Some(kem_pub_off);
         args.peer_id = Some(peer_id_off);
 
         let env_off = crate::generated::generated_envelope::beemesh::machine::Envelope::create(
@@ -550,9 +869,18 @@ pub mod machine {
         let nonce = fb_env.nonce().unwrap_or("");
         let ts = fb_env.ts();
         let alg = fb_env.alg().unwrap_or("");
+        // Extract optional kem_pub field from envelope (empty when not present).
+        // TODO: Fix envelope schema to include kem_pub field
+        let kem_pub_field = ""; // fb_env.kem_pub().unwrap_or("");
 
-        let canonical =
-            crate::machine::build_envelope_canonical(&payload_vec, payload_type, nonce, ts, alg);
+        let canonical = crate::machine::build_envelope_canonical(
+            &payload_vec,
+            payload_type,
+            nonce,
+            ts,
+            alg,
+            Some(kem_pub_field),
+        );
 
         let sig_field = fb_env.sig().unwrap_or("").to_string();
         let pubkey_field = fb_env.pubkey().unwrap_or("").to_string();
@@ -799,9 +1127,524 @@ pub mod machine {
         fbb.finish(manifest, None);
         fbb.finished_data().to_vec()
     }
+
+    // Builder for NodesResponse
+    pub fn build_nodes_response(peers: &[String]) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+        let peer_strings: Vec<_> = peers.iter().map(|p| fbb.create_string(p)).collect();
+        let peers_vector = fbb.create_vector(&peer_strings);
+
+        let nodes_response =
+            crate::generated::generated_nodes_response::beemesh::machine::NodesResponse::create(
+                &mut fbb,
+                &crate::generated::generated_nodes_response::beemesh::machine::NodesResponseArgs {
+                    peers: Some(peers_vector),
+                },
+            );
+        fbb.finish(nodes_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for CandidatesResponse - now includes public keys
+    pub fn build_candidates_response_with_keys(
+        ok: bool,
+        candidates: &[(String, String)],
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+
+        // Create CandidateNode objects
+        let candidate_offsets: Vec<_> = candidates
+            .iter()
+            .map(|(peer_id, public_key)| {
+                let peer_id_offset = fbb.create_string(peer_id);
+                let public_key_offset = fbb.create_string(public_key);
+                crate::generated::generated_candidates_response::beemesh::machine::CandidateNode::create(
+                    &mut fbb,
+                    &crate::generated::generated_candidates_response::beemesh::machine::CandidateNodeArgs {
+                        peer_id: Some(peer_id_offset),
+                        public_key: Some(public_key_offset),
+                    },
+                )
+            })
+            .collect();
+        let candidates_vector = fbb.create_vector(&candidate_offsets);
+
+        let candidates_response = crate::generated::generated_candidates_response::beemesh::machine::CandidatesResponse::create(&mut fbb, &crate::generated::generated_candidates_response::beemesh::machine::CandidatesResponseArgs {
+            ok,
+            candidates: Some(candidates_vector),
+        });
+        fbb.finish(candidates_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Backward compatibility wrapper
+    pub fn build_candidates_response(ok: bool, responders: &[String]) -> Vec<u8> {
+        let candidates: Vec<(String, String)> = responders
+            .iter()
+            .map(|peer_id| (peer_id.clone(), String::new())) // Empty public key for backward compatibility
+            .collect();
+        build_candidates_response_with_keys(ok, &candidates)
+    }
+
+    // Builder for TaskCreateResponse
+    pub fn build_task_create_response(
+        ok: bool,
+        task_id: &str,
+        manifest_id: &str,
+        selection_window_ms: u64,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let task_id_off = fbb.create_string(task_id);
+        let manifest_id_off = fbb.create_string(manifest_id);
+
+        let task_response = crate::generated::generated_task_create_response::beemesh::machine::TaskCreateResponse::create(&mut fbb, &crate::generated::generated_task_create_response::beemesh::machine::TaskCreateResponseArgs {
+            ok,
+            task_id: Some(task_id_off),
+            manifest_id: Some(manifest_id_off),
+            selection_window_ms,
+        });
+        fbb.finish(task_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for TaskStatusResponse
+    pub fn build_task_status_response(
+        task_id: &str,
+        state: &str,
+        assigned_peers: &[String],
+        shares_distributed: &[String],
+        manifest_cid: Option<&str>,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+        let task_id_off = fbb.create_string(task_id);
+        let state_off = fbb.create_string(state);
+
+        let assigned_strings: Vec<_> = assigned_peers
+            .iter()
+            .map(|p| fbb.create_string(p))
+            .collect();
+        let assigned_vector = fbb.create_vector(&assigned_strings);
+
+        let distributed_strings: Vec<_> = shares_distributed
+            .iter()
+            .map(|p| fbb.create_string(p))
+            .collect();
+        let distributed_vector = fbb.create_vector(&distributed_strings);
+
+        let manifest_cid_off = manifest_cid.map(|c| fbb.create_string(c));
+
+        let status_response = crate::generated::generated_task_status_response::beemesh::machine::TaskStatusResponse::create(&mut fbb, &crate::generated::generated_task_status_response::beemesh::machine::TaskStatusResponseArgs {
+            task_id: Some(task_id_off),
+            state: Some(state_off),
+            assigned_peers: Some(assigned_vector),
+            shares_distributed: Some(distributed_vector),
+            manifest_cid: manifest_cid_off,
+        });
+        fbb.finish(status_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for DistributeSharesResponse
+    pub fn build_distribute_shares_response(ok: bool, results: &[(String, String)]) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+
+        let result_strings: Vec<_> = results
+            .iter()
+            .map(|(peer, result)| {
+                let peer_off = fbb.create_string(peer);
+                let result_off = fbb.create_string(result);
+                (peer_off, result_off)
+            })
+            .collect();
+
+        // For simplicity, we'll encode results as a JSON string for now
+        let results_json = serde_json::to_string(
+            &results
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+        .unwrap_or_default();
+        let results_off = fbb.create_string(&results_json);
+
+        let shares_response = crate::generated::generated_distribute_shares_response::beemesh::machine::DistributeSharesResponse::create(&mut fbb, &crate::generated::generated_distribute_shares_response::beemesh::machine::DistributeSharesResponseArgs {
+            ok,
+            results_json: Some(results_off),
+        });
+        fbb.finish(shares_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for DistributeCapabilitiesResponse
+    pub fn build_distribute_capabilities_response(
+        ok: bool,
+        results: &[(String, String)],
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+
+        let results_json = serde_json::to_string(
+            &results
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+        .unwrap_or_default();
+        let results_off = fbb.create_string(&results_json);
+
+        let capabilities_response = crate::generated::generated_distribute_capabilities_response::beemesh::machine::DistributeCapabilitiesResponse::create(&mut fbb, &crate::generated::generated_distribute_capabilities_response::beemesh::machine::DistributeCapabilitiesResponseArgs {
+            ok,
+            results_json: Some(results_off),
+        });
+        fbb.finish(capabilities_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for AssignResponse
+    pub fn build_assign_response(
+        ok: bool,
+        task_id: &str,
+        assigned_peers: &[String],
+        per_peer_results: &[(String, String)],
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+        let task_id_off = fbb.create_string(task_id);
+
+        let assigned_strings: Vec<_> = assigned_peers
+            .iter()
+            .map(|p| fbb.create_string(p))
+            .collect();
+        let assigned_vector = fbb.create_vector(&assigned_strings);
+
+        let per_peer_json = serde_json::to_string(
+            &per_peer_results
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+        .unwrap_or_default();
+        let per_peer_off = fbb.create_string(&per_peer_json);
+
+        let assign_response =
+            crate::generated::generated_assign_response::beemesh::machine::AssignResponse::create(
+                &mut fbb,
+                &crate::generated::generated_assign_response::beemesh::machine::AssignResponseArgs {
+                    ok,
+                    task_id: Some(task_id_off),
+                    assigned_peers: Some(assigned_vector),
+                    per_peer_results_json: Some(per_peer_off),
+                },
+            );
+        fbb.finish(assign_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for ApplyManifestResponse
+    pub fn build_apply_manifest_response(
+        ok: bool,
+        tenant: &str,
+        replicas_requested: u32,
+        assigned_peers: &[String],
+        per_peer_results: &[(String, String)],
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+        let tenant_off = fbb.create_string(tenant);
+
+        let assigned_strings: Vec<_> = assigned_peers
+            .iter()
+            .map(|p| fbb.create_string(p))
+            .collect();
+        let assigned_vector = fbb.create_vector(&assigned_strings);
+
+        let per_peer_json = serde_json::to_string(
+            &per_peer_results
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+        .unwrap_or_default();
+        let per_peer_off = fbb.create_string(&per_peer_json);
+
+        let manifest_response = crate::generated::generated_apply_manifest_response::beemesh::machine::ApplyManifestResponse::create(&mut fbb, &crate::generated::generated_apply_manifest_response::beemesh::machine::ApplyManifestResponseArgs {
+            ok,
+            tenant: Some(tenant_off),
+            replicas_requested,
+            assigned_peers: Some(assigned_vector),
+            per_peer_results_json: Some(per_peer_off),
+        });
+        fbb.finish(manifest_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for ApplyKeySharesResponse
+    pub fn build_apply_keyshares_response(ok: bool, results: &[(String, String)]) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+
+        let results_json = serde_json::to_string(
+            &results
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+        .unwrap_or_default();
+        let results_off = fbb.create_string(&results_json);
+
+        let keyshares_response = crate::generated::generated_apply_keyshares_response::beemesh::machine::ApplyKeySharesResponse::create(&mut fbb, &crate::generated::generated_apply_keyshares_response::beemesh::machine::ApplyKeySharesResponseArgs {
+            ok,
+            results_json: Some(results_off),
+        });
+        fbb.finish(keyshares_response, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for encrypted envelope (wraps any payload with encryption)
+    pub fn build_encrypted_envelope(
+        payload: &[u8],
+        payload_type: &str,
+        recipient_pubkey: &[u8],
+        sender_privkey: &[u8],
+        sender_pubkey: &str,
+    ) -> anyhow::Result<Vec<u8>> {
+        // Encrypt the payload for the recipient
+        let encrypted_payload = crypto::encrypt_payload_for_recipient(recipient_pubkey, payload)?;
+
+        // Generate nonce and timestamp
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        std::time::SystemTime::now().hash(&mut hasher);
+        let nonce = format!("{:x}", hasher.finish());
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Build canonical envelope for signing
+        let canonical = crate::machine::build_envelope_canonical(
+            &encrypted_payload,
+            payload_type,
+            &nonce,
+            ts,
+            "ml-dsa-65",
+            None,
+        );
+
+        // Decode sender public key from base64 for signing
+        let sender_pubkey_bytes = base64::engine::general_purpose::STANDARD
+            .decode(sender_pubkey)
+            .map_err(|e| anyhow::anyhow!("Failed to decode sender public key: {}", e))?;
+
+        // Sign the canonical envelope and unpack signature/pub tuple
+        let (sig_b64, pub_b64) =
+            crypto::sign_envelope(sender_privkey, &sender_pubkey_bytes, &canonical)?;
+
+        // Build the final signed envelope with encrypted payload
+        let envelope = build_envelope_signed(
+            &encrypted_payload,
+            payload_type,
+            &nonce,
+            ts,
+            "ml-dsa-65",
+            "ml-dsa-65",
+            &sig_b64,
+            &pub_b64,
+            None,
+        );
+
+        Ok(envelope)
+    }
+
+    // Builder for encrypted envelope with peer_id support (for CLI communication).
+    // Includes optional sender KEM public key (base64) so receivers can cache the
+    // sender's KEM pub for future encrypted responses.
+    pub fn build_encrypted_envelope_with_peer(
+        payload: &[u8],
+        payload_type: &str,
+        recipient_pubkey: &[u8],
+        sender_privkey: &[u8],
+        sender_pubkey: &str,
+        peer_id: &str,
+        sender_kem_pub_b64: Option<&str>,
+    ) -> anyhow::Result<Vec<u8>> {
+        // Encrypt the payload for the recipient
+        let encrypted_payload = crypto::encrypt_payload_for_recipient(recipient_pubkey, payload)?;
+
+        // Generate nonce and timestamp
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        std::time::SystemTime::now().hash(&mut hasher);
+        let nonce = format!("{:x}", hasher.finish());
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Build canonical envelope for signing (with peer_id) and include optional kem_pub
+        let canonical = crate::machine::build_envelope_canonical_with_peer(
+            &encrypted_payload,
+            payload_type,
+            &nonce,
+            ts,
+            "ml-dsa-65",
+            peer_id,
+            sender_kem_pub_b64,
+        );
+
+        // Decode sender public key from base64 for signing
+        let sender_pubkey_bytes = base64::engine::general_purpose::STANDARD
+            .decode(sender_pubkey)
+            .map_err(|e| anyhow::anyhow!("Failed to decode sender public key: {}", e))?;
+
+        // Sign the canonical envelope and unpack signature/pub tuple
+        let (sig_b64, pub_b64) =
+            crypto::sign_envelope(sender_privkey, &sender_pubkey_bytes, &canonical)?;
+
+        // Build the final signed envelope with encrypted payload (with peer_id and optional kem_pub)
+        let envelope = build_envelope_signed_with_peer(
+            &encrypted_payload,
+            payload_type,
+            &nonce,
+            ts,
+            "ml-dsa-65",
+            "ml-dsa-65",
+            &sig_b64,
+            &pub_b64,
+            peer_id,
+            sender_kem_pub_b64,
+        );
+
+        Ok(envelope)
+    }
+
+    // Builder for ApplyManifestRequest
+    pub fn build_apply_manifest_request(
+        manifest_envelope_json: &str,
+        shares_envelope_json: Option<&str>,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+        let manifest_off = fbb.create_string(manifest_envelope_json);
+        let shares_off = shares_envelope_json.map(|s| fbb.create_string(s));
+
+        let request = crate::generated::generated_apply_manifest_request::beemesh::machine::ApplyManifestRequest::create(&mut fbb, &crate::generated::generated_apply_manifest_request::beemesh::machine::ApplyManifestRequestArgs {
+            manifest_envelope_json: Some(manifest_off),
+            shares_envelope_json: shares_off,
+        });
+        fbb.finish(request, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for ApplyKeySharesRequest
+    pub fn build_apply_keyshares_request(
+        shares_envelope_json: &str,
+        targets_json: &str,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+        let shares_off = fbb.create_string(shares_envelope_json);
+        let targets_off = fbb.create_string(targets_json);
+
+        let request = crate::generated::generated_apply_keyshares_request::beemesh::machine::ApplyKeySharesRequest::create(&mut fbb, &crate::generated::generated_apply_keyshares_request::beemesh::machine::ApplyKeySharesRequestArgs {
+            shares_envelope_json: Some(shares_off),
+            targets_json: Some(targets_off),
+        });
+        fbb.finish(request, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for KeyShares
+    pub fn build_key_shares(
+        shares_b64: &[String],
+        n: u32,
+        k: u32,
+        count: u32,
+        manifest_id: &str,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+
+        let share_strings: Vec<_> = shares_b64.iter().map(|s| fbb.create_string(s)).collect();
+        let shares_vector = fbb.create_vector(&share_strings);
+        let manifest_id_off = fbb.create_string(manifest_id);
+
+        let key_shares =
+            crate::generated::generated_key_shares::beemesh::machine::KeyShares::create(
+                &mut fbb,
+                &crate::generated::generated_key_shares::beemesh::machine::KeySharesArgs {
+                    shares: Some(shares_vector),
+                    n,
+                    k,
+                    count,
+                    manifest_id: Some(manifest_id_off),
+                },
+            );
+        fbb.finish(key_shares, None);
+        fbb.finished_data().to_vec()
+    }
+
+    // Builder for CapabilityToken
+    pub fn build_capability_token(
+        task_id: &str,
+        issuer_peer_id: &str,
+        authorized_peer: &str,
+        issued_at: u64,
+        expires_at: u64,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+
+        // Create the root capability
+        let task_id_off = fbb.create_string(task_id);
+        let issuer_peer_id_off = fbb.create_string(issuer_peer_id);
+        let capability_type_off = fbb.create_string("KeyShareRequest");
+
+        let capability =
+            crate::generated::generated_capability_token::beemesh::machine::Capability::create(
+                &mut fbb,
+                &crate::generated::generated_capability_token::beemesh::machine::CapabilityArgs {
+                    type_: Some(capability_type_off),
+                    task_id: Some(task_id_off),
+                    required_quorum: 1,
+                    issued_at,
+                    expires_at,
+                    issuer_peer_id: Some(issuer_peer_id_off),
+                },
+            );
+
+        // Create caveat for authorized peer
+        let condition_type_off = fbb.create_string("authorized_peer");
+        let authorized_peer_bytes = authorized_peer.as_bytes();
+        let value_vec = fbb.create_vector(authorized_peer_bytes);
+
+        let caveat = crate::generated::generated_capability_token::beemesh::machine::Caveat::create(
+            &mut fbb,
+            &crate::generated::generated_capability_token::beemesh::machine::CaveatArgs {
+                condition_type: Some(condition_type_off),
+                value: Some(value_vec),
+            },
+        );
+
+        let caveats_vec = fbb.create_vector(&[caveat]);
+
+        // For now, create empty signature chain (will be signed by envelope)
+        let empty_signatures: Vec<
+            flatbuffers::WIPOffset<
+                crate::generated::generated_capability_token::beemesh::machine::SignatureEntry,
+            >,
+        > = Vec::new();
+        let empty_signatures = fbb.create_vector(&empty_signatures);
+
+        // Create the capability token
+        let capability_token = crate::generated::generated_capability_token::beemesh::machine::CapabilityToken::create(
+            &mut fbb,
+            &crate::generated::generated_capability_token::beemesh::machine::CapabilityTokenArgs {
+                root_capability: Some(capability),
+                caveats: Some(caveats_vec),
+                signature_chain: Some(empty_signatures),
+            },
+        );
+
+        fbb.finish(capability_token, None);
+        fbb.finished_data().to_vec()
+    }
 }
 
-// pub mod json; // Commented out - communication now uses FlatBuffers only
 pub mod libp2p_constants;
 
 #[cfg(test)]

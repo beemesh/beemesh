@@ -14,8 +14,8 @@ fn search_local_key_shares(manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, 
     // Get all CIDs
     let all_cids = keystore.list_cids()?;
 
-    log::info!(
-        "libp2p: decrypt searching through {} CIDs in keystore for manifest_id={}",
+    log::warn!(
+        "libp2p: DECRYPT DEBUG - searching through {} CIDs in keystore for manifest_id={}",
         all_cids.len(),
         manifest_id
     );
@@ -25,17 +25,18 @@ fn search_local_key_shares(manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, 
     // Instead of searching all CIDs, directly look for all CIDs matching the manifest_id in keystore metadata
     match keystore.find_cids_for_manifest(manifest_id) {
         Ok(cids) => {
+            log::warn!("libp2p: DECRYPT DEBUG - find_cids_for_manifest returned {} CIDs for manifest_id={}", cids.len(), manifest_id);
             for cid in cids.iter() {
                 if let Ok(Some(blob)) = keystore.get(cid) {
                     match crypto::ensure_kem_keypair_on_disk() {
                         Ok((_pubb, privb)) => {
                             match crypto::decrypt_share_from_blob(&blob, &privb) {
                                 Ok(decrypted_share) => {
-                                    log::info!("libp2p: decrypt found matching local key share for manifest_id={} (cid={})", manifest_id, cid);
+                                    log::warn!("libp2p: DECRYPT DEBUG - found matching local key share for manifest_id={} (cid={})", manifest_id, cid);
                                     key_shares.push((cid.clone(), decrypted_share));
                                 }
                                 Err(e) => {
-                                    log::warn!("libp2p: decrypt failed to decrypt share blob for cid {}: {}", cid, e);
+                                    log::warn!("libp2p: DECRYPT DEBUG - failed to decrypt share blob for cid {}: {}", cid, e);
                                 }
                             }
                         }
@@ -48,13 +49,18 @@ fn search_local_key_shares(manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, 
         }
         Err(e) => {
             log::warn!(
-                "libp2p: decrypt error searching keystore for manifest_id {}: {}",
+                "libp2p: DECRYPT DEBUG - error searching keystore for manifest_id {}: {}",
                 manifest_id,
                 e
             );
         }
     }
 
+    log::warn!(
+        "libp2p: DECRYPT DEBUG - returning {} key_shares for manifest_id={}",
+        key_shares.len(),
+        manifest_id
+    );
     Ok(key_shares)
 }
 
@@ -133,8 +139,8 @@ async fn decrypt_encrypted_manifest_with_id(
     encrypted_manifest: &protocol::machine::EncryptedManifest<'_>,
     local_peer_id: &libp2p::PeerId,
 ) -> Result<String, anyhow::Error> {
-    log::info!(
-        "libp2p: decrypt_with_id attempting decryption for manifest_id={}",
+    log::warn!(
+        "libp2p: DECRYPT ENTRY - starting decryption for manifest_id={}",
         manifest_id
     );
     let nonce_str = encrypted_manifest.nonce().unwrap_or("");
@@ -147,9 +153,13 @@ async fn decrypt_encrypted_manifest_with_id(
     }
 
     // Step 1: Search for key shares in local keystore
+    log::warn!(
+        "libp2p: DECRYPT ENTRY - about to search local keyshares for manifest_id={}",
+        manifest_id
+    );
     let mut key_shares = search_local_key_shares(manifest_id)?;
-    log::info!(
-        "libp2p: decrypt_with_id found {} local key shares for manifest_id={}",
+    log::warn!(
+        "libp2p: DECRYPT ENTRY - found {} local key shares for manifest_id={}, need 2 for k=2",
         key_shares.len(),
         manifest_id
     );
@@ -157,8 +167,8 @@ async fn decrypt_encrypted_manifest_with_id(
     // Step 2: If we don't have enough local shares, fetch from other nodes
     if key_shares.len() < 2 {
         let needed_shares = 2 - key_shares.len();
-        log::info!(
-            "libp2p: decrypt_with_id need {} more key shares, initiating distributed retrieval",
+        log::warn!(
+            "libp2p: DECRYPTION DEBUG - need {} more key shares, initiating distributed retrieval",
             needed_shares
         );
 
@@ -198,7 +208,8 @@ async fn decrypt_encrypted_manifest_with_id(
                 break; // We have enough shares
             }
 
-            // Prepare the keyshare request
+            // Prepare the keyshare request - for inter-node fetching, we MUST include capability token
+            log::warn!("libp2p: KEYSHARE DEBUG - building keyshare request with manifest_id='{}' capability=''", manifest_id);
             let keyshare_request_fb = build_keyshare_request(manifest_id, "");
 
             // Attempt to attach a locally-held capability token (if present) so
@@ -236,10 +247,26 @@ async fn decrypt_encrypted_manifest_with_id(
                                         .encode(&cap_plain);
                                     // Log diagnostics about attached capability so remote holders can
                                     // be inspected when they reject/parsing fails.
-                                    log::info!("libp2p: attaching local capability for manifest_id={} cap_len={} first_byte=0x{:02x}",
+                                    log::warn!("libp2p: CAPABILITY DEBUG - attaching local capability for manifest_id={} cap_len={} cap_b64_len={} first_byte=0x{:02x}",
                                         manifest_id,
                                         cap_plain.len(),
+                                        cap_b64.len(),
                                         if cap_plain.is_empty() { 0u8 } else { cap_plain[0] });
+
+                                    // Test immediate decode to verify base64 validity
+                                    match base64::engine::general_purpose::STANDARD.decode(&cap_b64)
+                                    {
+                                        Ok(decoded) => {
+                                            log::warn!("libp2p: CAPABILITY DEBUG - base64 encode/decode test successful, decoded_len={}", decoded.len());
+                                        }
+                                        Err(e) => {
+                                            log::error!("libp2p: CAPABILITY DEBUG - base64 encode/decode test FAILED: {:?}", e);
+                                        }
+                                    }
+
+                                    log::warn!("libp2p: KEYSHARE DEBUG - building keyshare request with manifest_id='{}' cap_b64_len={} cap_b64_prefix='{}'",
+                                        manifest_id, cap_b64.len(),
+                                        if cap_b64.len() > 50 { &cap_b64[..50] } else { &cap_b64 });
                                     request_fb_to_send =
                                         build_keyshare_request(manifest_id, &cap_b64);
                                 }
@@ -361,18 +388,58 @@ async fn decrypt_encrypted_manifest_with_id(
         }
 
         if key_shares.len() < 2 {
+            log::error!(
+                "libp2p: DECRYPTION DEBUG - INSUFFICIENT SHARES! Have {} but need 2",
+                key_shares.len()
+            );
             return Err(error_helpers::insufficient_key_shares(key_shares.len(), 2));
         }
+        log::warn!(
+            "libp2p: DECRYPTION DEBUG - after fetching, have {} shares",
+            key_shares.len()
+        );
     } else {
-        log::info!("libp2p: have enough local shares proceeding");
+        log::warn!(
+            "libp2p: DECRYPTION DEBUG - have enough local shares ({}) proceeding",
+            key_shares.len()
+        );
     }
 
     // Step 3: Recover the symmetric key from the shares
     let mut shares = Vec::new();
-    for (_, share_data) in &key_shares {
+    for (cid, share_data) in &key_shares {
+        log::warn!(
+            "libp2p: SHARE DEBUG - cid={} share_len={} first_4_bytes={:02x}{:02x}{:02x}{:02x}",
+            cid,
+            share_data.len(),
+            if share_data.len() > 0 {
+                share_data[0]
+            } else {
+                0u8
+            },
+            if share_data.len() > 1 {
+                share_data[1]
+            } else {
+                0u8
+            },
+            if share_data.len() > 2 {
+                share_data[2]
+            } else {
+                0u8
+            },
+            if share_data.len() > 3 {
+                share_data[3]
+            } else {
+                0u8
+            }
+        );
         shares.push(share_data.clone());
     }
 
+    log::warn!(
+        "libp2p: SHARE DEBUG - about to call recover_symmetric_key with {} shares",
+        shares.len()
+    );
     let symmetric_key = crypto::recover_symmetric_key(&shares, 2)?;
     log::info!(
         "libp2p: decrypt_with_id successfully recovered symmetric key using {} share(s)",
@@ -659,71 +726,92 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
                         manifest_id
                     );
 
-                    // Check if manifest_json is a FlatBuffer encrypted manifest
-                    let manifest_value = if let Ok(encrypted_manifest) =
-                        protocol::machine::root_as_encrypted_manifest(manifest_json.as_bytes())
+                    // Parse manifest_json as base64-encoded flatbuffer envelope
+                    log::warn!(
+                        "libp2p: SELF-APPLY DEBUG - parsing manifest_json len={}",
+                        manifest_json.len()
+                    );
+                    let manifest_value = if let Ok(envelope_bytes) =
+                        base64::engine::general_purpose::STANDARD.decode(&manifest_json)
                     {
-                        log::info!("libp2p: self-apply detected FlatBuffer encrypted manifest - attempting decryption");
+                        log::warn!("libp2p: SELF-APPLY DEBUG - decoded base64 successfully, envelope_bytes len={}", envelope_bytes.len());
+                        // Try to parse as flatbuffer envelope
+                        if let Ok(envelope) = protocol::machine::root_as_envelope(&envelope_bytes) {
+                            let payload_type = envelope.payload_type().unwrap_or("");
+                            log::warn!(
+                                "libp2p: SELF-APPLY DEBUG - parsed envelope with payload_type='{}'",
+                                payload_type
+                            );
+                            if payload_type == "manifest" {
+                                log::warn!("libp2p: self-apply detected encrypted manifest envelope - attempting decryption");
 
-                        match decrypt_encrypted_manifest_with_id(
-                            &manifest_id,
-                            &encrypted_manifest,
-                            &local_peer_id_copy,
-                        )
-                        .await
-                        {
-                            Ok(decrypted_yaml) => {
-                                log::info!(
-                                    "libp2p: self-apply successfully decrypted FlatBuffer manifest"
-                                );
-                                // Parse the decrypted YAML content
-                                match serde_yaml::from_str::<serde_json::Value>(&decrypted_yaml) {
-                                    Ok(v) => {
-                                        log::info!(
-                                            "libp2p: self-apply parsed decrypted YAML successfully"
-                                        );
-                                        v
+                                // Extract the encrypted manifest from the envelope payload
+                                if let Some(payload_vector) = envelope.payload() {
+                                    // Convert Vector<u8> to &[u8]
+                                    let payload_bytes = payload_vector.bytes();
+                                    if let Ok(encrypted_manifest) =
+                                        protocol::machine::root_as_encrypted_manifest(payload_bytes)
+                                    {
+                                        match decrypt_encrypted_manifest_with_id(
+                                            &manifest_id,
+                                            &encrypted_manifest,
+                                            &local_peer_id_copy,
+                                        )
+                                        .await
+                                        {
+                                            Ok(decrypted_yaml) => {
+                                                log::info!(
+                                                "libp2p: self-apply successfully decrypted FlatBuffer manifest"
+                                            );
+                                                // Parse the decrypted YAML content
+                                                match serde_yaml::from_str::<serde_json::Value>(
+                                                    &decrypted_yaml,
+                                                ) {
+                                                    Ok(v) => {
+                                                        log::info!(
+                                                        "libp2p: self-apply parsed decrypted YAML successfully"
+                                                    );
+                                                        v
+                                                    }
+                                                    Err(_) => {
+                                                        log::info!(
+                                                        "libp2p: self-apply treating decrypted content as raw"
+                                                    );
+                                                        serde_json::json!({ "raw": decrypted_yaml })
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::warn!(
+                                                "libp2p: self-apply failed to decrypt FlatBuffer manifest: {}",
+                                                e
+                                            );
+                                                // Return empty object for failed decryption
+                                                serde_json::json!({})
+                                            }
+                                        }
+                                    } else {
+                                        log::warn!("libp2p: self-apply failed to parse payload as EncryptedManifest");
+                                        serde_json::json!({})
                                     }
-                                    Err(_) => {
-                                        log::info!(
-                                            "libp2p: self-apply treating decrypted content as raw"
-                                        );
-                                        serde_json::json!({ "raw": decrypted_yaml })
-                                    }
+                                } else {
+                                    log::warn!("libp2p: self-apply envelope missing payload");
+                                    serde_json::json!({})
                                 }
-                            }
-                            Err(e) => {
+                            } else {
                                 log::warn!(
-                                    "libp2p: self-apply failed to decrypt FlatBuffer manifest: {}",
-                                    e
+                                    "libp2p: self-apply envelope has wrong payload type: '{}', expected 'manifest'",
+                                    payload_type
                                 );
-                                // Fallback to parsing as regular manifest
-                                match serde_yaml::from_str::<serde_json::Value>(manifest_json) {
-                                    Ok(v) => {
-                                        log::info!(
-                                            "libp2p: self-apply parsed as YAML successfully"
-                                        );
-                                        v
-                                    }
-                                    Err(_) => {
-                                        log::info!("libp2p: self-apply treating as raw content");
-                                        serde_json::json!({ "raw": manifest_json })
-                                    }
-                                }
+                                serde_json::json!({})
                             }
+                        } else {
+                            log::warn!("libp2p: self-apply failed to parse as flatbuffer envelope, envelope_bytes len={}", envelope_bytes.len());
+                            serde_json::json!({})
                         }
                     } else {
-                        // Not FlatBuffer encrypted manifest, try as regular YAML/JSON
-                        match serde_yaml::from_str::<serde_json::Value>(manifest_json) {
-                            Ok(v) => {
-                                log::info!("libp2p: self-apply parsed as YAML successfully");
-                                v
-                            }
-                            Err(_) => {
-                                log::info!("libp2p: self-apply treating as raw content");
-                                serde_json::json!({ "raw": manifest_json })
-                            }
-                        }
+                        log::warn!("libp2p: self-apply failed to decode base64 manifest_json, manifest_json len={}", manifest_json.len());
+                        serde_json::json!({})
                     };
 
                     log::info!("libp2p: self-apply storing decrypted manifest for testing");

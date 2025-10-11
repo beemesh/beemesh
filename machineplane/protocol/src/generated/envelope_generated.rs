@@ -50,6 +50,7 @@ impl<'a> Envelope<'a> {
   pub const VT_SIG: flatbuffers::VOffsetT = 14;
   pub const VT_PUBKEY: flatbuffers::VOffsetT = 16;
   pub const VT_PEER_ID: flatbuffers::VOffsetT = 18;
+  pub const VT_KEM_PUBKEY: flatbuffers::VOffsetT = 20;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -62,6 +63,7 @@ impl<'a> Envelope<'a> {
   ) -> flatbuffers::WIPOffset<Envelope<'bldr>> {
     let mut builder = EnvelopeBuilder::new(_fbb);
     builder.add_ts(args.ts);
+    if let Some(x) = args.kem_pubkey { builder.add_kem_pubkey(x); }
     if let Some(x) = args.peer_id { builder.add_peer_id(x); }
     if let Some(x) = args.pubkey { builder.add_pubkey(x); }
     if let Some(x) = args.sig { builder.add_sig(x); }
@@ -129,6 +131,13 @@ impl<'a> Envelope<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(Envelope::VT_PEER_ID, None)}
   }
+  #[inline]
+  pub fn kem_pubkey(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(Envelope::VT_KEM_PUBKEY, None)}
+  }
 }
 
 impl flatbuffers::Verifiable for Envelope<'_> {
@@ -146,6 +155,7 @@ impl flatbuffers::Verifiable for Envelope<'_> {
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("sig", Self::VT_SIG, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("pubkey", Self::VT_PUBKEY, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("peer_id", Self::VT_PEER_ID, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("kem_pubkey", Self::VT_KEM_PUBKEY, false)?
      .finish();
     Ok(())
   }
@@ -159,6 +169,7 @@ pub struct EnvelopeArgs<'a> {
     pub sig: Option<flatbuffers::WIPOffset<&'a str>>,
     pub pubkey: Option<flatbuffers::WIPOffset<&'a str>>,
     pub peer_id: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub kem_pubkey: Option<flatbuffers::WIPOffset<&'a str>>,
 }
 impl<'a> Default for EnvelopeArgs<'a> {
   #[inline]
@@ -172,6 +183,7 @@ impl<'a> Default for EnvelopeArgs<'a> {
       sig: None,
       pubkey: None,
       peer_id: None,
+      kem_pubkey: None,
     }
   }
 }
@@ -214,6 +226,10 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> EnvelopeBuilder<'a, 'b, A> {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(Envelope::VT_PEER_ID, peer_id);
   }
   #[inline]
+  pub fn add_kem_pubkey(&mut self, kem_pubkey: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(Envelope::VT_KEM_PUBKEY, kem_pubkey);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> EnvelopeBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     EnvelopeBuilder {
@@ -239,6 +255,7 @@ impl core::fmt::Debug for Envelope<'_> {
       ds.field("sig", &self.sig());
       ds.field("pubkey", &self.pubkey());
       ds.field("peer_id", &self.peer_id());
+      ds.field("kem_pubkey", &self.kem_pubkey());
       ds.finish()
   }
 }

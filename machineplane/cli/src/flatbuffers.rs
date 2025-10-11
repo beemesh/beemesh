@@ -1,19 +1,383 @@
 use anyhow::Result;
 use base64::Engine;
-use protocol::machine;
+use protocol::machine::{self};
 use serde_json::Value as JsonValue;
+use std::sync::Arc;
 
 /// Convert JSON requests into flatbuffer payloads for direct communication with the machine
 pub struct FlatbufferClient {
     base_url: String,
     client: reqwest::Client,
+    /// CLI's private key for decryption (signing key private bytes)
+    private_key: Vec<u8>,
+    /// CLI's signing public key (base64)
+    public_key: String,
+    /// CLI's KEM public key bytes (raw) used to advertise to machines
+    kem_public_key: Vec<u8>,
+    /// CLI's KEM private key bytes (raw) used for decryption
+    kem_private_key: Vec<u8>,
+    /// Machine's public key for encryption
+    machine_public_key: Option<Vec<u8>>,
 }
 
 impl FlatbufferClient {
-    pub fn new(base_url: String) -> Self {
-        Self {
+    pub fn new(base_url: String) -> Result<Self> {
+        // Generate ephemeral signing keypair for CLI
+        crypto::ensure_pqc_init()?;
+        let (public_key_bytes, private_key) = crypto::ensure_keypair_ephemeral()?;
+        let public_key = base64::engine::general_purpose::STANDARD.encode(&public_key_bytes);
+
+        // Obtain or generate a KEM keypair for the CLI so we can advertise our KEM public key
+        // to machines (used to encrypt responses back to the CLI).
+        // Use the existing helper which supports ephemeral KEM mode via env var.
+        let (kem_pub_bytes, kem_priv_bytes) = crypto::ensure_kem_keypair_on_disk()?;
+
+        Ok(Self {
             base_url,
             client: reqwest::Client::new(),
+            private_key,
+            public_key,
+            kem_public_key: kem_pub_bytes,
+            kem_private_key: kem_priv_bytes,
+            machine_public_key: None,
+        })
+    }
+
+    /// Set the machine's public key for encryption
+    pub fn set_machine_public_key(&mut self, machine_pubkey: Vec<u8>) {
+        self.machine_public_key = Some(machine_pubkey);
+    }
+
+    /// Fetch the machine's KEM public key from the /api/v1/kem_pubkey endpoint for encryption
+    pub async fn fetch_machine_public_key(&mut self) -> Result<()> {
+        let url = format!("{}/api/v1/kem_pubkey", self.base_url);
+        log::info!("Fetching machine KEM public key from: {}", url);
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to machine at {}: {}", url, e))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response body".to_string());
+            anyhow::bail!(
+                "Failed to fetch machine pubkey: {} - Response: {}",
+                status,
+                body
+            );
+        }
+
+        let pubkey_b64 = resp
+            .text()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get response text: {}", e))?;
+
+        // Check for error response
+        if pubkey_b64.starts_with("ERROR:") {
+            anyhow::bail!("Machine returned error: {}", pubkey_b64);
+        }
+
+        log::debug!("Received pubkey response: {}", pubkey_b64);
+
+        let pubkey_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&pubkey_b64)
+            .map_err(|e| anyhow::anyhow!("Failed to decode public key: {}", e))?;
+
+        log::info!(
+            "Successfully fetched machine KEM public key ({} bytes)",
+            pubkey_bytes.len()
+        );
+        self.machine_public_key = Some(pubkey_bytes);
+        Ok(())
+    }
+
+    /// Encrypt a payload for the machine
+    fn encrypt_for_machine(&self, payload: &[u8]) -> Result<Vec<u8>> {
+        match &self.machine_public_key {
+            Some(machine_pubkey) => crypto::encrypt_payload_for_recipient(machine_pubkey, payload),
+            None => {
+                // No encryption if machine pubkey not available
+                Ok(payload.to_vec())
+            }
+        }
+    }
+
+    /// Decrypt a response from the machine
+    fn decrypt_from_machine(&self, envelope_bytes: &[u8]) -> Result<Vec<u8>> {
+        // Parse the envelope first
+        let envelope = protocol::machine::root_as_envelope(envelope_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse envelope: {}", e))?;
+
+        // Extract the payload from the envelope
+        let payload_bytes = envelope
+            .payload()
+            .map(|v| v.iter().collect::<Vec<u8>>())
+            .unwrap_or_default();
+
+        // If the payload is encrypted (starts with 0x02), decrypt it
+        if !payload_bytes.is_empty() && payload_bytes[0] == 0x02 {
+            crypto::decrypt_payload_from_recipient_blob(&payload_bytes, &self.kem_private_key)
+        } else {
+            // Payload is not encrypted, return as-is
+            Ok(payload_bytes)
+        }
+    }
+
+    /// Send an unencrypted flatbuffer request (for already-signed envelopes)
+    async fn send_unencrypted_request(
+        &self,
+        url: &str,
+        payload: &[u8],
+        payload_type: &str,
+    ) -> Result<Vec<u8>> {
+        // Create unencrypted envelope with peer_id and public key
+        use crypto::sign_envelope;
+        use protocol::machine::{
+            build_envelope_canonical_with_peer, build_envelope_signed_with_peer,
+        };
+
+        // Generate nonce and timestamp
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        std::time::SystemTime::now().hash(&mut hasher);
+        let nonce = format!("{:x}", hasher.finish());
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Build canonical envelope for signing (with peer_id).
+        let kem_pub_b64 = base64::engine::general_purpose::STANDARD.encode(&self.kem_public_key);
+        let canonical = build_envelope_canonical_with_peer(
+            payload,
+            payload_type,
+            &nonce,
+            ts,
+            "ml-dsa-65",
+            "cli-client",
+            Some(kem_pub_b64.as_str()),
+        );
+
+        // Sign the envelope
+        // Decode public key from base64 for signing
+        let public_key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.public_key)
+            .map_err(|e| anyhow::anyhow!("Failed to decode public key: {}", e))?;
+        let (sig_b64, pub_b64) = sign_envelope(&self.private_key, &public_key_bytes, &canonical)?;
+
+        // Create signed envelope
+        let envelope = build_envelope_signed_with_peer(
+            payload,
+            payload_type,
+            &nonce,
+            ts,
+            "ml-dsa-65",
+            "ml-dsa-65",
+            &sig_b64,
+            &pub_b64,
+            "cli-client",
+            Some(kem_pub_b64.as_str()),
+        );
+
+        let resp = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header("x-peer-id", "cli-client") // Identify as CLI client
+            .body(envelope)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "HTTP error {}: {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            ));
+        }
+
+        let response_bytes = resp.bytes().await?.to_vec();
+        println!(
+            "send_unencrypted_request: response_bytes.len()={}",
+            response_bytes.len()
+        );
+
+        Ok(response_bytes)
+    }
+
+    /// Send an encrypted flatbuffer request
+    async fn send_encrypted_request(
+        &self,
+        url: &str,
+        payload: &[u8],
+        payload_type: &str,
+    ) -> Result<Vec<u8>> {
+        let envelope = if let Some(machine_pubkey) = &self.machine_public_key {
+            // Create encrypted envelope with peer_id. Include our KEM public key (base64)
+            let kem_pub_b64 =
+                base64::engine::general_purpose::STANDARD.encode(&self.kem_public_key);
+            protocol::machine::build_encrypted_envelope_with_peer(
+                payload,
+                payload_type,
+                machine_pubkey,
+                &self.private_key,
+                &self.public_key,
+                "cli-client",
+                Some(kem_pub_b64.as_str()),
+            )?
+        } else {
+            // Create unencrypted envelope with peer_id and public key
+            use crypto::sign_envelope;
+            use protocol::machine::{
+                build_envelope_canonical_with_peer, build_envelope_signed_with_peer,
+            };
+
+            // Generate nonce and timestamp
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            std::time::SystemTime::now().hash(&mut hasher);
+            let nonce = format!("{:x}", hasher.finish());
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            // Build canonical envelope for signing (with peer_id).
+            // Include the CLI's advertised KEM public key (base64) in the canonical
+            // bytes so the header-provided KEM key is integrity-protected by the
+            // envelope signature.
+            let kem_pub_b64 =
+                base64::engine::general_purpose::STANDARD.encode(&self.kem_public_key);
+            let canonical = build_envelope_canonical_with_peer(
+                payload,
+                payload_type,
+                &nonce,
+                ts,
+                "ml-dsa-65",
+                "cli-client",
+                Some(kem_pub_b64.as_str()),
+            );
+
+            // Decode sender public key from base64 for signing
+            let sender_pubkey_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&self.public_key)
+                .map_err(|e| anyhow::anyhow!("Failed to decode sender public key: {}", e))?;
+
+            // Sign the canonical envelope
+            let signature = sign_envelope(&self.private_key, &sender_pubkey_bytes, &canonical)?;
+
+            // Build the final signed envelope with unencrypted payload (with peer_id)
+            build_envelope_signed_with_peer(
+                payload,
+                payload_type,
+                &nonce,
+                ts,
+                "ml-dsa-65",
+                "ml-dsa-65",
+                &signature.0,
+                &signature.1,
+                "cli-client",
+                Some(kem_pub_b64.as_str()),
+            )
+        };
+
+        let resp = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header("x-peer-id", "cli-client") // Identify as CLI client
+            .body(envelope)
+            .send()
+            .await?;
+
+        let status = resp.status();
+
+        // Treat 405 Method Not Allowed specially: some clients (flatbuffer clients)
+        // POST envelope payloads and expect the server to return a body even when the
+        // server doesn't consider the request a 'success' status. In that case we
+        // return the response body bytes instead of treating it as an error.
+        if status.as_u16() == 405 {
+            let body_text = resp.text().await?;
+            return Ok(body_text.into_bytes());
+        }
+
+        if !status.is_success() {
+            let body_text = resp.text().await?;
+            anyhow::bail!("Request failed: {} {}", status, body_text);
+        }
+
+        let response_bytes = resp.bytes().await?;
+
+        // Try to decrypt if it looks like an encrypted envelope
+        if response_bytes.len() > 100 && self.machine_public_key.is_some() {
+            println!("send_encrypted_request: response length={}, machine_pubkey available, attempting envelope parsing", response_bytes.len());
+            log::info!("send_encrypted_request: response length={}, machine_pubkey available, attempting envelope parsing", response_bytes.len());
+
+            // Try to parse as envelope first
+            match protocol::machine::root_as_envelope(&response_bytes) {
+                Ok(envelope) => {
+                    println!(
+                        "send_encrypted_request: Detected envelope response, attempting decryption"
+                    );
+                    log::info!(
+                        "send_encrypted_request: Detected envelope response, attempting decryption"
+                    );
+                    println!(
+                        "send_encrypted_request: envelope payload length: {:?}",
+                        envelope.payload().map(|p| p.len())
+                    );
+                    log::info!(
+                        "send_encrypted_request: envelope payload length: {:?}",
+                        envelope.payload().map(|p| p.len())
+                    );
+                    // It's an envelope, try to decrypt
+                    match self.decrypt_from_machine(&response_bytes) {
+                        Ok(decrypted) => {
+                            println!("send_encrypted_request: Decryption successful, decrypted length: {}", decrypted.len());
+                            log::info!("send_encrypted_request: Decryption successful, decrypted length: {}", decrypted.len());
+                            println!(
+                                "send_encrypted_request: first 50 bytes of decrypted: {:?}",
+                                &decrypted[..std::cmp::min(50, decrypted.len())]
+                            );
+                            log::info!(
+                                "send_encrypted_request: first 50 bytes of decrypted: {:?}",
+                                &decrypted[..std::cmp::min(50, decrypted.len())]
+                            );
+                            Ok(decrypted)
+                        }
+                        Err(e) => {
+                            println!("send_encrypted_request: Decryption failed: {:?}, returning raw bytes", e);
+                            log::warn!("send_encrypted_request: Decryption failed: {:?}, returning raw bytes", e);
+                            // Decryption failed, return raw bytes
+                            Ok(response_bytes.to_vec())
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "send_encrypted_request: Not an envelope ({}), server likely sent unencrypted FlatBuffer response",
+                        e
+                    );
+                    log::info!(
+                        "send_encrypted_request: Not an envelope ({}), server likely sent unencrypted FlatBuffer response",
+                        e
+                    );
+                    // Server sent unencrypted FlatBuffer response directly, return as-is
+                    Ok(response_bytes.to_vec())
+                }
+            }
+        } else {
+            println!("send_encrypted_request: response_bytes.len()={}, machine_public_key.is_some()={}, skipping decryption", response_bytes.len(), self.machine_public_key.is_some());
+            log::info!("send_encrypted_request: response_bytes.len()={}, machine_public_key.is_some()={}, skipping decryption", response_bytes.len(), self.machine_public_key.is_some());
+            Ok(response_bytes.to_vec())
         }
     }
 
@@ -25,67 +389,156 @@ impl FlatbufferClient {
         manifest_id: Option<String>,
         operation_id: Option<String>,
     ) -> Result<JsonValue> {
-        // Send flatbuffer envelope directly as binary data
-        let url = format!(
+        let mut url = format!(
             "{}/tenant/{}/tasks",
             self.base_url.trim_end_matches('/'),
             tenant
         );
-        let mut req = self
-            .client
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(manifest_bytes.to_vec());
 
-        // Add metadata as query parameters since we're not using JSON body
+        // Add query parameters
+        let mut query_params = Vec::new();
         if let Some(mid) = manifest_id {
-            req = req.query(&[("manifest_id", mid)]);
+            query_params.push(format!("manifest_id={}", mid));
         }
         if let Some(oid) = operation_id {
-            req = req.query(&[("operation_id", oid)]);
+            query_params.push(format!("operation_id={}", oid));
+        }
+        if !query_params.is_empty() {
+            url.push('?');
+            url.push_str(&query_params.join("&"));
         }
 
-        let resp = req.send().await?;
+        let response_bytes = self
+            .send_unencrypted_request(&url, manifest_bytes, "task_create_request")
+            .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            anyhow::bail!("create_task failed: {} {}", status, body_text);
+        // Try to parse as flatbuffer TaskCreateResponse first
+        match protocol::machine::root_as_task_create_response(&response_bytes) {
+            Ok(task_response) => Ok(serde_json::json!({
+                "ok": task_response.ok(),
+                "task_id": task_response.task_id().unwrap_or(""),
+                "manifest_id": task_response.manifest_id().unwrap_or(""),
+                "selection_window_ms": task_response.selection_window_ms()
+            })),
+            Err(_) => {
+                // Fallback to JSON parsing for compatibility
+                let response_str = String::from_utf8(response_bytes)?;
+                let response_json: JsonValue = serde_json::from_str(&response_str)?;
+                Ok(response_json)
+            }
         }
-
-        let response_json: JsonValue = resp.json().await?;
-        Ok(response_json)
     }
 
     /// Get candidates using flatbuffer capacity request
     pub async fn get_candidates(&self, tenant: &str, task_id: &str) -> Result<Vec<String>> {
+        println!(
+            "get_candidates: called with tenant={}, task_id={}",
+            tenant, task_id
+        );
+        log::info!(
+            "get_candidates: called with tenant={}, task_id={}",
+            tenant,
+            task_id
+        );
         let url = format!(
             "{}/tenant/{}/tasks/{}/candidates",
             self.base_url.trim_end_matches('/'),
             tenant,
             task_id
         );
-        let resp = self.client.get(&url).send().await?;
+        println!("get_candidates: requesting URL: {}", url);
+        log::info!("get_candidates: requesting URL: {}", url);
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            anyhow::bail!("get_candidates failed: {} {}", status, body_text);
+        // Send empty payload for GET-like request
+        println!("get_candidates: sending request...");
+        log::info!("get_candidates: sending request...");
+        let response_bytes = self
+            .send_encrypted_request(&url, &[], "candidates_request")
+            .await?;
+        println!(
+            "get_candidates: received response, {} bytes",
+            response_bytes.len()
+        );
+        log::info!(
+            "get_candidates: received response, {} bytes",
+            response_bytes.len()
+        );
+
+        // Try to parse as flatbuffer CandidatesResponse first
+        println!(
+            "get_candidates: attempting to parse {} bytes as flatbuffer",
+            response_bytes.len()
+        );
+        log::info!(
+            "get_candidates: attempting to parse {} bytes as flatbuffer",
+            response_bytes.len()
+        );
+        match protocol::machine::root_as_candidates_response(&response_bytes) {
+            Ok(candidates_response) => {
+                println!(
+                    "get_candidates: successfully parsed flatbuffer, ok={}",
+                    candidates_response.ok()
+                );
+                log::info!(
+                    "get_candidates: successfully parsed flatbuffer, ok={}",
+                    candidates_response.ok()
+                );
+                if candidates_response.ok() {
+                    let responders: Vec<String> = candidates_response
+                        .candidates()
+                        .map(|v| {
+                            v.iter()
+                                .filter_map(|candidate| candidate.peer_id())
+                                .map(|s| s.to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    println!("get_candidates: found {} responders", responders.len());
+                    log::info!("get_candidates: found {} responders", responders.len());
+                    Ok(responders)
+                } else {
+                    println!("get_candidates: flatbuffer indicates error, returning empty");
+                    log::warn!("get_candidates: flatbuffer indicates error, returning empty");
+                    Ok(vec![])
+                }
+            }
+            Err(e) => {
+                // Fallback to JSON parsing for compatibility
+                println!("get_candidates: flatbuffer parsing failed: {:?}", e);
+                log::warn!("Failed to parse candidates response as flatbuffer: {:?}", e);
+                println!(
+                    "get_candidates: first 100 bytes of response: {:?}",
+                    &response_bytes[..std::cmp::min(100, response_bytes.len())]
+                );
+                log::warn!(
+                    "First 100 bytes of response: {:?}",
+                    &response_bytes[..std::cmp::min(100, response_bytes.len())]
+                );
+                let response_str = String::from_utf8(response_bytes.clone())?;
+                log::warn!(
+                    "Response string length: {}, content: '{}'",
+                    response_str.len(),
+                    response_str
+                );
+                if response_str.trim().is_empty() {
+                    log::warn!("Response is empty, returning empty candidates list");
+                    return Ok(vec![]);
+                }
+                let response_json: JsonValue = serde_json::from_str(&response_str)?;
+                let responders = response_json
+                    .get("responders")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let peers: Vec<String> = responders
+                    .into_iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+
+                Ok(peers)
+            }
         }
-
-        let response_json: JsonValue = resp.json().await?;
-        let responders = response_json
-            .get("responders")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        let peers: Vec<String> = responders
-            .into_iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect();
-
-        Ok(peers)
     }
 
     /// Distribute keyshares using flatbuffer envelope
@@ -118,22 +571,29 @@ impl FlatbufferClient {
             tenant,
             task_id
         );
-        let resp = self
-            .client
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(flatbuffer_data)
-            .send()
+
+        let response_bytes = self
+            .send_encrypted_request(&url, &flatbuffer_data, "distribute_shares_request")
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            anyhow::bail!("distribute_shares failed: {} {}", status, body_text);
+        // Try to parse as flatbuffer DistributeSharesResponse first
+        match protocol::machine::root_as_distribute_shares_response(&response_bytes) {
+            Ok(shares_response) => {
+                let results_json = shares_response.results_json().unwrap_or("{}");
+                let results: JsonValue =
+                    serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+                Ok(serde_json::json!({
+                    "ok": shares_response.ok(),
+                    "results": results
+                }))
+            }
+            Err(_) => {
+                // Fallback to JSON parsing for compatibility
+                let response_str = String::from_utf8(response_bytes)?;
+                let response_json: JsonValue = serde_json::from_str(&response_str)?;
+                Ok(response_json)
+            }
         }
-
-        let response_json: JsonValue = resp.json().await?;
-        Ok(response_json)
     }
 
     /// Distribute keyshares using pure flatbuffer envelopes
@@ -167,26 +627,60 @@ impl FlatbufferClient {
             tenant,
             task_id
         );
-        let resp = self
-            .client
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(flatbuffer_data)
-            .send()
+
+        let response_bytes = self
+            .send_encrypted_request(&url, &flatbuffer_data, "distribute_shares_request")
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            anyhow::bail!(
-                "distribute_shares_flatbuffer failed: {} {}",
-                status,
-                body_text
-            );
+        // Try to parse as flatbuffer DistributeSharesResponse first
+        match protocol::machine::root_as_distribute_shares_response(&response_bytes) {
+            Ok(shares_response) => {
+                let results_json = shares_response.results_json().unwrap_or("{}");
+                let results: JsonValue =
+                    serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+                Ok(serde_json::json!({
+                    "ok": shares_response.ok(),
+                    "results": results
+                }))
+            }
+            Err(e) => {
+                // Fallback to JSON parsing for compatibility
+                log::warn!(
+                    "Failed to parse distribute_shares response as flatbuffer: {:?}",
+                    e
+                );
+                match String::from_utf8(response_bytes.clone()) {
+                    Ok(response_str) => {
+                        log::warn!(
+                            "Response string length: {}, content preview: '{}'",
+                            response_str.len(),
+                            response_str.chars().take(100).collect::<String>()
+                        );
+                        if response_str.trim().is_empty() {
+                            log::warn!("Response is empty, returning default response");
+                            return Ok(
+                                serde_json::json!({"ok": false, "error": "empty response", "results": {}}),
+                            );
+                        }
+                        match serde_json::from_str(&response_str) {
+                            Ok(response_json) => Ok(response_json),
+                            Err(json_err) => {
+                                log::warn!("Failed to parse as JSON: {:?}", json_err);
+                                Ok(
+                                    serde_json::json!({"ok": false, "error": "invalid response format", "results": {}}),
+                                )
+                            }
+                        }
+                    }
+                    Err(utf8_err) => {
+                        log::warn!("Failed to convert response to UTF-8: {:?}", utf8_err);
+                        Ok(
+                            serde_json::json!({"ok": false, "error": "invalid utf-8 response", "results": {}}),
+                        )
+                    }
+                }
+            }
         }
-
-        let response_json: JsonValue = resp.json().await?;
-        Ok(response_json)
     }
 
     /// Distribute capability tokens using flatbuffer envelope
@@ -200,9 +694,14 @@ impl FlatbufferClient {
         let fb_targets: Vec<(String, String)> = targets
             .iter()
             .map(|t| {
+                let b64_capability = base64::engine::general_purpose::STANDARD.encode(&t.payload);
+                eprintln!("CLI: Encoding capability for {}: payload_len={}, b64_len={}, raw_bytes_prefix={:02x?}",
+                         t.peer_id, t.payload.len(), b64_capability.len(),
+                         &t.payload[..std::cmp::min(20, t.payload.len())]);
+                eprintln!("CLI: Base64 capability prefix={}", &b64_capability[..std::cmp::min(100, b64_capability.len())]);
                 (
                     t.peer_id.clone(),
-                    serde_json::to_string(&t.payload).unwrap_or_default(),
+                    b64_capability,
                 )
             })
             .collect();
@@ -216,22 +715,60 @@ impl FlatbufferClient {
             tenant,
             task_id
         );
-        let resp = self
-            .client
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(flatbuffer_data)
-            .send()
+
+        let response_bytes = self
+            .send_encrypted_request(&url, &flatbuffer_data, "distribute_capabilities_request")
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            anyhow::bail!("distribute_capabilities failed: {} {}", status, body_text);
+        // Try to parse as flatbuffer DistributeCapabilitiesResponse first
+        match protocol::machine::root_as_distribute_capabilities_response(&response_bytes) {
+            Ok(capabilities_response) => {
+                let results_json = capabilities_response.results_json().unwrap_or("{}");
+                let results: JsonValue =
+                    serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+                Ok(serde_json::json!({
+                    "ok": capabilities_response.ok(),
+                    "results": results
+                }))
+            }
+            Err(e) => {
+                // Fallback to JSON parsing for compatibility
+                log::warn!(
+                    "Failed to parse distribute_capabilities response as flatbuffer: {:?}",
+                    e
+                );
+                match String::from_utf8(response_bytes.clone()) {
+                    Ok(response_str) => {
+                        log::warn!(
+                            "Response string length: {}, content preview: '{}'",
+                            response_str.len(),
+                            response_str.chars().take(100).collect::<String>()
+                        );
+                        if response_str.trim().is_empty() {
+                            log::warn!("Response is empty, returning default response");
+                            return Ok(
+                                serde_json::json!({"ok": false, "error": "empty response", "results": {}}),
+                            );
+                        }
+                        match serde_json::from_str(&response_str) {
+                            Ok(response_json) => Ok(response_json),
+                            Err(json_err) => {
+                                log::warn!("Failed to parse as JSON: {:?}", json_err);
+                                Ok(
+                                    serde_json::json!({"ok": false, "error": "invalid response format", "results": {}}),
+                                )
+                            }
+                        }
+                    }
+                    Err(utf8_err) => {
+                        log::warn!("Failed to convert response to UTF-8: {:?}", utf8_err);
+                        Ok(
+                            serde_json::json!({"ok": false, "error": "invalid utf-8 response", "results": {}}),
+                        )
+                    }
+                }
+            }
         }
-
-        let response_json: JsonValue = resp.json().await?;
-        Ok(response_json)
     }
 
     /// Assign task using flatbuffer apply request
@@ -241,6 +778,13 @@ impl FlatbufferClient {
         task_id: &str,
         chosen_peers: Vec<String>,
     ) -> Result<JsonValue> {
+        log::info!(
+            "assign_task called with tenant={}, task_id={}, chosen_peers={:?}",
+            tenant,
+            task_id,
+            chosen_peers
+        );
+
         // Create flatbuffer request
         let flatbuffer_data = machine::build_assign_request(&chosen_peers);
 
@@ -250,22 +794,76 @@ impl FlatbufferClient {
             tenant,
             task_id
         );
-        let resp = self
-            .client
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(flatbuffer_data)
-            .send()
+
+        let response_bytes = self
+            .send_encrypted_request(&url, &flatbuffer_data, "assign_request")
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            anyhow::bail!("assign_task failed: {} {}", status, body_text);
-        }
+        log::info!(
+            "assign_task response_bytes length: {}",
+            response_bytes.len()
+        );
+        log::info!(
+            "assign_task response_bytes preview: {:?}",
+            &response_bytes[..std::cmp::min(50, response_bytes.len())]
+        );
 
-        let response_json: JsonValue = resp.json().await?;
-        Ok(response_json)
+        // Try to parse as flatbuffer AssignResponse first
+        match protocol::machine::root_as_assign_response(&response_bytes) {
+            Ok(assign_response) => {
+                let assigned_peers: Vec<String> = assign_response
+                    .assigned_peers()
+                    .map(|v| v.iter().map(|s| s.to_string()).collect())
+                    .unwrap_or_default();
+                let per_peer_json = assign_response.per_peer_results_json().unwrap_or("{}");
+                let per_peer: JsonValue =
+                    serde_json::from_str(per_peer_json).unwrap_or(serde_json::json!({}));
+
+                Ok(serde_json::json!({
+                    "ok": assign_response.ok(),
+                    "task_id": assign_response.task_id().unwrap_or(""),
+                    "assigned_peers": assigned_peers,
+                    "per_peer": per_peer
+                }))
+            }
+            Err(e) => {
+                // Fallback to JSON parsing for compatibility
+                log::warn!(
+                    "Failed to parse assign_task response as flatbuffer: {:?}",
+                    e
+                );
+                match String::from_utf8(response_bytes.clone()) {
+                    Ok(response_str) => {
+                        log::warn!(
+                            "Response string length: {}, content preview: '{}'",
+                            response_str.len(),
+                            response_str.chars().take(100).collect::<String>()
+                        );
+                        if response_str.trim().is_empty() {
+                            log::warn!("Response is empty, returning default response");
+                            return Ok(
+                                serde_json::json!({"ok": false, "error": "empty response", "task_id": "", "assigned_peers": [], "per_peer": {}}),
+                            );
+                        }
+                        match serde_json::from_str(&response_str) {
+                            Ok(response_json) => Ok(response_json),
+                            Err(json_err) => {
+                                log::warn!("Failed to parse as JSON: {:?}", json_err);
+                                Ok(
+                                    serde_json::json!({"ok": false, "error": "invalid response format", "task_id": "", "assigned_peers": [], "per_peer": {}}),
+                                )
+                            }
+                        }
+                    }
+                    Err(utf8_err) => {
+                        log::warn!("Failed to convert response to UTF-8: {:?}", utf8_err);
+                        Ok(
+                            serde_json::json!({"ok": false, "error": "invalid utf-8 response", "task_id": "", "assigned_peers": [], "per_peer": {}}),
+                        )
+                    }
+                }
+            }
+        }
     }
 
     /// Get manifest ID for a task
@@ -276,15 +874,14 @@ impl FlatbufferClient {
             tenant,
             task_id
         );
-        let resp = self.client.get(&url).send().await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            anyhow::bail!("get_task_manifest_id failed: {} {}", status, body_text);
-        }
+        let response_bytes = self
+            .send_encrypted_request(&url, &[], "manifest_id_request")
+            .await?;
 
-        let response_json: JsonValue = resp.json().await?;
+        // Try to parse as flatbuffer response first
+        let response_str = String::from_utf8(response_bytes)?;
+        let response_json: JsonValue = serde_json::from_str(&response_str)?;
         let manifest_id = response_json
             .get("manifest_id")
             .and_then(|v| v.as_str())
@@ -292,6 +889,96 @@ impl FlatbufferClient {
             .to_string();
 
         Ok(manifest_id)
+    }
+
+    /// Apply manifest using flatbuffer envelope
+    pub async fn apply_manifest(
+        &self,
+        tenant: &str,
+        manifest_envelope_json: &str,
+        shares_envelope_json: Option<&str>,
+    ) -> Result<JsonValue> {
+        // Create flatbuffer ApplyManifestRequest
+        let flatbuffer_data =
+            machine::build_apply_manifest_request(manifest_envelope_json, shares_envelope_json);
+
+        let url = format!(
+            "{}/tenant/{}/apply_manifest",
+            self.base_url.trim_end_matches('/'),
+            tenant
+        );
+
+        let response_bytes = self
+            .send_encrypted_request(&url, &flatbuffer_data, "apply_manifest_request")
+            .await?;
+
+        // Try to parse as flatbuffer ApplyManifestResponse first
+        match protocol::machine::root_as_apply_manifest_response(&response_bytes) {
+            Ok(manifest_response) => {
+                let assigned_peers: Vec<String> = manifest_response
+                    .assigned_peers()
+                    .map(|v| v.iter().map(|s| s.to_string()).collect())
+                    .unwrap_or_default();
+                let per_peer_json = manifest_response.per_peer_results_json().unwrap_or("{}");
+                let per_peer: JsonValue =
+                    serde_json::from_str(per_peer_json).unwrap_or(serde_json::json!({}));
+
+                Ok(serde_json::json!({
+                    "ok": manifest_response.ok(),
+                    "tenant": manifest_response.tenant().unwrap_or(""),
+                    "replicas_requested": manifest_response.replicas_requested(),
+                    "assigned_peers": assigned_peers,
+                    "per_peer": per_peer
+                }))
+            }
+            Err(_) => {
+                // Fallback to JSON parsing for compatibility
+                let response_str = String::from_utf8(response_bytes)?;
+                let response_json: JsonValue = serde_json::from_str(&response_str)?;
+                Ok(response_json)
+            }
+        }
+    }
+
+    /// Apply keyshares using flatbuffer envelope
+    pub async fn apply_keyshares(
+        &self,
+        tenant: &str,
+        shares_envelope_json: &str,
+        targets_json: &str,
+    ) -> Result<JsonValue> {
+        // Create flatbuffer ApplyKeySharesRequest
+        let flatbuffer_data =
+            machine::build_apply_keyshares_request(shares_envelope_json, targets_json);
+
+        let url = format!(
+            "{}/tenant/{}/apply_keyshares",
+            self.base_url.trim_end_matches('/'),
+            tenant
+        );
+
+        let response_bytes = self
+            .send_encrypted_request(&url, &flatbuffer_data, "apply_keyshares_request")
+            .await?;
+
+        // Try to parse as flatbuffer ApplyKeySharesResponse first
+        match protocol::machine::root_as_apply_key_shares_response(&response_bytes) {
+            Ok(keyshares_response) => {
+                let results_json = keyshares_response.results_json().unwrap_or("{}");
+                let results: JsonValue =
+                    serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+                Ok(serde_json::json!({
+                    "ok": keyshares_response.ok(),
+                    "results": results
+                }))
+            }
+            Err(_) => {
+                // Fallback to JSON parsing for compatibility
+                let response_str = String::from_utf8(response_bytes)?;
+                let response_json: JsonValue = serde_json::from_str(&response_str)?;
+                Ok(response_json)
+            }
+        }
     }
 }
 
@@ -305,7 +992,7 @@ pub struct ShareTarget {
 #[derive(Debug, Clone)]
 pub struct CapabilityTarget {
     pub peer_id: String,
-    pub payload: JsonValue,
+    pub payload: Vec<u8>,
 }
 
 /// Build a flatbuffer envelope from JSON envelope data
@@ -335,6 +1022,7 @@ pub fn build_flatbuffer_envelope(
         sig_prefix,
         sig_b64,
         pubkey,
+        None,
     )
 }
 

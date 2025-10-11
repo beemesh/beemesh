@@ -105,6 +105,7 @@ mod tests {
             &nonce,
             timestamp,
             alg,
+            None,
         );
         let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("sign");
 
@@ -118,6 +119,7 @@ mod tests {
             "ml-dsa-65",
             &sig_b64,
             &pub_b64,
+            None,
         );
 
         // First verification should succeed

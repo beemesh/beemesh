@@ -54,18 +54,19 @@ pub async fn handle_query_capacity_with_payload(
                         .as_millis() as u64;
                     let nonce = format!("capacity_query_{}", rand::random::<u32>());
 
-                    // Build canonical envelope bytes
+                    // Build canonical envelope bytes (include optional kem_pub arg)
                     let canonical_bytes = protocol::machine::build_envelope_canonical(
                         &finished,
                         "capacity",
                         &nonce,
                         timestamp,
                         "ml-dsa-65",
+                        None,
                     );
 
                     match crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
                         Ok((sig_b64, pub_b64)) => {
-                            // Create signed envelope
+                            // Create signed envelope (include optional kem_pub arg)
                             let signed_envelope = protocol::machine::build_envelope_signed(
                                 &finished,
                                 "capacity",
@@ -75,6 +76,7 @@ pub async fn handle_query_capacity_with_payload(
                                 "ml-dsa-65",
                                 &sig_b64,
                                 &pub_b64,
+                                None,
                             );
 
                             // Send the capacity request as a request-response to all known peers.

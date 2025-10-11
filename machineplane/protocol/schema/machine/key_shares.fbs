@@ -1,0 +1,17 @@
+namespace beemesh.machine;
+
+// KeyShares - contains encrypted key shares and metadata for a manifest
+table KeyShares {
+    // Base64-encoded key shares
+    shares: [string];
+    // Number of total shares (n)
+    n: uint32;
+    // Threshold number of shares needed (k)
+    k: uint32;
+    // Total count of shares
+    count: uint32;
+    // Optional manifest ID this share belongs to
+    manifest_id: string;
+}
+
+root_type KeyShares;

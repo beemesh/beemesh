@@ -1,11 +1,10 @@
 # Beemesh
 
-Beemesh is a decentralized, lock-free orchestration system that turns any device — cloud, on-prem, edge, or IoT — into an interchangeable compute resource. It scales out by eliminating the centralized control plane, enabling secure, self-healing workloads across highly dynamic environments. Beemesh eventually allows to run a part of kubernetes workloads / manifests with a compatibility layer. The workload plane is strictly focusing on scheduling and running workloads, it does not contain any service mesh like behavior, the service mesh is implemented separate in the workload plane.
+Beemesh is a decentralized, lock-free orchestration system that turns any device into an interchangeable compute resource through a decentralized scheduler. The workload plane is strictly focusing on scheduling and running workloads, it does not contain any service mesh like behavior.
 
 ## Principles
 
-* The solution prioritizes decentralization through libp2p and zero-trust by encrypting and signing all communication.
-* All content must always be encrypted with post-quantum algorithms and messages must be signed end-to-end
+* The solution prioritizes decentralization through libp2p and zero-trust by encrypting and signing all communication and encrypting with the receivers kem public key through functions in the crypto crate.
 * The machine plane listen should check for node failure and restart crashed containers and reschedule workloads on failed nodes, but does not handle any workload communication as this is handled by the machine plane (strict segregation and zero trust, the workload plane does not trust the machine plane).
 
 ## Code Layout
@@ -37,7 +36,6 @@ The machineplane consists of the following crates:
 
 ## Architecture
 
-Beemesh consists of
 The complete architecture is described in the [Architecture Document](../README.md).
 
 ## Build and Run Instructions

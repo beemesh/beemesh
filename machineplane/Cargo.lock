@@ -3107,6 +3107,7 @@ dependencies = [
  "crypto",
  "flatbuffers 25.2.10",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

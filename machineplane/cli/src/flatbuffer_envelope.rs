@@ -1,15 +1,31 @@
 use anyhow::Result;
 use base64::Engine;
 use crypto::sign_envelope;
-use protocol::machine::{build_envelope_canonical, build_envelope_signed, root_as_envelope};
+use protocol::machine::{
+    build_envelope_canonical, build_envelope_canonical_with_peer, build_envelope_signed_with_peer,
+    root_as_envelope,
+};
 use serde_json::Value as JsonValue;
 
 /// Helper for building flatbuffer Envelopes instead of JSON
-pub struct FlatbufferEnvelopeBuilder;
+pub struct FlatbufferEnvelopeBuilder {
+    peer_id: String,
+    public_key: String,
+}
 
 impl FlatbufferEnvelopeBuilder {
     pub fn new() -> Self {
-        Self
+        Self {
+            peer_id: "cli-client".to_string(),
+            public_key: String::new(),
+        }
+    }
+
+    pub fn with_keys(peer_id: String, public_key: String) -> Self {
+        Self {
+            peer_id,
+            public_key,
+        }
     }
 
     /// Build a manifest envelope containing encrypted manifest payload
@@ -21,13 +37,45 @@ impl FlatbufferEnvelopeBuilder {
         k: usize,
         count: usize,
     ) -> Result<Vec<u8>> {
-        // Create a simple payload containing the encrypted data and metadata
-        let payload_json = serde_json::json!({
-            "payload": base64::engine::general_purpose::STANDARD.encode(ciphertext),
-            "nonce": base64::engine::general_purpose::STANDARD.encode(nonce_bytes),
-            "shares_meta": { "n": n, "k": k, "count": count },
-        });
-        let payload_bytes = serde_json::to_vec(&payload_json)?;
+        // Create an EncryptedManifest flatbuffer instead of JSON
+        let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(ciphertext);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let encrypted_manifest_fb = protocol::machine::build_encrypted_manifest(
+            &nonce_b64,
+            &payload_b64,
+            "aes-256-gcm",      // encryption algorithm
+            k as u32,           // threshold (k)
+            n as u32,           // total_shares (n)
+            Some("kubernetes"), // manifest_type
+            &[],                // labels (empty)
+            ts,                 // encrypted_at
+            None,               // content_hash
+        );
+        eprintln!(
+            "CLI: Created EncryptedManifest flatbuffer len={}, first_20_bytes={:02x?}",
+            encrypted_manifest_fb.len(),
+            &encrypted_manifest_fb[..std::cmp::min(20, encrypted_manifest_fb.len())]
+        );
+
+        // Test if the created flatbuffer is valid
+        match protocol::machine::root_as_encrypted_manifest(&encrypted_manifest_fb) {
+            Ok(test_manifest) => {
+                eprintln!(
+                    "CLI: EncryptedManifest validation PASSED - nonce={}, payload_len={}",
+                    test_manifest.nonce().unwrap_or(""),
+                    test_manifest.payload().unwrap_or("").len()
+                );
+            }
+            Err(e) => {
+                eprintln!("CLI: EncryptedManifest validation FAILED: {}", e);
+            }
+        }
+
+        let payload_bytes = encrypted_manifest_fb;
 
         let envelope_nonce: [u8; 16] = rand::random();
         let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
@@ -42,6 +90,7 @@ impl FlatbufferEnvelopeBuilder {
             &nonce_str,
             ts,
             "ml-dsa-65",
+            None,
         ))
     }
 
@@ -60,12 +109,14 @@ impl FlatbufferEnvelopeBuilder {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        Ok(build_envelope_canonical(
+        Ok(build_envelope_canonical_with_peer(
             payload_bytes,
             payload_type,
             &nonce_str,
             ts,
             "ml-dsa-65",
+            &self.peer_id,
+            None,
         ))
     }
 
@@ -76,12 +127,16 @@ impl FlatbufferEnvelopeBuilder {
         n: usize,
         k: usize,
         count: usize,
+        manifest_id: &str,
     ) -> Result<Vec<u8>> {
-        let shares_payload = serde_json::json!({
-            "shares": shares_b64,
-            "shares_meta": { "n": n, "k": k, "count": count }
-        });
-        let payload_bytes = serde_json::to_vec(&shares_payload)?;
+        // Use flatbuffer instead of JSON for shares data
+        let shares_fb = protocol::machine::build_key_shares(
+            shares_b64,
+            n as u32,
+            k as u32,
+            count as u32,
+            manifest_id,
+        );
 
         let envelope_nonce: [u8; 16] = rand::random();
         let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
@@ -90,67 +145,52 @@ impl FlatbufferEnvelopeBuilder {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        Ok(build_envelope_canonical(
-            &payload_bytes,
+        Ok(build_envelope_canonical_with_peer(
+            &shares_fb,
             "shares",
             &nonce_str,
             ts,
             "ml-dsa-65",
+            &self.peer_id,
+            None,
         ))
     }
 
-    /// Build a capability token envelope - creates JSON format compatible with existing verification
+    /// Build a capability token envelope - creates flatbuffer format for machine REST API
     pub fn build_capability_envelope(
         &mut self,
         manifest_id: &str,
         peer_id: &str,
         ts: u64,
     ) -> Result<Vec<u8>> {
-        // Create capability token payload (this goes inside the envelope payload field)
-        let token_obj = serde_json::json!({
-            "task_id": manifest_id,
-            "issuer": "cli",
-            "required_quorum": 1,
-            "caveats": { "authorized_peer": peer_id },
-            "ts": ts,
-        });
-        let token_bytes = serde_json::to_vec(&token_obj)?;
+        // Create capability token using flatbuffer (not JSON)
+        let expires_at = ts + 300_000; // 5 minutes from now
+        let token_bytes = protocol::machine::build_capability_token(
+            manifest_id,
+            "cli",   // issuer
+            peer_id, // authorized_peer
+            ts,      // issued_at
+            expires_at,
+        );
 
         let envelope_nonce: [u8; 16] = rand::random();
         let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
 
-        // Create envelope in the exact format expected by security verification
-        // This matches what send_apply_request.rs creates (lines 144-146)
-        let mut envelope = serde_json::Map::new();
-        envelope.insert(
-            "payload".to_string(),
-            serde_json::Value::String(
-                base64::engine::general_purpose::STANDARD.encode(&token_bytes),
-            ),
-        );
-        envelope.insert(
-            "manifest_id".to_string(),
-            serde_json::Value::String(manifest_id.to_string()),
-        );
-        envelope.insert(
-            "type".to_string(),
-            serde_json::Value::String("capability".to_string()),
-        );
-        envelope.insert("nonce".to_string(), serde_json::Value::String(nonce_str));
-        envelope.insert("ts".to_string(), serde_json::Value::Number(ts.into()));
-        envelope.insert(
-            "alg".to_string(),
-            serde_json::Value::String("ml-dsa-65".to_string()),
-        );
-
-        let envelope_value = serde_json::Value::Object(envelope);
-        let envelope_bytes = serde_json::to_vec(&envelope_value)?;
-
-        Ok(envelope_bytes)
+        // Create flatbuffer envelope (not JSON) for machine REST API compatibility
+        Ok(build_envelope_canonical_with_peer(
+            &token_bytes,
+            "capability",
+            &nonce_str,
+            ts,
+            "ml-dsa-65",
+            &self.peer_id,
+            None,
+        ))
     }
 
     /// Add signature and pubkey to an existing envelope
     pub fn sign_envelope(
+        &self,
         envelope_bytes: &[u8],
         sk_bytes: &[u8],
         pk_bytes: &[u8],
@@ -167,7 +207,7 @@ impl FlatbufferEnvelopeBuilder {
                 let canonical_bytes = serde_json::to_vec(&canonical_value)?;
 
                 // Sign the canonical bytes
-                let (sig_b64, pub_b64) = sign_envelope(sk_bytes, pk_bytes, &canonical_bytes)?;
+                let (sig_b64, _pub_b64) = sign_envelope(sk_bytes, pk_bytes, &canonical_bytes)?;
 
                 // Add signature and pubkey to the original envelope
                 let mut signed_obj = obj.clone();
@@ -175,22 +215,35 @@ impl FlatbufferEnvelopeBuilder {
                     "sig".to_string(),
                     serde_json::Value::String(format!("ml-dsa-65:{}", sig_b64)),
                 );
-                signed_obj.insert("pubkey".to_string(), serde_json::Value::String(pub_b64));
+                signed_obj.insert(
+                    "pubkey".to_string(),
+                    serde_json::Value::String(self.public_key.clone()),
+                );
                 let signed_envelope = serde_json::Value::Object(signed_obj);
                 return Ok(serde_json::to_vec(&signed_envelope)?);
             }
         }
 
-        // Fall back to flatbuffer handling - sign the entire envelope bytes for flatbuffers
-        let (sig_b64, pub_b64) = sign_envelope(sk_bytes, pk_bytes, envelope_bytes)?;
-
+        // Fall back to flatbuffer handling - reconstruct canonical bytes for signing (same as verification)
         let envelope = root_as_envelope(envelope_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to parse envelope: {}", e))?;
 
         // Build signed envelope using protocol helper
         let payload_bytes = envelope.payload().map(|v| v.bytes()).unwrap_or(&[]);
 
-        Ok(build_envelope_signed(
+        // Reconstruct canonical bytes using the same method as verification
+        let canonical_bytes = protocol::machine::build_envelope_canonical(
+            payload_bytes,
+            envelope.payload_type().unwrap_or(""),
+            envelope.nonce().unwrap_or(""),
+            envelope.ts(),
+            envelope.alg().unwrap_or(""),
+            None,
+        );
+
+        let (sig_b64, _pub_b64) = sign_envelope(sk_bytes, pk_bytes, &canonical_bytes)?;
+
+        Ok(build_envelope_signed_with_peer(
             payload_bytes,
             envelope.payload_type().unwrap_or(""),
             envelope.nonce().unwrap_or(""),
@@ -198,7 +251,9 @@ impl FlatbufferEnvelopeBuilder {
             "ml-dsa-65",
             "ml-dsa-65",
             &sig_b64,
-            &pub_b64,
+            &self.public_key, // Use the stored public key instead of pub_b64
+            &self.peer_id,
+            None,
         ))
     }
 }

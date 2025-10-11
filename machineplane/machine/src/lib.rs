@@ -1,6 +1,7 @@
 // logging macros are used in submodules; keep root lean
-use std::io::Write;
+use base64::Engine;
 use clap::Parser;
+use std::io::Write;
 
 mod hostapi;
 pub mod libp2p_beemesh;
@@ -77,8 +78,8 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         kp
     } else {
         // Store keypair in configured key_dir (default /etc/beemesh/machine)
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         use std::fs::OpenOptions;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
         let mut key_path = std::path::PathBuf::from(&cli.key_dir);
         // try to create and set secure perms; on failure, fall back to $HOME/.beemesh
@@ -92,7 +93,11 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         };
 
         if let Err(e) = ensure_dir(&key_path) {
-            log::warn!("could not create/set permissions for {}: {}. Falling back to $HOME/.beemesh", key_path.display(), e);
+            log::warn!(
+                "could not create/set permissions for {}: {}. Falling back to $HOME/.beemesh",
+                key_path.display(),
+                e
+            );
             if let Some(home) = dirs::home_dir() {
                 key_path = home.join(crypto::KEY_DIR);
                 ensure_dir(&key_path)?;
@@ -113,7 +118,9 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
             kp
         } else {
             let dsa = saorsa_pqc::api::sig::ml_dsa_65();
-            let (pubk, privk) = dsa.generate_keypair().map_err(|e| anyhow::anyhow!("dsa generate_keypair failed: {:?}", e))?;
+            let (pubk, privk) = dsa
+                .generate_keypair()
+                .map_err(|e| anyhow::anyhow!("dsa generate_keypair failed: {:?}", e))?;
             let pk_bytes = pubk.to_bytes();
             let sk_bytes = privk.to_bytes();
 
@@ -138,19 +145,37 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
     // If a bootstrap peer is provided, dial it explicitly (for in-process tests)
     if let Some(addr) = &cli.bootstrap_peer {
         match addr.parse::<libp2p::multiaddr::Multiaddr>() {
-            Ok(ma) => {
-                match swarm.dial(ma) {
-                    Ok(_) => log::info!("Dialing bootstrap peer: {}", addr),
-                    Err(e) => log::warn!("Failed to dial bootstrap peer {}: {}", addr, e),
-                }
-            }
+            Ok(ma) => match swarm.dial(ma) {
+                Ok(_) => log::info!("Dialing bootstrap peer: {}", addr),
+                Err(e) => log::warn!("Failed to dial bootstrap peer {}: {}", addr, e),
+            },
             Err(e) => log::warn!("Invalid bootstrap peer address {}: {}", addr, e),
         }
     }
 
+    // Initialize envelope handler for encrypted communication
+    // Use KEM private key for decryption and signing public key for serving via legacy endpoint
+    let envelope_handler = {
+        // Get KEM keypair for decryption of encrypted requests
+        let (_kem_pk_bytes, kem_sk_bytes) = crypto::ensure_kem_keypair_on_disk()
+            .map_err(|e| anyhow::anyhow!("Failed to get KEM keypair: {}", e))?;
+
+        // Get signing keypair for legacy /api/v1/pubkey endpoint compatibility
+        let (signing_pk_bytes, _signing_sk_bytes) = crypto::ensure_keypair_on_disk()
+            .map_err(|e| anyhow::anyhow!("Failed to get signing keypair: {}", e))?;
+        let signing_public_key_b64 =
+            base64::engine::general_purpose::STANDARD.encode(&signing_pk_bytes);
+
+        std::sync::Arc::new(restapi::envelope_handler::EnvelopeHandler::new(
+            kem_sk_bytes,           // KEM private key for decryption
+            signing_public_key_b64, // Signing public key for legacy endpoint
+        ))
+    };
+
     // control channel for libp2p (from REST handlers to libp2p task)
-    let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel::<libp2p_beemesh::control::Libp2pControl>();
-    
+    let (control_tx, control_rx) =
+        tokio::sync::mpsc::unbounded_channel::<libp2p_beemesh::control::Libp2pControl>();
+
     // Set the global control sender for distributed operations
     libp2p_beemesh::set_control_sender(control_tx.clone());
 
@@ -166,7 +191,15 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         } else {
             None
         };
-        if let Err(e) = libp2p_beemesh::start_libp2p_node(swarm, topic, peer_tx, control_rx, keystore_shared_name).await {
+        if let Err(e) = libp2p_beemesh::start_libp2p_node(
+            swarm,
+            topic,
+            peer_tx,
+            control_rx,
+            keystore_shared_name,
+        )
+        .await
+        {
             log::error!("libp2p node error: {}", e);
         }
     });
@@ -180,7 +213,12 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         } else {
             None
         };
-        let app = restapi::build_router(peer_rx, control_tx.clone(), shared_name);
+        let app = restapi::build_router(
+            peer_rx,
+            control_tx.clone(),
+            shared_name,
+            envelope_handler.clone(),
+        );
 
         // Public TCP server
         let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);
@@ -210,11 +248,18 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
                             #[cfg(unix)]
                             {
                                 use std::os::unix::fs::PermissionsExt;
-                                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755));
+                                let _ = std::fs::set_permissions(
+                                    parent,
+                                    std::fs::Permissions::from_mode(0o755),
+                                );
                             }
                         }
                         Err(e) => {
-                            log::warn!("could not create parent dir for UDS {}: {}. Skipping host API.", parent.display(), e);
+                            log::warn!(
+                                "could not create parent dir for UDS {}: {}. Skipping host API.",
+                                parent.display(),
+                                e
+                            );
                             start_uds = false;
                         }
                     }

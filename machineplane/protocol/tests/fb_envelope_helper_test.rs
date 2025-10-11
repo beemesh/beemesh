@@ -1,5 +1,5 @@
-use protocol::machine::{ build_envelope_signed, fb_envelope_extract_sig_pub };
-use crypto::{ ensure_pqc_init, ensure_keypair_ephemeral, sign_envelope };
+use crypto::{ensure_keypair_ephemeral, ensure_pqc_init, sign_envelope};
+use protocol::machine::{build_envelope_signed, fb_envelope_extract_sig_pub};
 
 #[test]
 fn fb_helper_roundtrip() {
@@ -13,14 +13,26 @@ fn fb_helper_roundtrip() {
     let alg = "ml-dsa-65";
 
     // Build canonical bytes and sign using crypto helper
-    let canonical = protocol::machine::build_envelope_canonical(&payload, payload_type, nonce, ts, alg);
+    let canonical =
+        protocol::machine::build_envelope_canonical(&payload, payload_type, nonce, ts, alg, None);
     let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("sign");
 
     // Build a signed flatbuffer envelope using the same format
-    let fb = build_envelope_signed(&payload, payload_type, nonce, ts, alg, "ml-dsa-65", &sig_b64, &pub_b64);
+    let fb = build_envelope_signed(
+        &payload,
+        payload_type,
+        nonce,
+        ts,
+        alg,
+        "ml-dsa-65",
+        &sig_b64,
+        &pub_b64,
+        None,
+    );
 
     // Use helper to extract and verify fields
-    let (canon2, sig_bytes, pub_bytes, sig_field, pub_field) = fb_envelope_extract_sig_pub(&fb).expect("extract");
+    let (canon2, sig_bytes, pub_bytes, sig_field, pub_field) =
+        fb_envelope_extract_sig_pub(&fb).expect("extract");
 
     // canonical bytes should match
     assert_eq!(canonical, canon2);

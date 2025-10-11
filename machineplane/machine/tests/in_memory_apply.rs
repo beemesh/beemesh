@@ -17,6 +17,9 @@ const TENANT: &str = "00000000-0000-0000-0000-000000000000";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_apply_decrypt_flow_ephemeral_keys() {
+    // Initialize logger for debugging
+    let _ = env_logger::try_init();
+
     // Configure ephemeral shared keystore for this test node
     std::env::set_var("BEEMESH_KEYSTORE_EPHEMERAL", "1");
     // Use a deterministic shared name for the ephemeral keystore during tests
@@ -88,13 +91,36 @@ async fn in_process_apply_decrypt_flow_ephemeral_keys() {
     manifest_contents.hash(&mut hasher);
     let manifest_id = format!("{:x}", hasher.finish());
 
-    // Open the shared ephemeral keystore and store just one local share with meta = manifest_id
+    println!("TEST DEBUG: calculated manifest_id={} from tenant='{}' operation_id='{}' manifest_contents_len={}",
+             manifest_id, TENANT, operation_id, manifest_contents.len());
+
+    // Generate a manifest CID and store the operation -> manifest_cid mapping
+    // The process_self_apply_request will use this mapping to determine which manifest
+    // to store the decrypted content under
+    let manifest_cid = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        encrypted_manifest_fb.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    };
+    println!(
+        "TEST DEBUG: storing operation_id='{}' -> manifest_cid='{}' mapping",
+        operation_id, manifest_cid
+    );
+    machine::restapi::store_operation_manifest_mapping(&operation_id, &manifest_cid).await;
+
+    // Open the shared ephemeral keystore and store just one local share with meta = manifest_cid
     // (leave at least one share remote so the code exercises the distributed fetch path)
     let ks = crypto::open_keystore_with_shared_name(&shared_name).expect("open_keystore failed");
     if let Some(first_share) = shares.get(0) {
         let (blob, cid) = crypto::encrypt_share_for_keystore(&first_share)
             .expect("encrypt_share_for_keystore failed");
-        ks.put(&cid, &blob, Some(&manifest_id))
+        println!(
+            "TEST DEBUG: storing keyshare with cid={} and metadata='{}'",
+            cid, manifest_cid
+        );
+        ks.put(&cid, &blob, Some(&manifest_cid))
             .expect("keystore put failed for share");
     }
 
@@ -142,7 +168,11 @@ async fn in_process_apply_decrypt_flow_ephemeral_keys() {
     // Encrypt signed capability envelope for keystore storage using KEM (encrypt_share_for_keystore)
     let (cap_blob, cap_cid) =
         crypto::encrypt_share_for_keystore(&signed_bytes).expect("encrypt_share_for_keystore(cap)");
-    let meta_cap = format!("capability:{}", manifest_id);
+    let meta_cap = format!("capability:{}", manifest_cid);
+    println!(
+        "TEST DEBUG: storing capability with cid={} and metadata='{}'",
+        cap_cid, meta_cap
+    );
     ks.put(&cap_cid, &cap_blob, Some(&meta_cap))
         .expect("keystore put failed for capability");
 
@@ -193,32 +223,45 @@ async fn in_process_apply_decrypt_flow_ephemeral_keys() {
         }
     });
 
-    // Generate a manifest CID and store the operation -> manifest_cid mapping
-    // The process_self_apply_request will use this mapping to determine which manifest
-    // to store the decrypted content under
-    let manifest_cid = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        encrypted_manifest_fb.hash(&mut hasher);
-        format!("{:x}", hasher.finish())
-    };
-    machine::restapi::store_operation_manifest_mapping(&operation_id, &manifest_cid).await;
+    // Build encrypted manifest envelope (like cli::apply_file does)
+    // process_self_apply_request expects a base64-encoded flatbuffer envelope containing encrypted manifest
+    let ts_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
 
-    // Build apply FlatBuffer using the original manifest contents
-    // Note: In the current implementation, process_self_apply_request expects the raw YAML
-    // and handles it as a non-encrypted manifest, storing it directly in the decrypted map
+    let envelope_bytes = protocol::machine::build_envelope_canonical(
+        &encrypted_manifest_fb,
+        "manifest",
+        "test-nonce",
+        ts_millis,
+        "ml-dsa-65",
+        None, // No KEM public key for this test
+    );
+
+    // Base64 encode the envelope for the apply request
+    let envelope_b64 = general_purpose::STANDARD.encode(&envelope_bytes);
+
     let local_peer = swarm.local_peer_id().to_string();
     let apply_fb = protocol::machine::build_apply_request(
         1u32,
         TENANT,
         &operation_id,
-        &manifest_contents, // Use original YAML contents
+        &envelope_b64, // Use base64-encoded encrypted manifest envelope
         &local_peer,
     );
 
     // Directly process self-apply (bypassing control/send_apply_request) which stores manifest in DHT
+    println!(
+        "TEST DEBUG: About to call process_self_apply_request with apply_fb len={}",
+        apply_fb.len()
+    );
     process_self_apply_request(&apply_fb, &mut swarm);
+    println!("TEST DEBUG: process_self_apply_request completed");
+
+    // Give the async task some time to complete
+    sleep(Duration::from_millis(1000)).await;
+    println!("TEST DEBUG: Waited 1 second for async decryption task");
 
     // Poll restapi decrypted manifests map for the manifest_cid
     // Note: This test verifies that when process_self_apply_request is called with

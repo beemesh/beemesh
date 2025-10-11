@@ -26,6 +26,120 @@ pub mod machine {
   extern crate flatbuffers;
   use self::flatbuffers::{EndianScalar, Follow};
 
+pub enum CandidateNodeOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct CandidateNode<'a> {
+  pub _tab: flatbuffers::Table<'a>,
+}
+
+impl<'a> flatbuffers::Follow<'a> for CandidateNode<'a> {
+  type Inner = CandidateNode<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
+  }
+}
+
+impl<'a> CandidateNode<'a> {
+  pub const VT_PEER_ID: flatbuffers::VOffsetT = 4;
+  pub const VT_PUBLIC_KEY: flatbuffers::VOffsetT = 6;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
+    CandidateNode { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args CandidateNodeArgs<'args>
+  ) -> flatbuffers::WIPOffset<CandidateNode<'bldr>> {
+    let mut builder = CandidateNodeBuilder::new(_fbb);
+    if let Some(x) = args.public_key { builder.add_public_key(x); }
+    if let Some(x) = args.peer_id { builder.add_peer_id(x); }
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn peer_id(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(CandidateNode::VT_PEER_ID, None)}
+  }
+  #[inline]
+  pub fn public_key(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(CandidateNode::VT_PUBLIC_KEY, None)}
+  }
+}
+
+impl flatbuffers::Verifiable for CandidateNode<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut flatbuffers::Verifier, pos: usize
+  ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+    use self::flatbuffers::Verifiable;
+    v.visit_table(pos)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("peer_id", Self::VT_PEER_ID, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("public_key", Self::VT_PUBLIC_KEY, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct CandidateNodeArgs<'a> {
+    pub peer_id: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub public_key: Option<flatbuffers::WIPOffset<&'a str>>,
+}
+impl<'a> Default for CandidateNodeArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    CandidateNodeArgs {
+      peer_id: None,
+      public_key: None,
+    }
+  }
+}
+
+pub struct CandidateNodeBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> CandidateNodeBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_peer_id(&mut self, peer_id: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(CandidateNode::VT_PEER_ID, peer_id);
+  }
+  #[inline]
+  pub fn add_public_key(&mut self, public_key: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(CandidateNode::VT_PUBLIC_KEY, public_key);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> CandidateNodeBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    CandidateNodeBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> flatbuffers::WIPOffset<CandidateNode<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl core::fmt::Debug for CandidateNode<'_> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let mut ds = f.debug_struct("CandidateNode");
+      ds.field("peer_id", &self.peer_id());
+      ds.field("public_key", &self.public_key());
+      ds.finish()
+  }
+}
 pub enum CandidatesResponseOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
@@ -37,13 +151,13 @@ impl<'a> flatbuffers::Follow<'a> for CandidatesResponse<'a> {
   type Inner = CandidatesResponse<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
 impl<'a> CandidatesResponse<'a> {
   pub const VT_OK: flatbuffers::VOffsetT = 4;
-  pub const VT_RESPONDERS: flatbuffers::VOffsetT = 6;
+  pub const VT_CANDIDATES: flatbuffers::VOffsetT = 6;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -55,7 +169,7 @@ impl<'a> CandidatesResponse<'a> {
     args: &'args CandidatesResponseArgs<'args>
   ) -> flatbuffers::WIPOffset<CandidatesResponse<'bldr>> {
     let mut builder = CandidatesResponseBuilder::new(_fbb);
-    if let Some(x) = args.responders { builder.add_responders(x); }
+    if let Some(x) = args.candidates { builder.add_candidates(x); }
     builder.add_ok(args.ok);
     builder.finish()
   }
@@ -69,11 +183,11 @@ impl<'a> CandidatesResponse<'a> {
     unsafe { self._tab.get::<bool>(CandidatesResponse::VT_OK, Some(false)).unwrap()}
   }
   #[inline]
-  pub fn responders(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>> {
+  pub fn candidates(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<CandidateNode<'a>>>> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>>(CandidatesResponse::VT_RESPONDERS, None)}
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<CandidateNode>>>>(CandidatesResponse::VT_CANDIDATES, None)}
   }
 }
 
@@ -85,21 +199,21 @@ impl flatbuffers::Verifiable for CandidatesResponse<'_> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
      .visit_field::<bool>("ok", Self::VT_OK, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<&'_ str>>>>("responders", Self::VT_RESPONDERS, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<CandidateNode>>>>("candidates", Self::VT_CANDIDATES, false)?
      .finish();
     Ok(())
   }
 }
 pub struct CandidatesResponseArgs<'a> {
     pub ok: bool,
-    pub responders: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>>,
+    pub candidates: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<CandidateNode<'a>>>>>,
 }
 impl<'a> Default for CandidatesResponseArgs<'a> {
   #[inline]
   fn default() -> Self {
     CandidatesResponseArgs {
       ok: false,
-      responders: None,
+      candidates: None,
     }
   }
 }
@@ -114,8 +228,8 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> CandidatesResponseBuilder<'a, '
     self.fbb_.push_slot::<bool>(CandidatesResponse::VT_OK, ok, false);
   }
   #[inline]
-  pub fn add_responders(&mut self, responders: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<&'b  str>>>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(CandidatesResponse::VT_RESPONDERS, responders);
+  pub fn add_candidates(&mut self, candidates: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<CandidateNode<'b >>>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(CandidatesResponse::VT_CANDIDATES, candidates);
   }
   #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> CandidatesResponseBuilder<'a, 'b, A> {
@@ -136,7 +250,7 @@ impl core::fmt::Debug for CandidatesResponse<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("CandidatesResponse");
       ds.field("ok", &self.ok());
-      ds.field("responders", &self.responders());
+      ds.field("candidates", &self.candidates());
       ds.finish()
   }
 }
@@ -191,14 +305,14 @@ pub fn size_prefixed_root_as_candidates_response_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `CandidatesResponse`.
 pub unsafe fn root_as_candidates_response_unchecked(buf: &[u8]) -> CandidatesResponse {
-  unsafe { flatbuffers::root_unchecked::<CandidatesResponse>(buf) }
+  flatbuffers::root_unchecked::<CandidatesResponse>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed CandidatesResponse and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `CandidatesResponse`.
 pub unsafe fn size_prefixed_root_as_candidates_response_unchecked(buf: &[u8]) -> CandidatesResponse {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<CandidatesResponse>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<CandidatesResponse>(buf)
 }
 #[inline]
 pub fn finish_candidates_response_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

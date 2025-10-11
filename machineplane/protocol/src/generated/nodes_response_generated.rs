@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for NodesResponse<'a> {
   type Inner = NodesResponse<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
@@ -174,14 +174,14 @@ pub fn size_prefixed_root_as_nodes_response_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `NodesResponse`.
 pub unsafe fn root_as_nodes_response_unchecked(buf: &[u8]) -> NodesResponse {
-  unsafe { flatbuffers::root_unchecked::<NodesResponse>(buf) }
+  flatbuffers::root_unchecked::<NodesResponse>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed NodesResponse and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `NodesResponse`.
 pub unsafe fn size_prefixed_root_as_nodes_response_unchecked(buf: &[u8]) -> NodesResponse {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<NodesResponse>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<NodesResponse>(buf)
 }
 #[inline]
 pub fn finish_nodes_response_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

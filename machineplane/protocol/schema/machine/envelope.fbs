@@ -28,11 +28,14 @@ table Envelope {
   // the underlying BASE64_SIG as raw signature bytes.
   sig: string;
 
-  // Base64-encoded public key bytes
+  // Base64-encoded public signing key bytes
   pubkey: string;
 
   // Optional peer id string (libp2p peer id) for convenience
   peer_id: string;
+
+  // KEM public key for encryption (allows recipients to encrypt responses)
+  kem_pubkey: string;
 }
 
 root_type Envelope;

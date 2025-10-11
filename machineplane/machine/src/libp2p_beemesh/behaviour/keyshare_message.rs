@@ -219,28 +219,164 @@ pub fn keyshare_message(
                                                 );
                                                 // Use manifest_id from envelope type or a default meta
                                                 let payload_type = env.payload_type().unwrap_or("");
-                                                let store_meta = if payload_type == "keyshare" {
-                                                    Some("keyshare".to_string())
-                                                } else {
-                                                    None
-                                                };
 
-                                                if let Err(e) =
-                                                    ks.put(&cid, &blob, store_meta.as_deref())
-                                                {
-                                                    warn!(
-                                                        "keystore put failed for cid {}: {:?}",
-                                                        cid, e
-                                                    );
+                                                if payload_type == "capability" {
+                                                    // Handle capability tokens
+                                                    let store_meta = if let Ok(capability_token) =
+                                                        protocol::machine::root_as_capability_token(
+                                                            &payload_bytes,
+                                                        ) {
+                                                        if let Some(root_capability) =
+                                                            capability_token.root_capability()
+                                                        {
+                                                            if let Some(task_id) =
+                                                                root_capability.task_id()
+                                                            {
+                                                                let meta = format!(
+                                                                    "capability:{}",
+                                                                    task_id
+                                                                );
+                                                                warn!("libp2p: keyshare extracted capability task_id={}, storing with metadata: {}", task_id, meta);
+                                                                Some(meta)
+                                                            } else {
+                                                                warn!("libp2p: keyshare capability token has no task_id, storing with no metadata");
+                                                                None
+                                                            }
+                                                        } else {
+                                                            warn!("libp2p: keyshare capability token has no root_capability, storing with no metadata");
+                                                            None
+                                                        }
+                                                    } else {
+                                                        warn!("libp2p: keyshare failed to parse capability token, storing with no metadata");
+                                                        None
+                                                    };
+
+                                                    if let Err(e) =
+                                                        ks.put(&cid, &blob, store_meta.as_deref())
+                                                    {
+                                                        warn!(
+                                                            "keystore put failed for cid {}: {:?}",
+                                                            cid, e
+                                                        );
+                                                    } else {
+                                                        info!("keystore: stored simple keyshare cid={} type={}", cid, payload_type);
+                                                        // Always announce the CID itself
+                                                        let (reply_tx, _rx) =
+                                                            tokio::sync::mpsc::unbounded_channel();
+                                                        let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: cid.clone(), ttl_ms: 3000, reply_tx };
+                                                        crate::libp2p_beemesh::control::enqueue_control(
+                                                            ctrl,
+                                                        );
+                                                    }
+                                                } else if payload_type == "keyshare" {
+                                                    // Handle keyshares - extract individual raw share bytes from KeyShares flatbuffer
+                                                    let mut shares_stored = false;
+
+                                                    // Try to parse as KeyShares flatbuffer and extract individual shares
+                                                    // First try base64 decode if it's UTF-8
+                                                    let mut keyshares_bytes_opt: Option<Vec<u8>> =
+                                                        None;
+                                                    if let Ok(payload_str) =
+                                                        std::str::from_utf8(&payload_bytes)
+                                                    {
+                                                        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(payload_str) {
+                                                            keyshares_bytes_opt = Some(decoded);
+                                                        }
+                                                    }
+
+                                                    let keyshares_result =
+                                                        if let Some(ref keyshares_bytes) =
+                                                            keyshares_bytes_opt
+                                                        {
+                                                            protocol::machine::root_as_key_shares(
+                                                                keyshares_bytes,
+                                                            )
+                                                        } else {
+                                                            protocol::machine::root_as_key_shares(
+                                                                &payload_bytes,
+                                                            )
+                                                        };
+
+                                                    if let Ok(key_shares) = keyshares_result {
+                                                        let manifest_id = key_shares
+                                                            .manifest_id()
+                                                            .map(|id| id.to_string());
+                                                        if let Some(shares_vector) =
+                                                            key_shares.shares()
+                                                        {
+                                                            for i in 0..shares_vector.len() {
+                                                                let share_b64 =
+                                                                    shares_vector.get(i);
+                                                                if let Ok(raw_share_bytes) =
+                                                                    base64::engine::general_purpose::STANDARD.decode(share_b64)
+                                                                {
+                                                                    warn!("libp2p: keyshare extracting raw share {} len={}", i, raw_share_bytes.len());
+
+                                                                    // Store this individual raw share
+                                                                    if let Ok((share_blob, share_cid)) =
+                                                                        crypto::encrypt_share_for_keystore(&raw_share_bytes)
+                                                                    {
+                                                                        if let Err(e) = ks.put(
+                                                                            &share_cid,
+                                                                            &share_blob,
+                                                                            manifest_id.as_deref(),
+                                                                        ) {
+                                                                            warn!("libp2p: keyshare keystore put failed for share cid {}: {:?}", share_cid, e);
+                                                                        } else {
+                                                                            warn!("libp2p: keyshare keystore SUCCESS stored raw share {} cid={} for manifest_id={:?}", i, share_cid, manifest_id);
+                                                                            shares_stored = true;
+
+                                                                            // Announce this share CID
+                                                                            let (announce_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                                                                            let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider {
+                                                                                cid: share_cid.clone(),
+                                                                                ttl_ms: 3000,
+                                                                                reply_tx: announce_tx,
+                                                                            };
+                                                                            crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                                        }
+                                                                    } else {
+                                                                        warn!("libp2p: keyshare encrypt_share_for_keystore failed for share {}", i);
+                                                                    }
+                                                                } else {
+                                                                    warn!("libp2p: keyshare failed to decode share {} base64", i);
+                                                                }
+                                                            }
+                                                        } else {
+                                                            warn!("libp2p: keyshare KeyShares flatbuffer has no shares vector");
+                                                        }
+                                                    } else {
+                                                        warn!("libp2p: keyshare failed to parse payload as KeyShares flatbuffer");
+                                                    }
+
+                                                    if !shares_stored {
+                                                        warn!("libp2p: keyshare no shares were extracted and stored");
+                                                    }
                                                 } else {
-                                                    info!("keystore: stored simple keyshare cid={} type={}", cid, payload_type);
-                                                    // Always announce the CID itself
-                                                    let (reply_tx, _rx) =
-                                                        tokio::sync::mpsc::unbounded_channel();
-                                                    let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: cid.clone(), ttl_ms: 3000, reply_tx };
-                                                    crate::libp2p_beemesh::control::enqueue_control(
-                                                        ctrl,
-                                                    );
+                                                    // Unknown payload type - store as-is with basic metadata
+                                                    let store_meta = if payload_type.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(payload_type.to_string())
+                                                    };
+
+                                                    if let Err(e) =
+                                                        ks.put(&cid, &blob, store_meta.as_deref())
+                                                    {
+                                                        warn!(
+                                                            "keystore put failed for cid {}: {:?}",
+                                                            cid, e
+                                                        );
+                                                    } else {
+                                                        info!("keystore: stored simple keyshare cid={} type={}", cid, payload_type);
+                                                        // Always announce the CID itself
+                                                        let (reply_tx, _rx) =
+                                                            tokio::sync::mpsc::unbounded_channel();
+                                                        let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: cid.clone(), ttl_ms: 3000, reply_tx };
+                                                        crate::libp2p_beemesh::control::enqueue_control(
+                                                            ctrl,
+                                                        );
+                                                    }
                                                 }
                                             }
                                             Err(e) => {

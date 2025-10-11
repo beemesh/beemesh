@@ -364,6 +364,7 @@ pub async fn start_libp2p_node(
                                     &envelope_nonce,
                                     timestamp,
                                     "ml-dsa-65",
+                                    None,
                                 );
 
                                 match crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
@@ -378,6 +379,7 @@ pub async fn start_libp2p_node(
                                             "ml-dsa-65",
                                             &sig_b64,
                                             &pub_b64,
+                                            None,
                                         );
 
                                         let request_id = swarm.behaviour_mut().handshake_rr.send_request(peer_id, signed_envelope);

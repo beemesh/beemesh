@@ -1,12 +1,12 @@
-use std::time::Duration;
-use tokio::time::sleep;
 use log::info;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
+use tokio::time::sleep;
 
 mod test_utils;
-use test_utils::{make_test_cli, start_nodes, setup_cleanup_hook};
+use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
 
 pub const TENANT: &str = "00000000-0000-0000-0000-000000000000";
 
@@ -19,27 +19,9 @@ async fn test_run_host_application() {
     let _ = env_logger::try_init();
 
     // start three nodes using the reusable helper (first node runs REST+machine, others disabled APIs)
-    let cli1 = make_test_cli(
-        3000,
-        false,
-        false,
-        None,
-        None,
-    );
-    let cli2 = make_test_cli(
-        3100,
-        true,
-        true,
-        None,
-        None,
-    );
-    let cli3 = make_test_cli(
-        3200,
-        true,
-        true,
-        None,
-        None,
-    );
+    let cli1 = make_test_cli(3000, false, false, None, None);
+    let cli2 = make_test_cli(3100, true, true, None, None);
+    let cli3 = make_test_cli(3200, true, true, None, None);
 
     let mut guard = start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await;
 
@@ -47,26 +29,68 @@ async fn test_run_host_application() {
     let verify_peers = wait_for_peers(Duration::from_secs(15)).await;
     let health = check_health().await;
 
+    // Test the pubkey endpoint
+    let kem_pubkey_result = check_pubkey("kem_pubkey").await;
+    let signing_pubkey_result = check_pubkey("signing_pubkey").await;
+
+
     guard.cleanup().await;
 
     assert_eq!(health, "ok");
-    assert!(verify_peers["peers"].as_array().expect("peers should be an array").to_vec().len() == 2, "Expected at least two peers in the mesh, got {:?}", verify_peers);
-
+    assert!(
+        verify_peers["peers"]
+            .as_array()
+            .expect("peers should be an array")
+            .to_vec()
+            .len()
+            == 2,
+        "Expected at least two peers in the mesh, got {:?}",
+        verify_peers
+    );
+    assert!(
+        kem_pubkey_result.is_empty() == false,
+        "Expected kem_pubkey field in response, got: {}",
+        kem_pubkey_result
+    );
+    assert!(
+        signing_pubkey_result.is_empty() == false,
+        "Expected signing_pubkey field in response, got: {}",
+        signing_pubkey_result
+    );
 }
 
 async fn check_health() -> String {
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            reqwest::get("http://localhost:3000/health")
-        ).await.unwrap().unwrap().text().await.expect("failed to call health api")
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        reqwest::get("http://localhost:3000/health"),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text()
+    .await
+    .expect("failed to call health api")
+}
+
+async fn check_pubkey(url: &str) -> String {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        reqwest::get(format!("http://localhost:3000/api/v1/{}", url)),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .text()
+    .await
+    .expect("failed to call pubkey endpoint")
 }
 
 async fn verify_peers() -> serde_json::Value {
-    let url = format!("http://localhost:3000/tenant/{}/nodes", TENANT);
-        let resp = tokio::time::timeout(
-        Duration::from_secs(5),
-        reqwest::get(url)
-    ).await.unwrap().unwrap();
+    let url = "http://localhost:3000/debug/peers";
+    let resp = tokio::time::timeout(Duration::from_secs(5), reqwest::get(url))
+        .await
+        .unwrap()
+        .unwrap();
     let json = resp.json().await;
     info!("{:?}", json);
     let nodes: serde_json::Value = json.unwrap_or_default();
@@ -77,7 +101,11 @@ async fn wait_for_peers(timeout: Duration) -> serde_json::Value {
     let start = tokio::time::Instant::now();
     loop {
         let nodes = verify_peers().await;
-        if !nodes["peers"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
+        if !nodes["peers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true)
+        {
             return nodes;
         }
         if start.elapsed() > timeout {

@@ -1,4 +1,5 @@
 use anyhow::Context;
+use base64::Engine;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -19,7 +20,9 @@ pub fn normalize_and_decode_signature(sig_opt: Option<&str>) -> anyhow::Result<V
     } else {
         sig_str
     };
-    base64::decode(b64_part).context("failed to base64-decode signature")
+    base64::engine::general_purpose::STANDARD
+        .decode(b64_part)
+        .context("failed to base64-decode signature")
 }
 
 /// Check replay protection: ensure nonce is not seen in `nonce_window` and insert it.
@@ -105,7 +108,9 @@ pub fn verify_json_envelope(
         serde_json::to_vec(&canonical_value).context("failed to serialize canonical envelope")?;
 
     // Decode pub and sig
-    let pub_bytes = base64::decode(pub_str).context("failed to base64-decode pubkey")?;
+    let pub_bytes = base64::engine::general_purpose::STANDARD
+        .decode(pub_str)
+        .context("failed to base64-decode pubkey")?;
     let sig_bytes = normalize_and_decode_signature(Some(sig_str))?;
 
     // Check nonce if present
@@ -120,7 +125,9 @@ pub fn verify_json_envelope(
     // Extract and decode the payload field
     let payload_bytes = if let Some(payload_val) = canonical_value.get("payload") {
         if let Some(payload_str) = payload_val.as_str() {
-            base64::decode(payload_str).context("failed to base64-decode payload")?
+            base64::engine::general_purpose::STANDARD
+                .decode(payload_str)
+                .context("failed to base64-decode payload")?
         } else {
             return Err(anyhow::anyhow!("payload field must be a string"));
         }
@@ -145,7 +152,9 @@ pub fn verify_flatbuffer_envelope(
     let pub_str = fb_env.pubkey().unwrap_or("");
 
     let sig_bytes = normalize_and_decode_signature(Some(sig_str))?;
-    let pub_bytes = base64::decode(pub_str).context("failed to base64-decode pubkey")?;
+    let pub_bytes = base64::engine::general_purpose::STANDARD
+        .decode(pub_str)
+        .context("failed to base64-decode pubkey")?;
 
     // Reconstruct canonical bytes using the same method as signing
     let payload_vec = fb_env
@@ -157,8 +166,14 @@ pub fn verify_flatbuffer_envelope(
     let ts = fb_env.ts();
     let alg = fb_env.alg().unwrap_or("");
 
-    let canonical =
-        protocol::machine::build_envelope_canonical(&payload_vec, payload_type, nonce, ts, alg);
+    let canonical = protocol::machine::build_envelope_canonical(
+        &payload_vec,
+        payload_type,
+        nonce,
+        ts,
+        alg,
+        None,
+    );
 
     if !nonce.is_empty() {
         check_and_insert_nonce(nonce, nonce_window)?;
@@ -200,9 +215,11 @@ mod tests {
             &nonce,
             timestamp,
             alg,
+            None,
         );
         let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &fb_canonical).expect("sign");
 
+        // Build the final signed flatbuffer envelope (fb_envelope) using the original payload
         let fb_envelope = protocol::machine::build_envelope_signed(
             payload,
             payload_type,
@@ -212,15 +229,16 @@ mod tests {
             "ml-dsa-65",
             &sig_b64,
             &pub_b64,
+            None,
         );
 
-        // Verify the envelope
+        // Verify the envelope using the fb_envelope and ensure the extracted payload matches
         let (payload_bytes, _pub, _sig) =
             verify_flatbuffer_envelope(&fb_envelope, Duration::from_secs(300)).expect("verify");
 
         assert_eq!(payload_bytes, payload);
 
-        // Replay should fail
+        // Replay should fail when verifying the same envelope again
         assert!(verify_flatbuffer_envelope(&fb_envelope, Duration::from_secs(300)).is_err());
     }
 

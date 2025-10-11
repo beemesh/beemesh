@@ -36,7 +36,8 @@ async fn test_keyshare_simple_envelope_handling() {
     let alg = "ml-dsa-65";
 
     // Create signed envelope with "keyshare" type
-    let canonical_bytes = build_envelope_canonical(payload, payload_type, nonce, timestamp, alg);
+    let canonical_bytes =
+        build_envelope_canonical(payload, payload_type, nonce, timestamp, alg, None);
 
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("signing failed");
@@ -50,6 +51,7 @@ async fn test_keyshare_simple_envelope_handling() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verify the envelope can be parsed correctly
@@ -98,6 +100,7 @@ fn test_keyshare_format_rejection() {
         "unsigned-nonce",
         1234567890,
         "ml-dsa-65",
+        None,
     );
 
     // Try to verify unsigned envelope - should fail
@@ -120,6 +123,7 @@ fn test_keyshare_format_rejection() {
         "invalid-sig-test",
         1234567890,
         "ml-dsa-65",
+        None,
     );
 
     let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("signing failed");
@@ -134,6 +138,7 @@ fn test_keyshare_format_rejection() {
         "ml-dsa-65",
         "dGFtcGVyZWRzaWc=", // "tamperedsig" in base64 - invalid signature
         &pub_b64,
+        None,
     );
 
     let invalid_result = machine::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
@@ -170,6 +175,7 @@ fn test_keyshare_kem_vs_simple_paths() {
         "simple-path-nonce",
         timestamp,
         "ml-dsa-65",
+        None,
     );
 
     let (sig_b64, pub_b64) =
@@ -184,6 +190,7 @@ fn test_keyshare_kem_vs_simple_paths() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verify simple envelope path works
@@ -211,6 +218,7 @@ fn test_keyshare_kem_vs_simple_paths() {
         "kem-path-nonce",
         timestamp + 1,
         "ml-dsa-65",
+        None,
     );
 
     let (kem_sig_b64, kem_pub_b64) =
@@ -225,6 +233,7 @@ fn test_keyshare_kem_vs_simple_paths() {
         "ml-dsa-65",
         &kem_sig_b64,
         &kem_pub_b64,
+        None,
     );
 
     // Verify KEM envelope path works
@@ -267,6 +276,7 @@ fn test_keyshare_capability_verification() {
         "capability-nonce",
         timestamp,
         "ml-dsa-65",
+        None,
     );
 
     let (sig_b64, pub_b64) =
@@ -281,6 +291,7 @@ fn test_keyshare_capability_verification() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Capabilities are typically base64 encoded for transport
@@ -331,6 +342,7 @@ fn test_keyshare_envelope_with_encryption() {
         "encryption-test-nonce",
         timestamp,
         "ml-dsa-65",
+        None,
     );
 
     let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("signing failed");
@@ -344,6 +356,7 @@ fn test_keyshare_envelope_with_encryption() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verify envelope and extract payload for storage
@@ -399,6 +412,7 @@ fn test_keyshare_signature_prefix_handling() {
         "prefix-test-nonce",
         1234567890,
         "ml-dsa-65",
+        None,
     );
 
     let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("signing failed");
@@ -413,6 +427,7 @@ fn test_keyshare_signature_prefix_handling() {
         "ml-dsa-65", // explicit prefix
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     let result_with_prefix = machine::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
@@ -511,7 +526,8 @@ fn test_keyshare_replay_protection() {
         .unwrap()
         .as_millis() as u64;
 
-    let canonical = build_envelope_canonical(payload, "keyshare", &nonce, timestamp, "ml-dsa-65");
+    let canonical =
+        build_envelope_canonical(payload, "keyshare", &nonce, timestamp, "ml-dsa-65", None);
 
     let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("signing failed");
 
@@ -524,6 +540,7 @@ fn test_keyshare_replay_protection() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // First verification should succeed

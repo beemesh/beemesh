@@ -30,7 +30,7 @@ fn test_distribute_shares_flatbuffer_handling() {
 
     // Create FlatBuffer envelope for shares
     let canonical_bytes =
-        build_envelope_canonical(shares_data, payload_type, &nonce, timestamp, alg);
+        build_envelope_canonical(shares_data, payload_type, &nonce, timestamp, alg, None);
 
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign shares envelope");
@@ -44,6 +44,7 @@ fn test_distribute_shares_flatbuffer_handling() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verify the envelope can be parsed back correctly
@@ -89,7 +90,7 @@ fn test_distribute_capabilities_flatbuffer_handling() {
 
     // Create FlatBuffer envelope for capability
     let canonical_bytes =
-        build_envelope_canonical(capability_data, payload_type, &nonce, timestamp, alg);
+        build_envelope_canonical(capability_data, payload_type, &nonce, timestamp, alg, None);
 
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign capability envelope");
@@ -103,6 +104,7 @@ fn test_distribute_capabilities_flatbuffer_handling() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verify the envelope is valid for capability distribution
@@ -152,7 +154,7 @@ fn test_apply_request_flatbuffer_envelope() {
 
     // Create signed envelope containing the apply request
     let canonical_bytes =
-        build_envelope_canonical(&apply_request, payload_type, &nonce, timestamp, alg);
+        build_envelope_canonical(&apply_request, payload_type, &nonce, timestamp, alg, None);
 
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign apply envelope");
@@ -166,6 +168,7 @@ fn test_apply_request_flatbuffer_envelope() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verify the envelope
@@ -228,8 +231,14 @@ fn test_encrypted_manifest_envelope_handling() {
     let alg = "ml-dsa-65";
 
     // Create signed envelope containing the encrypted manifest
-    let canonical_bytes =
-        build_envelope_canonical(&encrypted_manifest, payload_type, &nonce, timestamp, alg);
+    let canonical_bytes = build_envelope_canonical(
+        &encrypted_manifest,
+        payload_type,
+        &nonce,
+        timestamp,
+        alg,
+        None,
+    );
 
     let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical_bytes)
         .expect("Failed to sign encrypted manifest envelope");
@@ -243,6 +252,7 @@ fn test_encrypted_manifest_envelope_handling() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verify the envelope
@@ -286,7 +296,8 @@ fn test_envelope_base64_encoding_for_transport() {
     let alg = "ml-dsa-65";
 
     // Create signed envelope
-    let canonical_bytes = build_envelope_canonical(payload, payload_type, nonce, timestamp, alg);
+    let canonical_bytes =
+        build_envelope_canonical(payload, payload_type, nonce, timestamp, alg, None);
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign envelope");
 
@@ -299,6 +310,7 @@ fn test_envelope_base64_encoding_for_transport() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Encode for transport

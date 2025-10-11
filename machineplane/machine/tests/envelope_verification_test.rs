@@ -27,7 +27,8 @@ fn test_flatbuffer_envelope_roundtrip() {
     let alg = "ml-dsa-65";
 
     // Create canonical bytes for signing
-    let canonical_bytes = build_envelope_canonical(payload, payload_type, &nonce, timestamp, alg);
+    let canonical_bytes =
+        build_envelope_canonical(payload, payload_type, &nonce, timestamp, alg, None);
 
     // Sign the canonical bytes
     let (sig_b64, pub_b64) =
@@ -43,6 +44,7 @@ fn test_flatbuffer_envelope_roundtrip() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verify using verify_flatbuffer_envelope()
@@ -80,6 +82,7 @@ fn test_flatbuffer_envelope_invalid_signature() {
         "ml-dsa-65",
         "aW52YWxpZC1zaWduYXR1cmU=", // "invalid-signature" in base64
         &base64::engine::general_purpose::STANDARD.encode(pubb),
+        None,
     );
 
     // Verification should fail
@@ -109,7 +112,8 @@ fn test_flatbuffer_envelope_replay_protection() {
     let alg = "ml-dsa-65";
 
     // Create canonical bytes and sign
-    let canonical_bytes = build_envelope_canonical(payload, payload_type, &nonce, timestamp, alg);
+    let canonical_bytes =
+        build_envelope_canonical(payload, payload_type, &nonce, timestamp, alg, None);
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign envelope");
 
@@ -123,6 +127,7 @@ fn test_flatbuffer_envelope_replay_protection() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // First verification should succeed
@@ -154,7 +159,8 @@ fn test_flatbuffer_envelope_signature_prefix_handling() {
     let alg = "ml-dsa-65";
 
     // Create canonical bytes and sign
-    let canonical_bytes = build_envelope_canonical(payload, payload_type, nonce, timestamp, alg);
+    let canonical_bytes =
+        build_envelope_canonical(payload, payload_type, nonce, timestamp, alg, None);
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign envelope");
 
@@ -168,6 +174,7 @@ fn test_flatbuffer_envelope_signature_prefix_handling() {
         "ml-dsa-65", // explicit prefix
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verification should succeed
@@ -202,7 +209,8 @@ fn test_flatbuffer_envelope_empty_payload() {
     let alg = "ml-dsa-65";
 
     // Create canonical bytes and sign
-    let canonical_bytes = build_envelope_canonical(payload, payload_type, nonce, timestamp, alg);
+    let canonical_bytes =
+        build_envelope_canonical(payload, payload_type, nonce, timestamp, alg, None);
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign envelope");
 
@@ -216,6 +224,7 @@ fn test_flatbuffer_envelope_empty_payload() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verification should succeed even with empty payload
@@ -245,7 +254,7 @@ fn test_flatbuffer_envelope_large_payload() {
 
     // Create canonical bytes and sign
     let canonical_bytes =
-        build_envelope_canonical(&large_payload, payload_type, nonce, timestamp, alg);
+        build_envelope_canonical(&large_payload, payload_type, nonce, timestamp, alg, None);
     let (sig_b64, pub_b64) =
         sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign envelope");
 
@@ -259,6 +268,7 @@ fn test_flatbuffer_envelope_large_payload() {
         "ml-dsa-65",
         &sig_b64,
         &pub_b64,
+        None,
     );
 
     // Verification should succeed

@@ -31,6 +31,13 @@ table Envelope {
   // Base64-encoded public key bytes
   pubkey: string;
 
+  // Optional base64-encoded KEM public key bytes (raw ml_kem_512 bytes).
+  // This field is optional and may be omitted. When present, callers SHOULD
+  // ensure the KEM public key is integrity-protected by the envelope signature
+  // (i.e., included in the canonical bytes signed by the sender) before using
+  // it for encryption-related operations.
+  kem_pub: string;
+
   // Optional peer id string (libp2p peer id) for convenience
   peer_id: string;
 }
