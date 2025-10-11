@@ -68,6 +68,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         "apply_file: splitting symmetric key into {} shares with threshold {} (initial plan)",
         n, k
     );
+
     let shares_vec = split_symmetric_key(&sym, n, k);
     debug!(
         "apply_file: symmetric key split into {} shares",
@@ -239,6 +240,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let mut target_peer_ids: Vec<String> = Vec::new();
 
     // Only send shares to the first n responders (matching the number of shares created)
+
     for (i, peer) in peers.iter().take(n).enumerate() {
         // read local share file created earlier
         let share_path = home

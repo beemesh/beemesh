@@ -3,7 +3,7 @@
 //! This crate provides optimal distribution strategies for keyshares, manifests, and capability tokens
 //! in a zero-trust decentralized environment to maximize security and fault tolerance.
 
-use log::{info, warn};
+use log::info;
 
 /// Configuration for distribution strategy
 #[derive(Debug, Clone)]

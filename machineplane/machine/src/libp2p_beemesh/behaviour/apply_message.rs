@@ -15,8 +15,8 @@ fn search_local_key_shares(manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, 
     // Get all CIDs
     let all_cids = keystore.list_cids()?;
 
-    log::warn!(
-        "libp2p: DECRYPT DEBUG - searching through {} CIDs in keystore for manifest_id={}",
+    log::debug!(
+        "libp2p: searching through {} CIDs in keystore for manifest_id={}",
         all_cids.len(),
         manifest_id
     );
@@ -26,18 +26,26 @@ fn search_local_key_shares(manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, 
     // Instead of searching all CIDs, directly look for all CIDs matching the manifest_id in keystore metadata
     match keystore.find_cids_for_manifest(manifest_id) {
         Ok(cids) => {
-            log::warn!("libp2p: DECRYPT DEBUG - find_cids_for_manifest returned {} CIDs for manifest_id={}", cids.len(), manifest_id);
+            log::debug!(
+                "libp2p: find_cids_for_manifest returned {} CIDs for manifest_id={}",
+                cids.len(),
+                manifest_id
+            );
             for cid in cids.iter() {
                 if let Ok(Some(blob)) = keystore.get(cid) {
                     match crypto::ensure_kem_keypair_on_disk() {
                         Ok((_pubb, privb)) => {
                             match crypto::decrypt_share_from_blob(&blob, &privb) {
                                 Ok(decrypted_share) => {
-                                    log::warn!("libp2p: DECRYPT DEBUG - found matching local key share for manifest_id={} (cid={})", manifest_id, cid);
+                                    log::debug!("libp2p: found matching local key share for manifest_id={} (cid={})", manifest_id, cid);
                                     key_shares.push((cid.clone(), decrypted_share));
                                 }
                                 Err(e) => {
-                                    log::warn!("libp2p: DECRYPT DEBUG - failed to decrypt share blob for cid {}: {}", cid, e);
+                                    log::debug!(
+                                        "libp2p: failed to get blob for cid={}: {:?}",
+                                        cid,
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -84,23 +92,27 @@ async fn decrypt_encrypted_manifest_with_id(
         ));
     }
 
-    // Step 1: Search for key shares in local keystore
-    log::warn!(
-        "libp2p: DECRYPT ENTRY - about to search local keyshares for manifest_id={}",
-        manifest_id
+    // Get the threshold from the encrypted manifest
+    let threshold = encrypted_manifest.threshold() as usize;
+    log::debug!(
+        "libp2p: decrypt_with_id using threshold={} from encrypted manifest",
+        threshold
     );
+
+    // Step 1: Search for key shares in local keystore
     let mut key_shares = search_local_key_shares(manifest_id)?;
-    log::warn!(
-        "libp2p: DECRYPT ENTRY - found {} local key shares for manifest_id={}, need 2 for k=2",
+    log::debug!(
+        "libp2p: found {} local key shares for manifest_id={}, need {} for decryption",
         key_shares.len(),
-        manifest_id
+        manifest_id,
+        threshold
     );
 
     // Step 2: If we don't have enough local shares, fetch from other nodes
-    if key_shares.len() < 2 {
-        let needed_shares = 2 - key_shares.len();
-        log::warn!(
-            "libp2p: DECRYPTION DEBUG - need {} more key shares, initiating distributed retrieval",
+    if key_shares.len() < threshold {
+        let needed_shares = threshold - key_shares.len();
+        log::debug!(
+            "libp2p: need {} more key shares, initiating distributed retrieval",
             needed_shares
         );
 
@@ -149,7 +161,7 @@ async fn decrypt_encrypted_manifest_with_id(
         // Fetch shares from remote peers until we have enough
         let mut fetched_shares = 0;
         for peer_id in peers_to_query {
-            if key_shares.len() >= 2 {
+            if key_shares.len() >= threshold {
                 break; // We have enough shares
             }
 
@@ -266,7 +278,7 @@ async fn decrypt_encrypted_manifest_with_id(
                                             fetched_shares += 1;
 
                                             // Break if we have enough shares
-                                            if key_shares.len() >= 2 {
+                                            if key_shares.len() >= threshold {
                                                 break;
                                             }
                                         } else {
@@ -332,20 +344,24 @@ async fn decrypt_encrypted_manifest_with_id(
             }
         }
 
-        if key_shares.len() < 2 {
+        if key_shares.len() < threshold {
             log::error!(
-                "libp2p: DECRYPTION DEBUG - INSUFFICIENT SHARES! Have {} but need 2",
-                key_shares.len()
+                "libp2p: insufficient shares for decryption! Have {} but need {}",
+                key_shares.len(),
+                threshold
             );
-            return Err(error_helpers::insufficient_key_shares(key_shares.len(), 2));
+            return Err(error_helpers::insufficient_key_shares(
+                key_shares.len(),
+                threshold,
+            ));
         }
         log::debug!(
-            "libp2p: DECRYPTION DEBUG - after fetching, have {} shares",
+            "libp2p: after fetching, have {} shares for decryption",
             key_shares.len()
         );
     } else {
-        log::warn!(
-            "libp2p: DECRYPTION DEBUG - have enough local shares ({}) proceeding",
+        log::debug!(
+            "libp2p: have enough local shares ({}) for decryption",
             key_shares.len()
         );
     }
@@ -381,11 +397,12 @@ async fn decrypt_encrypted_manifest_with_id(
         shares.push(share_data.clone());
     }
 
-    log::warn!(
-        "libp2p: SHARE DEBUG - about to call recover_symmetric_key with {} shares",
+    log::debug!(
+        "libp2p: attempting to recover symmetric key with {} shares",
         shares.len()
     );
-    let symmetric_key = crypto::recover_symmetric_key(&shares, 2)?;
+    let symmetric_key = crypto::recover_symmetric_key(&shares, threshold)?;
+
     log::info!(
         "libp2p: decrypt_with_id successfully recovered symmetric key using {} share(s)",
         shares.len()

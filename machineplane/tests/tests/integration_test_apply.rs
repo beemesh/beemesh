@@ -43,15 +43,15 @@ async fn test_apply_functionality() {
     let cli3 = make_test_cli(3200, false, true, None, bootstrap_peers.clone(), 0, 0);
     let cli4 = make_test_cli(3300, false, true, None, bootstrap_peers.clone(), 0, 0);
     let cli5 = make_test_cli(3400, false, true, None, bootstrap_peers.clone(), 0, 0);
-    //let cli6 = make_test_cli(3500, false, true, None, bootstrap_peers.clone(), 0, 0);
-    //let cli7 = make_test_cli(3600, false, true, None, bootstrap_peers.clone(), 0, 0);
+    let cli6 = make_test_cli(3500, false, true, None, bootstrap_peers.clone(), 0, 0);
+    let cli7 = make_test_cli(3600, false, true, None, bootstrap_peers.clone(), 0, 0);
     //let cli8 = make_test_cli(3700, false, true, None, bootstrap_peers.clone(), 0, 0);
     //let cli9 = make_test_cli(3800, false, true, None, bootstrap_peers.clone(), 0, 0);
     //let cli10 = make_test_cli(3900, false, true, None, bootstrap_peers.clone(), 0, 0);
 
     let mut guard = start_nodes_as_processes(
         vec![
-            cli1, cli2, cli3, cli4, cli5, /*cli6, cli7, cli8, cli9, cli10*/
+            cli1, cli2, cli3, cli4, cli5, cli6, cli7, /*, cli8, cli9, cli10*/
         ],
         Duration::from_secs(1),
     )
@@ -64,8 +64,8 @@ async fn test_apply_functionality() {
     // Check if nodes have discovered peers (reduced verbosity)
     let client = reqwest::Client::new();
     let ports = vec![
-        3000u16, 3100u16, 3200u16, 3300u16,
-        3400u16, /*3500u16, 3600u16, 3700u16, 3800u16, 3900u16,*/
+        3000u16, 3100u16, 3200u16, 3300u16, 3400u16, 3500u16,
+        3600u16, /*, 3700u16, 3800u16, 3900u16,*/
     ];
     let mut peer_counts = Vec::new();
     for port in &ports {
@@ -369,10 +369,22 @@ async fn test_apply_functionality() {
         security_level: SecurityLevel::Standard,
     };
 
-    let expected_plan = DistributionPlan::calculate_optimal_distribution(ports.len(), &config)
-        .expect("Should calculate distribution plan for test nodes");
+    // Calculate expected distribution based on actual participating nodes, not total ports
+    let participating_nodes = nodes_with_capabilities.len();
+    println!(
+        "Calculating expected distribution for {} participating nodes (out of {} total)",
+        participating_nodes,
+        ports.len()
+    );
 
-    println!("Expected distribution plan from scheduler:");
+    let expected_plan =
+        DistributionPlan::calculate_optimal_distribution(participating_nodes, &config)
+            .expect("Should calculate distribution plan for participating nodes");
+
+    println!(
+        "Expected distribution plan from scheduler (for {} participating nodes):",
+        participating_nodes
+    );
     println!(
         "  - Keyshares: {}, Threshold: {}",
         expected_plan.keyshare_count, expected_plan.reconstruction_threshold
