@@ -1,6 +1,6 @@
 use base64::Engine;
 use libp2p::request_response;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 /// Handle inbound key-share request-response messages.
 /// Accept only flatbuffer-encoded KeyShareRequest / Envelope formats. JSON paths have been removed.
 pub fn keyshare_message(
@@ -39,39 +39,61 @@ pub fn keyshare_message(
                                 &cap_bytes,
                                 std::time::Duration::from_secs(300),
                             ) {
-                                Ok((_canonical, _pub, _sig)) => {
-                                    log::debug!(
-                                        "libp2p: received valid capability blob len={} from {}",
-                                        cap_bytes.len(),
-                                        peer
-                                    );
-                                    // Store the raw capability blob in the keystore so it can be presented by local fetchers.
-                                    if let Ok((blob_enc, cid)) =
-                                        crypto::encrypt_share_for_keystore(&cap_bytes)
-                                    {
-                                        if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
-                                            let meta = format!("capability:{}", manifest_id);
-                                            if let Err(e) = ks.put(&cid, &blob_enc, Some(&meta)) {
-                                                log::warn!("keystore put failed for capability cid {}: {:?}", cid, e);
-                                            } else {
-                                                log::debug!("libp2p: stored received capability for manifest_id={} cid={}", manifest_id, cid);
-                                                // Announce provider for discovered capability holders
-                                                let manifest_provider_cid =
-                                                    format!("manifest:{}", manifest_id);
-                                                let (reply_tx, _rx) =
-                                                    tokio::sync::mpsc::unbounded_channel();
-                                                let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
-                                                crate::libp2p_beemesh::control::enqueue_control(
-                                                    ctrl,
-                                                );
-                                            }
+                                Ok((token_bytes, _pub, _sig)) => {
+                                    // Verify holder signature in the capability token
+                                    match verify_capability_holder_signature(
+                                        &token_bytes,
+                                        manifest_id,
+                                        &peer,
+                                    ) {
+                                        Ok(()) => {
+                                            log::debug!(
+                                                "libp2p: received valid capability blob with holder signature len={} from {}",
+                                                cap_bytes.len(),
+                                                peer
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!("capability holder signature verification failed from {}: {:?}", peer, e);
+                                            let resp = protocol::machine::build_keyshare_response(
+                                                false,
+                                                "fetch",
+                                                "invalid_holder_signature",
+                                            );
+                                            let _ = swarm
+                                                .behaviour_mut()
+                                                .keyshare_rr
+                                                .send_response(channel, resp);
+                                            return;
                                         }
                                     }
+                                    // Do not Store the raw capability blob in the keystore because it can only be used by the holder.
+                                    // if let Ok((blob_enc, cid)) =
+                                    //     crypto::encrypt_share_for_keystore(&cap_bytes)
+                                    // {
+                                    //     if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
+                                    //         let meta = format!("capability:{}", manifest_id);
+                                    //         if let Err(e) = ks.put(&cid, &blob_enc, Some(&meta)) {
+                                    //             log::warn!("keystore put failed for capability cid {}: {:?}", cid, e);
+                                    //         } else {
+                                    //             log::debug!("libp2p: stored received capability for manifest_id={} cid={}", manifest_id, cid);
+                                    //             // Announce provider for discovered capability holders
+                                    //             let manifest_provider_cid =
+                                    //                 format!("manifest:{}", manifest_id);
+                                    //             let (reply_tx, _rx) =
+                                    //                 tokio::sync::mpsc::unbounded_channel();
+                                    //             let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider { cid: manifest_provider_cid.clone(), ttl_ms: 3000, reply_tx };
+                                    //             crate::libp2p_beemesh::control::enqueue_control(
+                                    //                 ctrl,
+                                    //             );
+                                    //         }
+                                    //     }
+                                    // }
 
                                     // Capability verified; continue to fetch
                                 }
                                 Err(e) => {
-                                    warn!("capability verification failed from {}: {:?}", peer, e);
+                                    error!("capability verification failed from {}: {:?}", peer, e);
                                     let resp = protocol::machine::build_keyshare_response(
                                         false,
                                         "fetch",
@@ -86,7 +108,7 @@ pub fn keyshare_message(
                             }
                         }
                         Err(e) => {
-                            warn!("failed to base64-decode capability from {}: {:?}", peer, e);
+                            error!("failed to base64-decode capability from {}: {:?}", peer, e);
                             let resp = protocol::machine::build_keyshare_response(
                                 false,
                                 "fetch",
@@ -628,4 +650,128 @@ pub fn keyshare_message(
             }
         }
     }
+}
+
+/// Verify capability token holder signature
+/// Ensures the presenting peer actually signed the token presentation
+fn verify_capability_holder_signature(
+    token_bytes: &[u8],
+    manifest_id: &str,
+    presenting_peer: &libp2p::PeerId,
+) -> Result<(), anyhow::Error> {
+    // Parse the capability token
+    let capability_token = protocol::machine::root_as_capability_token(token_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to parse capability token: {}", e))?;
+
+    // Check if we have a signature chain
+    let signature_chain = capability_token
+        .signature_chain()
+        .ok_or_else(|| anyhow::anyhow!("Missing signature chain"))?;
+
+    if signature_chain.len() == 0 {
+        return Err(anyhow::anyhow!("Empty signature chain"));
+    }
+
+    // Get the holder signature (should be the last/only entry)
+    let signature_entry = signature_chain.get(0);
+
+    let holder_peer_id_str = signature_entry
+        .signer_peer_id()
+        .ok_or_else(|| anyhow::anyhow!("Missing signer peer ID"))?;
+
+    let holder_pub_key = signature_entry
+        .public_key()
+        .ok_or_else(|| anyhow::anyhow!("Missing public key"))?
+        .iter()
+        .collect::<Vec<u8>>();
+
+    let holder_signature = signature_entry
+        .signature()
+        .ok_or_else(|| anyhow::anyhow!("Missing signature"))?
+        .iter()
+        .collect::<Vec<u8>>();
+
+    let presentation_nonce = signature_entry
+        .presentation_nonce()
+        .ok_or_else(|| anyhow::anyhow!("Missing presentation nonce"))?;
+
+    let presentation_timestamp = signature_entry.presentation_timestamp();
+
+    // Get the root capability for token reconstruction
+    let root_cap = capability_token
+        .root_capability()
+        .ok_or_else(|| anyhow::anyhow!("Missing root capability"))?;
+
+    // Verify the holder peer ID matches the presenting peer
+    if holder_peer_id_str != presenting_peer.to_string() {
+        return Err(anyhow::anyhow!(
+            "Holder peer ID mismatch: expected {}, got {}",
+            presenting_peer,
+            holder_peer_id_str
+        ));
+    }
+
+    // Get authorized peer from caveats to verify authorization
+    let authorized_peer = if let Some(caveats) = capability_token.caveats() {
+        if caveats.len() > 0 {
+            let caveat = caveats.get(0);
+            if caveat.condition_type().unwrap_or("") == "authorized_peer" {
+                if let Some(value) = caveat.value() {
+                    let value_bytes: Vec<u8> = value.iter().collect();
+                    std::str::from_utf8(&value_bytes).unwrap_or("").to_string()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Verify the presenting peer is authorized
+    if authorized_peer != presenting_peer.to_string() {
+        return Err(anyhow::anyhow!(
+            "Peer {} not authorized for this capability (authorized: {})",
+            presenting_peer,
+            authorized_peer
+        ));
+    }
+
+    // Reconstruct the original unsigned token to create the presentation context
+    // The presentation context must be created using the original token, not the holder-signed token
+    let original_token = protocol::machine::build_capability_token(
+        manifest_id,
+        &root_cap.issuer_peer_id().unwrap_or(""),
+        &authorized_peer,
+        root_cap.issued_at(),
+        root_cap.expires_at(),
+    );
+
+    let presentation_context = crypto::create_capability_presentation_context(
+        &original_token,
+        presentation_nonce,
+        presentation_timestamp,
+        manifest_id,
+        "KeyShareRequest",
+    );
+
+    // Verify the holder signature
+    crypto::verify_capability_holder_signature(
+        &holder_pub_key,
+        &presentation_context,
+        &holder_signature,
+    )
+    .map_err(|e| anyhow::anyhow!("Holder signature verification failed: {}", e))?;
+
+    log::info!(
+        "libp2p: verified capability holder signature for peer {} on manifest {}",
+        presenting_peer,
+        manifest_id
+    );
+
+    Ok(())
 }

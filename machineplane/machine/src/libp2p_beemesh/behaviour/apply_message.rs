@@ -3,6 +3,7 @@ use base64::prelude::*;
 use libp2p::request_response;
 use log::{info, warn};
 use protocol::machine::build_keyshare_request;
+use rand;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -181,38 +182,38 @@ async fn decrypt_encrypted_manifest_with_id(
                                 if let Ok(cap_plain) =
                                     crypto::decrypt_share_from_blob(&cap_blob, &privb)
                                 {
-                                    // cap_plain contains the signed JSON envelope bytes
+                                    // cap_plain contains the signed envelope bytes
                                     log::debug!("libp2p: decrypt local capability plain_len={} prefix={:02x}{:02x}{:02x}", cap_plain.len(),
                                         if cap_plain.len() > 0 { cap_plain[0] } else { 0u8 },
                                         if cap_plain.len() > 1 { cap_plain[1] } else { 0u8 },
                                         if cap_plain.len() > 2 { cap_plain[2] } else { 0u8 }
                                     );
-                                    let cap_b64 = base64::engine::general_purpose::STANDARD
-                                        .encode(&cap_plain);
-                                    // Log diagnostics about attached capability so remote holders can
-                                    // be inspected when they reject/parsing fails.
-                                    log::debug!("libp2p: CAPABILITY DEBUG - attaching local capability for manifest_id={} cap_len={} cap_b64_len={} first_byte=0x{:02x}",
-                                        manifest_id,
-                                        cap_plain.len(),
-                                        cap_b64.len(),
-                                        if cap_plain.is_empty() { 0u8 } else { cap_plain[0] });
 
-                                    // Test immediate decode to verify base64 validity
-                                    match base64::engine::general_purpose::STANDARD.decode(&cap_b64)
-                                    {
-                                        Ok(decoded) => {
-                                            log::debug!("libp2p: CAPABILITY DEBUG - base64 encode/decode test successful, decoded_len={}", decoded.len());
+                                    // Extract capability token from envelope and add holder signature
+                                    match add_holder_signature_to_capability(
+                                        &cap_plain,
+                                        manifest_id,
+                                        local_peer_id,
+                                    ) {
+                                        Ok(signed_cap_envelope) => {
+                                            let cap_b64 = base64::engine::general_purpose::STANDARD
+                                                .encode(&signed_cap_envelope);
+
+                                            log::debug!("libp2p: CAPABILITY DEBUG - added holder signature for manifest_id={} cap_len={} cap_b64_len={}",
+                                                manifest_id, signed_cap_envelope.len(), cap_b64.len());
+
+                                            request_fb_to_send =
+                                                build_keyshare_request(manifest_id, &cap_b64);
                                         }
                                         Err(e) => {
-                                            log::error!("libp2p: CAPABILITY DEBUG - base64 encode/decode test FAILED: {:?}", e);
+                                            log::warn!("libp2p: failed to add holder signature to capability: {:?}", e);
+                                            // Fall back to original unsigned token
+                                            let cap_b64 = base64::engine::general_purpose::STANDARD
+                                                .encode(&cap_plain);
+                                            request_fb_to_send =
+                                                build_keyshare_request(manifest_id, &cap_b64);
                                         }
                                     }
-
-                                    log::debug!("libp2p: KEYSHARE DEBUG - building keyshare request with manifest_id='{}' cap_b64_len={} cap_b64_prefix='{}'",
-                                        manifest_id, cap_b64.len(),
-                                        if cap_b64.len() > 50 { &cap_b64[..50] } else { &cap_b64 });
-                                    request_fb_to_send =
-                                        build_keyshare_request(manifest_id, &cap_b64);
                                 }
                             }
                         }
@@ -945,4 +946,134 @@ async fn fetch_keyshare_from_peer(
             Err(anyhow::anyhow!("keyshare fetch timeout"))
         }
     }
+}
+
+/// Add holder signature to capability token
+/// Extracts token from envelope, adds holder signature, and returns new envelope
+fn add_holder_signature_to_capability(
+    envelope_bytes: &[u8],
+    manifest_id: &str,
+    local_peer_id: &libp2p::PeerId,
+) -> anyhow::Result<Vec<u8>> {
+    // Verify the envelope and extract the capability token (skip nonce check for re-signing)
+    let (token_bytes, _pub, _sig) =
+        crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope_skip_nonce_check(
+            envelope_bytes,
+        )?;
+
+    // Parse the capability token
+    let capability_token = protocol::machine::root_as_capability_token(&token_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to parse capability token: {}", e))?;
+
+    // Get our keypair for signing
+    let (pub_bytes, priv_bytes) = crypto::ensure_keypair_on_disk()?;
+
+    // Use the provided local peer ID
+
+    // Create presentation context with unique nonce including peer ID and random component
+    let presentation_nonce = format!(
+        "holder_sig_{}_{}_{:x}",
+        local_peer_id,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        rand::random::<u64>()
+    );
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let presentation_context = crypto::create_capability_presentation_context(
+        &token_bytes,
+        &presentation_nonce,
+        timestamp,
+        manifest_id,
+        "KeyShareRequest",
+    );
+
+    // Sign the presentation context
+    let (holder_sig_b64, holder_pub_b64) =
+        crypto::sign_capability_presentation(&priv_bytes, &pub_bytes, &presentation_context)?;
+
+    let holder_sig_bytes = base64::engine::general_purpose::STANDARD.decode(holder_sig_b64)?;
+    let holder_pub_bytes = base64::engine::general_purpose::STANDARD.decode(holder_pub_b64)?;
+
+    // Extract original token data
+    let root_cap = capability_token
+        .root_capability()
+        .ok_or_else(|| anyhow::anyhow!("Missing root capability"))?;
+
+    let issuer_peer_id = root_cap.issuer_peer_id().unwrap_or("");
+    let issued_at = root_cap.issued_at();
+    let expires_at = root_cap.expires_at();
+
+    // Get authorized peer from caveats
+    let authorized_peer = if let Some(caveats) = capability_token.caveats() {
+        if caveats.len() > 0 {
+            let caveat = caveats.get(0);
+            if caveat.condition_type().unwrap_or("") == "authorized_peer" {
+                if let Some(value) = caveat.value() {
+                    let value_bytes: Vec<u8> = value.iter().collect();
+                    std::str::from_utf8(&value_bytes).unwrap_or("").to_string()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Build new capability token with holder signature
+    let signed_token_bytes = protocol::machine::build_capability_token_with_holder_signature(
+        manifest_id,
+        issuer_peer_id,
+        &authorized_peer,
+        issued_at,
+        expires_at,
+        &local_peer_id.to_string(),
+        &holder_pub_bytes,
+        &holder_sig_bytes,
+        &presentation_nonce,
+        timestamp,
+    );
+
+    // Create new envelope with the signed token
+    let envelope_nonce: [u8; 16] = rand::random();
+    let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
+    let ts = timestamp;
+
+    // Build canonical envelope
+    let canonical = protocol::machine::build_envelope_canonical(
+        &signed_token_bytes,
+        "capability",
+        &nonce_str,
+        ts,
+        "ml-dsa-65",
+        None,
+    );
+
+    // Sign the envelope
+    let (sig_b64, pub_b64) = crypto::sign_envelope(&priv_bytes, &pub_bytes, &canonical)?;
+
+    // Build final signed envelope
+    let signed_envelope = protocol::machine::build_envelope_signed(
+        &signed_token_bytes,
+        "capability",
+        &nonce_str,
+        ts,
+        "ml-dsa-65",
+        "ml-dsa-65",
+        &sig_b64,
+        &pub_b64,
+        None,
+    );
+
+    Ok(signed_envelope)
 }

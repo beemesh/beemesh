@@ -341,6 +341,8 @@ impl<'a> SignatureEntry<'a> {
   pub const VT_SIGNER_PEER_ID: flatbuffers::VOffsetT = 4;
   pub const VT_PUBLIC_KEY: flatbuffers::VOffsetT = 6;
   pub const VT_SIGNATURE: flatbuffers::VOffsetT = 8;
+  pub const VT_PRESENTATION_NONCE: flatbuffers::VOffsetT = 10;
+  pub const VT_PRESENTATION_TIMESTAMP: flatbuffers::VOffsetT = 12;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -352,6 +354,8 @@ impl<'a> SignatureEntry<'a> {
     args: &'args SignatureEntryArgs<'args>
   ) -> flatbuffers::WIPOffset<SignatureEntry<'bldr>> {
     let mut builder = SignatureEntryBuilder::new(_fbb);
+    builder.add_presentation_timestamp(args.presentation_timestamp);
+    if let Some(x) = args.presentation_nonce { builder.add_presentation_nonce(x); }
     if let Some(x) = args.signature { builder.add_signature(x); }
     if let Some(x) = args.public_key { builder.add_public_key(x); }
     if let Some(x) = args.signer_peer_id { builder.add_signer_peer_id(x); }
@@ -380,6 +384,20 @@ impl<'a> SignatureEntry<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u8>>>(SignatureEntry::VT_SIGNATURE, None)}
   }
+  #[inline]
+  pub fn presentation_nonce(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(SignatureEntry::VT_PRESENTATION_NONCE, None)}
+  }
+  #[inline]
+  pub fn presentation_timestamp(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(SignatureEntry::VT_PRESENTATION_TIMESTAMP, Some(0)).unwrap()}
+  }
 }
 
 impl flatbuffers::Verifiable for SignatureEntry<'_> {
@@ -392,6 +410,8 @@ impl flatbuffers::Verifiable for SignatureEntry<'_> {
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("signer_peer_id", Self::VT_SIGNER_PEER_ID, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>("public_key", Self::VT_PUBLIC_KEY, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>("signature", Self::VT_SIGNATURE, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("presentation_nonce", Self::VT_PRESENTATION_NONCE, false)?
+     .visit_field::<u64>("presentation_timestamp", Self::VT_PRESENTATION_TIMESTAMP, false)?
      .finish();
     Ok(())
   }
@@ -400,6 +420,8 @@ pub struct SignatureEntryArgs<'a> {
     pub signer_peer_id: Option<flatbuffers::WIPOffset<&'a str>>,
     pub public_key: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
     pub signature: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
+    pub presentation_nonce: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub presentation_timestamp: u64,
 }
 impl<'a> Default for SignatureEntryArgs<'a> {
   #[inline]
@@ -408,6 +430,8 @@ impl<'a> Default for SignatureEntryArgs<'a> {
       signer_peer_id: None,
       public_key: None,
       signature: None,
+      presentation_nonce: None,
+      presentation_timestamp: 0,
     }
   }
 }
@@ -430,6 +454,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> SignatureEntryBuilder<'a, 'b, A
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SignatureEntry::VT_SIGNATURE, signature);
   }
   #[inline]
+  pub fn add_presentation_nonce(&mut self, presentation_nonce: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SignatureEntry::VT_PRESENTATION_NONCE, presentation_nonce);
+  }
+  #[inline]
+  pub fn add_presentation_timestamp(&mut self, presentation_timestamp: u64) {
+    self.fbb_.push_slot::<u64>(SignatureEntry::VT_PRESENTATION_TIMESTAMP, presentation_timestamp, 0);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> SignatureEntryBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     SignatureEntryBuilder {
@@ -450,6 +482,8 @@ impl core::fmt::Debug for SignatureEntry<'_> {
       ds.field("signer_peer_id", &self.signer_peer_id());
       ds.field("public_key", &self.public_key());
       ds.field("signature", &self.signature());
+      ds.field("presentation_nonce", &self.presentation_nonce());
+      ds.field("presentation_timestamp", &self.presentation_timestamp());
       ds.finish()
   }
 }

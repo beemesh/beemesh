@@ -73,6 +73,12 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let mut envelope_builder =
         FlatbufferEnvelopeBuilder::with_keys("cli-client".to_string(), pk_b64.clone());
 
+    // hardcoded tenant for now
+    let tenant = "00000000-0000-0000-0000-000000000000";
+
+    // Generate operation_id for the server
+    let operation_id = uuid::Uuid::new_v4().to_string();
+
     // Create raw EncryptedManifest
     let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
     let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&ciphertext);
@@ -92,54 +98,11 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         None,
     );
 
-    // Create signed envelope containing the EncryptedManifest for storage/decryption
-    let manifest_envelope_signed_bytes = envelope_builder.build_manifest_envelope(
-        &ciphertext,
-        &nonce_bytes,
-        n,
-        k,
-        shares_vec.len(),
-        &sk_bytes,
-        &pk_bytes,
-    )?;
-
-    // Convert signed envelope to base64 for manifest_id calculation
-    let manifest_envelope_signed_b64 =
-        base64::engine::general_purpose::STANDARD.encode(&manifest_envelope_signed_bytes);
-
-    // hardcoded tenant for now
-    let tenant = "00000000-0000-0000-0000-000000000000";
-
-    // Generate operation_id for the server
-    let operation_id = uuid::Uuid::new_v4().to_string();
-
     // build shares envelope using flatbuffers (contains the base64 shares for peers)
     let shares_b64: Vec<String> = shares_vec
         .iter()
         .map(|s| base64::engine::general_purpose::STANDARD.encode(s))
         .collect();
-    // Create a temporary placeholder for shares envelope - we'll rebuild it with correct manifest_id later
-    let shares_envelope_bytes = envelope_builder.build_shares_envelope(
-        &shares_b64,
-        n,
-        k,
-        shares_vec.len(),
-        "placeholder", // Will be replaced after create_task
-    )?;
-
-    // sign shares envelope
-    let shares_envelope_signed_bytes =
-        envelope_builder.sign_envelope(&shares_envelope_bytes, &sk_bytes, &pk_bytes)?;
-
-    // Convert shares envelope to base64 for transport (keep as flatbuffer, not JSON)
-    let shares_envelope_signed_b64 =
-        base64::engine::general_purpose::STANDARD.encode(&shares_envelope_signed_bytes);
-
-    // wrapper message containing both envelopes (as base64)
-    let _final_msg = serde_json::json!({
-        "manifest_envelope": manifest_envelope_signed_b64,
-        "shares_envelope": shares_envelope_signed_b64,
-    });
 
     // API base URL can be overridden with BEEMESH_API env var
     let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
@@ -226,8 +189,8 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let mut target_flatbuffers: Vec<Vec<u8>> = Vec::new();
     let mut target_peer_ids: Vec<String> = Vec::new();
 
-    // For simplicity, send shares to all responders found
-    for (i, peer) in peers.iter().enumerate() {
+    // Only send shares to the first n responders (matching the number of shares created)
+    for (i, peer) in peers.iter().take(n).enumerate() {
         // read local share file created earlier
         let share_path = home
             .join(KEY_DIR)

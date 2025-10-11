@@ -1635,6 +1635,87 @@ pub mod machine {
         fbb.finish(capability_token, None);
         fbb.finished_data().to_vec()
     }
+
+    // Builder for CapabilityToken with holder signature
+    pub fn build_capability_token_with_holder_signature(
+        manifest_id: &str,
+        issuer_peer_id: &str,
+        authorized_peer: &str,
+        issued_at: u64,
+        expires_at: u64,
+        holder_peer_id: &str,
+        holder_pub_key: &[u8],
+        holder_signature: &[u8],
+        presentation_nonce: &str,
+        presentation_timestamp: u64,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(1024);
+
+        // Create the root capability
+        let manifest_id_off = fbb.create_string(manifest_id);
+        let issuer_peer_id_off = fbb.create_string(issuer_peer_id);
+        let capability_type_off = fbb.create_string("KeyShareRequest");
+
+        let capability =
+            crate::generated::generated_capability_token::beemesh::machine::Capability::create(
+                &mut fbb,
+                &crate::generated::generated_capability_token::beemesh::machine::CapabilityArgs {
+                    type_: Some(capability_type_off),
+                    manifest_id: Some(manifest_id_off),
+                    required_quorum: 1,
+                    issued_at,
+                    expires_at,
+                    issuer_peer_id: Some(issuer_peer_id_off),
+                },
+            );
+
+        // Create caveat for authorized peer
+        let condition_type_off = fbb.create_string("authorized_peer");
+        let authorized_peer_bytes = authorized_peer.as_bytes();
+        let value_vec = fbb.create_vector(authorized_peer_bytes);
+
+        let caveat = crate::generated::generated_capability_token::beemesh::machine::Caveat::create(
+            &mut fbb,
+            &crate::generated::generated_capability_token::beemesh::machine::CaveatArgs {
+                condition_type: Some(condition_type_off),
+                value: Some(value_vec),
+            },
+        );
+
+        let caveats_vec = fbb.create_vector(&[caveat]);
+
+        // Create holder signature entry
+        let holder_peer_id_off = fbb.create_string(holder_peer_id);
+        let holder_pub_key_vec = fbb.create_vector(holder_pub_key);
+        let holder_signature_vec = fbb.create_vector(holder_signature);
+        let presentation_nonce_off = fbb.create_string(presentation_nonce);
+
+        let signature_entry = crate::generated::generated_capability_token::beemesh::machine::SignatureEntry::create(
+            &mut fbb,
+            &crate::generated::generated_capability_token::beemesh::machine::SignatureEntryArgs {
+                signer_peer_id: Some(holder_peer_id_off),
+                public_key: Some(holder_pub_key_vec),
+                signature: Some(holder_signature_vec),
+                presentation_nonce: Some(presentation_nonce_off),
+                presentation_timestamp: presentation_timestamp,
+            },
+        );
+
+        let signature_chain = fbb.create_vector(&[signature_entry]);
+
+        // Create the capability token
+        let capability_token = crate::generated::generated_capability_token::beemesh::machine::CapabilityToken::create(
+            &mut fbb,
+            &crate::generated::generated_capability_token::beemesh::machine::CapabilityTokenArgs {
+                root_capability: Some(capability),
+                caveats: Some(caveats_vec),
+                signature_chain: Some(signature_chain),
+            },
+        );
+
+        fbb.finish(capability_token, None);
+        fbb.finished_data().to_vec()
+    }
 }
 
 pub mod libp2p_constants;

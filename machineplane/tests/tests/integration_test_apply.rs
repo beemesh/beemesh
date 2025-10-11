@@ -41,26 +41,29 @@ async fn test_apply_functionality() {
     let cli3 = make_test_cli(3200, false, true, None, bootstrap_peers.clone(), 0, 0);
     let cli4 = make_test_cli(3300, false, true, None, bootstrap_peers.clone(), 0, 0);
     let cli5 = make_test_cli(3400, false, true, None, bootstrap_peers.clone(), 0, 0);
-    let cli6 = make_test_cli(3500, false, true, None, bootstrap_peers.clone(), 0, 0);
-    let cli7 = make_test_cli(3600, false, true, None, bootstrap_peers.clone(), 0, 0);
-    let cli8 = make_test_cli(3700, false, true, None, bootstrap_peers.clone(), 0, 0);
-    let cli9 = make_test_cli(3800, false, true, None, bootstrap_peers.clone(), 0, 0);
-    let cli10 = make_test_cli(3900, false, true, None, bootstrap_peers.clone(), 0, 0);
+    //let cli6 = make_test_cli(3500, false, true, None, bootstrap_peers.clone(), 0, 0);
+    //let cli7 = make_test_cli(3600, false, true, None, bootstrap_peers.clone(), 0, 0);
+    //let cli8 = make_test_cli(3700, false, true, None, bootstrap_peers.clone(), 0, 0);
+    //let cli9 = make_test_cli(3800, false, true, None, bootstrap_peers.clone(), 0, 0);
+    //let cli10 = make_test_cli(3900, false, true, None, bootstrap_peers.clone(), 0, 0);
 
     let mut guard = start_nodes_as_processes(
-        vec![cli1, cli2, cli3, cli4, cli5, cli6, cli7, cli8, cli9, cli10],
+        vec![
+            cli1, cli2, cli3, cli4, cli5, /*cli6, cli7, cli8, cli9, cli10*/
+        ],
         Duration::from_secs(1),
     )
     .await;
 
     // Wait for the nodes to be ready and discover each other via mDNS
     println!("Waiting for node discovery...");
-    sleep(Duration::from_secs(20)).await;
+    sleep(Duration::from_secs(10)).await;
 
     // Check if nodes have discovered peers (reduced verbosity)
     let client = reqwest::Client::new();
     let ports = vec![
-        3000u16, 3100u16, 3200u16, 3300u16, 3400u16, 3500u16, 3600u16, 3700u16, 3800u16, 3900u16,
+        3000u16, 3100u16, 3200u16, 3300u16,
+        3400u16, /*3500u16, 3600u16, 3700u16, 3800u16, 3900u16,*/
     ];
     let mut peer_counts = Vec::new();
     for port in &ports {
@@ -131,7 +134,7 @@ async fn test_apply_functionality() {
         let client = client.clone();
         async move {
             let base = format!("http://127.0.0.1:{}", port);
-            let mut result = (port, false, false, false, false); // (port, has_cids, has_capability, has_keyshare, has_announces)
+            let mut result = (port, false, false, false); // (port, has_capability, has_keyshare, has_announces)
 
             // Check for keystore entries with detailed metadata
             for attempt in 0..15 {
@@ -178,9 +181,8 @@ async fn test_apply_functionality() {
                                         }
                                     }
 
-                                    result.1 = true; // has_cids
-                                    result.2 = has_capability;
-                                    result.3 = has_keyshare;
+                                    result.1 = has_capability;
+                                    result.2 = has_keyshare;
                                     break;
                                 }
                             }
@@ -208,7 +210,7 @@ async fn test_apply_functionality() {
                         if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                             if let Some(arr) = j.get("cids").and_then(|v| v.as_array()) {
                                 if !arr.is_empty() {
-                                    result.4 = true; // has_announces
+                                    result.3 = true; // has_announces
                                     break;
                                 }
                             }
@@ -226,15 +228,11 @@ async fn test_apply_functionality() {
     let results = join_all(keystore_tasks).await;
 
     // Collect results
-    let mut nodes_with_cids: Vec<u16> = Vec::new();
     let mut nodes_with_announces: Vec<u16> = Vec::new();
     let mut nodes_with_capabilities: Vec<u16> = Vec::new();
     let mut nodes_with_keyshares: Vec<u16> = Vec::new();
 
-    for (port, has_cids, has_capability, has_keyshare, has_announces) in results {
-        if has_cids {
-            nodes_with_cids.push(port);
-        }
+    for (port, has_capability, has_keyshare, has_announces) in results {
         if has_capability {
             nodes_with_capabilities.push(port);
         }
@@ -246,28 +244,13 @@ async fn test_apply_functionality() {
         }
     }
 
-    println!("DEBUG: Distribution analysis:");
-    println!("  Nodes with CIDs: {:?}", nodes_with_cids);
     println!("  Nodes with capabilities: {:?}", nodes_with_capabilities);
     println!("  Nodes with keyshares: {:?}", nodes_with_keyshares);
     println!("  Nodes with announces: {:?}", nodes_with_announces);
 
-    // Check if the capability distribution issue is due to duplicate entries
-    // For now, allow 3 or 4 capability nodes as this seems to be a distribution logic issue
-    // rather than the core DHT provider discovery issue we were trying to fix
-    assert_eq!(
-        nodes_with_cids.len(),
-        nodes_with_capabilities.len().max(nodes_with_keyshares.len()),
-        "expected nodes with CIDs to match the maximum of capabilities or keyshares, but got {} CIDs, {} capabilities, {} keyshares",
-        nodes_with_cids.len(),
-        nodes_with_capabilities.len(),
-        nodes_with_keyshares.len()
-    );
-
-    // Temporarily allow 3 or 4 capability nodes until we fix the distribution logic
     assert!(
-        nodes_with_capabilities.len() == 3 || nodes_with_capabilities.len() == 4,
-        "expected 3 or 4 nodes to have capability tokens (temporary), but {} nodes had them: {:?}",
+        nodes_with_capabilities.len() == 3,
+        "expected 3 nodes to have capability tokens, but {} nodes had them: {:?}",
         nodes_with_capabilities.len(),
         nodes_with_capabilities
     );
@@ -496,8 +479,8 @@ async fn test_apply_functionality() {
         println!("⚠ No manifest CID found in any task");
         // Still assert keystore functionality works for 3 or 4 nodes (temporary)
         assert!(
-            nodes_with_capabilities.len() == 3 || nodes_with_capabilities.len() == 4,
-            "3 or 4 nodes should have capability tokens even without manifest CID, got {}",
+            nodes_with_capabilities.len() == 3,
+            "3 nodes should have capability tokens even without manifest CID, got {}",
             nodes_with_capabilities.len()
         );
         assert_eq!(

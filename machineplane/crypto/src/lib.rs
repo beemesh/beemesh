@@ -523,6 +523,46 @@ pub fn recover_symmetric_key(shares_bytes: &[Vec<u8>], k: usize) -> anyhow::Resu
     Ok(out)
 }
 
+/// Create presentation context for capability token holder signature
+/// This binds the signature to specific token, nonce, timestamp, and request context
+pub fn create_capability_presentation_context(
+    token_bytes: &[u8],
+    presentation_nonce: &str,
+    timestamp: u64,
+    manifest_id: &str,
+    request_type: &str,
+) -> Vec<u8> {
+    let mut context = Vec::new();
+    context.extend_from_slice(token_bytes);
+    context.extend_from_slice(presentation_nonce.as_bytes());
+    context.extend_from_slice(&timestamp.to_le_bytes());
+    context.extend_from_slice(manifest_id.as_bytes());
+    context.extend_from_slice(request_type.as_bytes());
+    context
+}
+
+/// Sign capability token presentation by holder
+/// Creates a signature over the token and presentation context
+pub fn sign_capability_presentation(
+    priv_bytes: &[u8],
+    pub_bytes: &[u8],
+    presentation_context: &[u8],
+) -> Result<(String, String), anyhow::Error> {
+    // Use existing sign_envelope function
+    sign_envelope(priv_bytes, pub_bytes, presentation_context)
+}
+
+/// Verify capability token holder signature
+/// Verifies that the holder actually signed the presentation context
+pub fn verify_capability_holder_signature(
+    pub_bytes: &[u8],
+    presentation_context: &[u8],
+    sig_bytes: &[u8],
+) -> Result<(), anyhow::Error> {
+    // Use existing verify_envelope function
+    verify_envelope(pub_bytes, presentation_context, sig_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,6 +713,62 @@ mod tests {
         let blob = encrypt_payload_for_recipient(&pubb, payload).expect("encrypt recipient blob");
         let recovered =
             decrypt_payload_from_recipient_blob(&blob, &privb).expect("decrypt recipient blob");
-        assert_eq!(&recovered, payload);
+        assert_eq!(recovered, payload);
+    }
+
+    #[test]
+    fn test_capability_holder_signature() {
+        let _guard = PQC_TEST_MUTEX
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        ensure_pqc_init().unwrap();
+        let (pub_key, priv_key) = ensure_keypair_ephemeral().expect("keypair");
+
+        let token_bytes = b"test_capability_token";
+        let presentation_nonce = "nonce_12345";
+        let timestamp = 1234567890u64;
+        let manifest_id = "test_manifest";
+        let request_type = "KeyShareRequest";
+
+        // Create presentation context
+        let context = create_capability_presentation_context(
+            token_bytes,
+            presentation_nonce,
+            timestamp,
+            manifest_id,
+            request_type,
+        );
+
+        // Sign the presentation
+        let (sig_b64, pub_b64) =
+            sign_capability_presentation(&priv_key, &pub_key, &context).unwrap();
+
+        // Decode signature and public key
+        let sig_bytes = base64::engine::general_purpose::STANDARD
+            .decode(sig_b64)
+            .unwrap();
+        let decoded_pub_bytes = base64::engine::general_purpose::STANDARD
+            .decode(pub_b64)
+            .unwrap();
+
+        // Verify signature
+        assert!(
+            verify_capability_holder_signature(&decoded_pub_bytes, &context, &sig_bytes).is_ok()
+        );
+
+        // Verify with wrong context should fail
+        let wrong_context = create_capability_presentation_context(
+            token_bytes,
+            "wrong_nonce",
+            timestamp,
+            manifest_id,
+            request_type,
+        );
+        assert!(
+            verify_capability_holder_signature(&decoded_pub_bytes, &wrong_context, &sig_bytes)
+                .is_err()
+        );
     }
 }

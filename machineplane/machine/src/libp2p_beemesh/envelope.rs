@@ -88,6 +88,51 @@ pub fn verify_flatbuffer_envelope(
     Ok((payload_vec, pub_bytes, sig_bytes))
 }
 
+/// Verify a flatbuffer envelope without nonce replay checking.
+/// This is used when extracting tokens for re-signing, where the same envelope
+/// may be processed multiple times legitimately.
+/// Returns payload bytes, pub bytes, sig bytes.
+pub fn verify_flatbuffer_envelope_skip_nonce_check(
+    fb_envelope_bytes: &[u8],
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let fb_env = protocol::machine::root_as_envelope(fb_envelope_bytes)
+        .context("failed to parse flatbuffer envelope")?;
+
+    let sig_str = fb_env.sig().unwrap_or("");
+    let pub_str = fb_env.pubkey().unwrap_or("");
+
+    let sig_bytes = normalize_and_decode_signature(Some(sig_str))?;
+    let pub_bytes = base64::engine::general_purpose::STANDARD
+        .decode(pub_str)
+        .context("failed to base64-decode pubkey")?;
+
+    // Reconstruct canonical bytes using the same method as signing
+    let payload_vec = fb_env
+        .payload()
+        .map(|b| b.iter().collect::<Vec<u8>>())
+        .unwrap_or_default();
+    let payload_type = fb_env.payload_type().unwrap_or("");
+    let nonce = fb_env.nonce().unwrap_or("");
+    let ts = fb_env.ts();
+    let alg = fb_env.alg().unwrap_or("");
+
+    let canonical = protocol::machine::build_envelope_canonical(
+        &payload_vec,
+        payload_type,
+        nonce,
+        ts,
+        alg,
+        None,
+    );
+
+    // Skip nonce replay check - this is intentional for token extraction
+
+    crypto::verify_envelope(&pub_bytes, &canonical, &sig_bytes)
+        .context("flatbuffer signature verification failed")?;
+
+    Ok((payload_vec, pub_bytes, sig_bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,6 +21,8 @@ table SignatureEntry {
   signer_peer_id: string;    // Who signed this stage
   public_key: [ubyte];       // Raw public key bytes
   signature: [ubyte];        // Signature bytes
+  presentation_nonce: string; // Nonce used in presentation context (for holder signatures)
+  presentation_timestamp: uint64; // Timestamp used in presentation context (for holder signatures)
 }
 
 // The full capability token, including delegation and verification chain
