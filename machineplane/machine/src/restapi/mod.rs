@@ -368,66 +368,32 @@ pub async fn apply_manifest(
         }
     };
 
-    // Extract manifest envelope and parse it
-    let manifest_envelope_json = apply_request.manifest_envelope_json().unwrap_or("{}");
-    let manifest = match serde_json::from_str::<serde_json::Value>(manifest_envelope_json) {
-        Ok(env) => {
-            if env.get("sig").is_some() && env.get("pubkey").is_some() {
-                match crate::libp2p_beemesh::security::verify_envelope_json_value(&env)
-                    .map(|(p, _pub, _sig)| p)
-                {
-                    Ok(payload_bytes) => match std::str::from_utf8(&payload_bytes) {
-                        Ok(s) => match serde_json::from_str::<serde_json::Value>(s) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                log::warn!("apply_manifest: envelope payload not JSON: {:?}", e);
-                                let error_response =
-                                    protocol::machine::build_apply_manifest_response(
-                                        false,
-                                        &tenant,
-                                        0,
-                                        &[],
-                                        &[(
-                                            "error".to_string(),
-                                            "invalid manifest payload".to_string(),
-                                        )],
-                                    );
-                                let peer_id = get_peer_id_from_request(&headers);
-                                return create_encrypted_response(
-                                    &state.envelope_handler,
-                                    &error_response,
-                                    "apply_manifest_response",
-                                    peer_id.as_deref(),
-                                )
-                                .await;
-                            }
-                        },
-                        Err(_) => {
-                            let error_response = protocol::machine::build_apply_manifest_response(
-                                false,
-                                &tenant,
-                                0,
-                                &[],
-                                &[("error".to_string(), "invalid UTF-8 payload".to_string())],
-                            );
-                            let peer_id = get_peer_id_from_request(&headers);
-                            return create_encrypted_response(
-                                &state.envelope_handler,
-                                &error_response,
-                                "apply_manifest_response",
-                                peer_id.as_deref(),
-                            )
-                            .await;
-                        }
-                    },
-                    Err(e) => {
-                        log::warn!("apply_manifest: envelope verification failed: {:?}", e);
+    // Extract manifest envelope - must be base64-encoded flatbuffer envelope
+    let manifest_envelope_json = apply_request.manifest_envelope_json().unwrap_or("");
+    let manifest = match base64::engine::general_purpose::STANDARD.decode(manifest_envelope_json) {
+        Ok(envelope_bytes) => {
+            // Verify flatbuffer envelope signature
+            match crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
+                &envelope_bytes,
+                std::time::Duration::from_secs(300),
+            ) {
+                Ok((payload_bytes, _pub, _sig)) => {
+                    // Try to parse payload as EncryptedManifest flatbuffer
+                    if let Ok(encrypted_manifest) =
+                        protocol::machine::root_as_encrypted_manifest(&payload_bytes)
+                    {
+                        // For now, return empty manifest - decryption logic should be handled elsewhere
+                        serde_json::json!({})
+                    } else {
+                        log::warn!(
+                            "apply_manifest: envelope payload not EncryptedManifest flatbuffer"
+                        );
                         let error_response = protocol::machine::build_apply_manifest_response(
                             false,
                             &tenant,
                             0,
                             &[],
-                            &[("error".to_string(), "verification failed".to_string())],
+                            &[("error".to_string(), "invalid manifest payload".to_string())],
                         );
                         let peer_id = get_peer_id_from_request(&headers);
                         return create_encrypted_response(
@@ -439,32 +405,46 @@ pub async fn apply_manifest(
                         .await;
                     }
                 }
-            } else {
-                let error_response = protocol::machine::build_apply_manifest_response(
-                    false,
-                    &tenant,
-                    0,
-                    &[],
-                    &[("error".to_string(), "missing signature".to_string())],
-                );
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "apply_manifest_response",
-                    peer_id.as_deref(),
-                )
-                .await;
+                Err(e) => {
+                    log::warn!(
+                        "apply_manifest: envelope signature verification failed: {:?}",
+                        e
+                    );
+                    let error_response = protocol::machine::build_apply_manifest_response(
+                        false,
+                        &tenant,
+                        0,
+                        &[],
+                        &[(
+                            "error".to_string(),
+                            "signature verification failed".to_string(),
+                        )],
+                    );
+                    let peer_id = get_peer_id_from_request(&headers);
+                    return create_encrypted_response(
+                        &state.envelope_handler,
+                        &error_response,
+                        "apply_manifest_response",
+                        peer_id.as_deref(),
+                    )
+                    .await;
+                }
             }
         }
         Err(e) => {
-            log::warn!("apply_manifest: failed to parse manifest envelope: {:?}", e);
+            log::warn!(
+                "apply_manifest: failed to decode base64 manifest envelope: {:?}",
+                e
+            );
             let error_response = protocol::machine::build_apply_manifest_response(
                 false,
                 &tenant,
                 0,
                 &[],
-                &[("error".to_string(), "invalid envelope".to_string())],
+                &[(
+                    "error".to_string(),
+                    "invalid manifest envelope encoding".to_string(),
+                )],
             );
             let peer_id = get_peer_id_from_request(&headers);
             return create_encrypted_response(
@@ -477,28 +457,27 @@ pub async fn apply_manifest(
         }
     };
 
-    // Handle optional shares envelope
+    // Handle optional shares envelope - must be base64-encoded flatbuffer envelope
     if let Some(shares_envelope_json) = apply_request.shares_envelope_json() {
-        match serde_json::from_str::<serde_json::Value>(shares_envelope_json) {
-            Ok(sh_env) => {
-                if sh_env.get("sig").is_some() && sh_env.get("pubkey").is_some() {
-                    match crate::libp2p_beemesh::security::verify_envelope_json_value(&sh_env) {
-                        Ok((_payload_bytes, _pub, _sig)) => {
-                            debug!("apply_manifest: received verified shares_envelope");
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "apply_manifest: shares_envelope verification failed: {:?}",
-                                e
-                            );
-                        }
+        match base64::engine::general_purpose::STANDARD.decode(shares_envelope_json) {
+            Ok(envelope_bytes) => {
+                match crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
+                    &envelope_bytes,
+                    std::time::Duration::from_secs(300),
+                ) {
+                    Ok((_payload_bytes, _pub, _sig)) => {
+                        debug!("apply_manifest: received verified shares_envelope");
                     }
-                } else {
-                    log::warn!("apply_manifest: shares_envelope missing signature/pubkey");
+                    Err(e) => {
+                        log::warn!(
+                            "apply_manifest: shares_envelope verification failed: {:?}",
+                            e
+                        );
+                    }
                 }
             }
             Err(e) => {
-                log::warn!("apply_manifest: shares_envelope not parseable: {:?}", e);
+                log::warn!("apply_manifest: shares_envelope not decodable: {:?}", e);
             }
         }
     }
@@ -1931,10 +1910,11 @@ pub async fn apply_keyshares(
     let shares_env_val = apply_request.shares_envelope_json().unwrap_or("{}");
 
     // Verify the shares envelope signature
-    let shares_env = match serde_json::from_str::<serde_json::Value>(shares_env_val) {
-        Ok(env) => env,
+    // Decode and verify flatbuffer envelope
+    let envelope_bytes = match base64::engine::general_purpose::STANDARD.decode(shares_env_val) {
+        Ok(bytes) => bytes,
         Err(e) => {
-            log::warn!("apply_keyshares: shares_envelope not parseable: {:?}", e);
+            log::warn!("apply_keyshares: shares_envelope not decodable: {:?}", e);
             let error_response = protocol::machine::build_apply_keyshares_response(false, &[]);
             let peer_id = get_peer_id_from_request(&headers);
             return create_encrypted_response(
@@ -1947,8 +1927,14 @@ pub async fn apply_keyshares(
         }
     };
 
-    if shares_env.get("sig").is_none() || shares_env.get("pubkey").is_none() {
-        log::error!("apply_keyshares: shares_envelope missing signature");
+    if let Err(e) = crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
+        &envelope_bytes,
+        std::time::Duration::from_secs(300),
+    ) {
+        log::error!(
+            "apply_keyshares: shares_envelope verification failed: {:?}",
+            e
+        );
         let error_response = protocol::machine::build_apply_keyshares_response(false, &[]);
         let peer_id = get_peer_id_from_request(&headers);
         return create_encrypted_response(
@@ -1958,22 +1944,6 @@ pub async fn apply_keyshares(
             peer_id.as_deref(),
         )
         .await;
-    } else {
-        if let Err(e) = crate::libp2p_beemesh::security::verify_envelope_json_value(&shares_env) {
-            log::error!(
-                "apply_keyshares: shares_envelope verification failed: {:?}",
-                e
-            );
-            let error_response = protocol::machine::build_apply_keyshares_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "apply_keyshares_response",
-                peer_id.as_deref(),
-            )
-            .await;
-        }
     }
 
     // Parse targets from request

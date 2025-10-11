@@ -3,7 +3,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use serde_json::Value;
 
 /// Keep nonces for a short window to mitigate replay attacks.
 /// Simple in-memory map: nonce_str -> Instant inserted_at.
@@ -39,41 +38,6 @@ pub fn verify_envelope_and_check_nonce(
 
     // All envelopes must be FlatBuffers now
     crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(envelope_bytes, nonce_window)
-}
-
-/// Compatibility wrapper that can handle both JSON Value and raw FlatBuffer bytes
-/// This is a temporary function to help transition from JSON to FlatBuffer-only communication
-pub fn verify_envelope_and_check_nonce_compat(
-    envelope_data: &[u8],
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    // First try to parse as FlatBuffer
-    if let Ok(result) = verify_envelope_and_check_nonce(envelope_data) {
-        return Ok(result);
-    }
-
-    // If FlatBuffer parsing fails, try JSON for backward compatibility
-    if let Ok(json_str) = std::str::from_utf8(envelope_data) {
-        if let Ok(json_value) = serde_json::from_str::<Value>(json_str) {
-            // Use the old JSON verification logic
-            let nonce_window = Duration::from_secs(300);
-            return crate::libp2p_beemesh::envelope::verify_json_envelope(
-                &json_value,
-                nonce_window,
-            );
-        }
-    }
-
-    Err(anyhow::anyhow!(
-        "envelope is neither valid FlatBuffer nor JSON"
-    ))
-}
-
-/// Convert JSON Value to bytes for the compatibility function
-pub fn verify_envelope_json_value(
-    json_value: &Value,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    let nonce_window = Duration::from_secs(300);
-    crate::libp2p_beemesh::envelope::verify_json_envelope(json_value, nonce_window)
 }
 
 #[cfg(test)]

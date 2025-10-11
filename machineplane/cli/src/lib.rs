@@ -12,7 +12,7 @@ mod flatbuffers;
 use flatbuffers::{CapabilityTarget, FlatbufferClient};
 
 mod flatbuffer_envelope;
-use flatbuffer_envelope::{envelope_to_json, FlatbufferEnvelopeBuilder};
+use flatbuffer_envelope::FlatbufferEnvelopeBuilder;
 
 pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     println!("apply_file: starting with path: {:?}", path);

@@ -1,6 +1,5 @@
 use anyhow::Context;
 use base64::Engine;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -41,102 +40,6 @@ pub fn check_and_insert_nonce(nonce_str: &str, nonce_window: Duration) -> anyhow
     }
     store.insert(nonce_str.to_string(), now);
     Ok(())
-}
-
-/// Build a signed JSON envelope: clone the supplied `Value` (expected to be an object)
-/// insert "sig" and "pubkey" fields and return the serialized bytes.
-/// NOTE: This is a compatibility function for transition period only
-pub fn build_signed_json_envelope(
-    envelope_value: &Value,
-    sig_b64: &str,
-    pub_b64: &str,
-) -> anyhow::Result<Vec<u8>> {
-    let mut signed_env = envelope_value.as_object().cloned().unwrap_or_default();
-
-    signed_env.insert("sig".to_string(), Value::String(sig_b64.to_string()));
-    signed_env.insert("pubkey".to_string(), Value::String(pub_b64.to_string()));
-
-    let signed_bytes = serde_json::to_vec(&Value::Object(signed_env))
-        .context("failed to serialize signed envelope")?;
-    Ok(signed_bytes)
-}
-
-/// Check replay protection for JSON envelopes: ensure nonce is a string, not seen in `nonce_window` and insert it.
-/// NOTE: This is a compatibility function for transition period only
-pub fn check_and_insert_nonce_json(
-    nonce_val: &serde_json::Value,
-    nonce_window: Duration,
-) -> anyhow::Result<()> {
-    let nonce_str = if nonce_val.is_string() {
-        nonce_val.as_str().unwrap().to_string()
-    } else {
-        return Err(anyhow::anyhow!("nonce must be a string"));
-    };
-
-    check_and_insert_nonce(&nonce_str, nonce_window)
-}
-
-/// Verify a signed JSON envelope: extract "pubkey" and "sig" fields, reconstruct canonical bytes
-/// (signed payload without sig/pubkey), decode sig and call crypto::verify_envelope.
-/// Returns the decoded payload bytes and the raw pubkey and sig bytes on success.
-/// NOTE: This is a compatibility function for transition period only
-pub fn verify_json_envelope(
-    envelope_value: &Value,
-    nonce_window: Duration,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    let obj = envelope_value
-        .as_object()
-        .context("envelope must be a JSON object")?;
-
-    let sig_val = obj.get("sig").context("envelope missing 'sig' field")?;
-    let pub_val = obj
-        .get("pubkey")
-        .context("envelope missing 'pubkey' field")?;
-    let sig_str = sig_val
-        .as_str()
-        .context("envelope 'sig' must be a string")?;
-    let pub_str = pub_val
-        .as_str()
-        .context("envelope 'pubkey' must be a string")?;
-
-    // Build canonical payload: copy object without sig & pubkey
-    let mut canonical = obj.clone();
-    canonical.remove("sig");
-    canonical.remove("pubkey");
-    let canonical_value = Value::Object(canonical);
-    let canonical_bytes =
-        serde_json::to_vec(&canonical_value).context("failed to serialize canonical envelope")?;
-
-    // Decode pub and sig
-    let pub_bytes = base64::engine::general_purpose::STANDARD
-        .decode(pub_str)
-        .context("failed to base64-decode pubkey")?;
-    let sig_bytes = normalize_and_decode_signature(Some(sig_str))?;
-
-    // Check nonce if present
-    if let Some(nonce_val) = canonical_value.get("nonce") {
-        check_and_insert_nonce_json(nonce_val, nonce_window)?;
-    }
-
-    // Verify via crypto
-    crypto::verify_envelope(&pub_bytes, &canonical_bytes, &sig_bytes)
-        .context("signature verification failed")?;
-
-    // Extract and decode the payload field
-    let payload_bytes = if let Some(payload_val) = canonical_value.get("payload") {
-        if let Some(payload_str) = payload_val.as_str() {
-            base64::engine::general_purpose::STANDARD
-                .decode(payload_str)
-                .context("failed to base64-decode payload")?
-        } else {
-            return Err(anyhow::anyhow!("payload field must be a string"));
-        }
-    } else {
-        // If no payload field, return the canonical bytes (backward compatibility)
-        canonical_bytes
-    };
-
-    Ok((payload_bytes, pub_bytes, sig_bytes))
 }
 
 /// Verify a flatbuffer envelope. Reconstructs canonical bytes and verifies signature.

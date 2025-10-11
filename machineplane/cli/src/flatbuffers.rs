@@ -412,21 +412,16 @@ impl FlatbufferClient {
             .send_unencrypted_request(&url, manifest_bytes, "task_create_request")
             .await?;
 
-        // Try to parse as flatbuffer TaskCreateResponse first
-        match protocol::machine::root_as_task_create_response(&response_bytes) {
-            Ok(task_response) => Ok(serde_json::json!({
-                "ok": task_response.ok(),
-                "task_id": task_response.task_id().unwrap_or(""),
-                "manifest_id": task_response.manifest_id().unwrap_or(""),
-                "selection_window_ms": task_response.selection_window_ms()
-            })),
-            Err(_) => {
-                // Fallback to JSON parsing for compatibility
-                let response_str = String::from_utf8(response_bytes)?;
-                let response_json: JsonValue = serde_json::from_str(&response_str)?;
-                Ok(response_json)
-            }
-        }
+        // Parse as flatbuffer TaskCreateResponse
+        let task_response = protocol::machine::root_as_task_create_response(&response_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse TaskCreateResponse: {}", e))?;
+
+        Ok(serde_json::json!({
+            "ok": task_response.ok(),
+            "task_id": task_response.task_id().unwrap_or(""),
+            "manifest_id": task_response.manifest_id().unwrap_or(""),
+            "selection_window_ms": task_response.selection_window_ms()
+        }))
     }
 
     /// Get candidates using flatbuffer capacity request
@@ -577,23 +572,17 @@ impl FlatbufferClient {
             .await?;
 
         // Try to parse as flatbuffer DistributeSharesResponse first
-        match protocol::machine::root_as_distribute_shares_response(&response_bytes) {
-            Ok(shares_response) => {
-                let results_json = shares_response.results_json().unwrap_or("{}");
-                let results: JsonValue =
-                    serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
-                Ok(serde_json::json!({
-                    "ok": shares_response.ok(),
-                    "results": results
-                }))
-            }
-            Err(_) => {
-                // Fallback to JSON parsing for compatibility
-                let response_str = String::from_utf8(response_bytes)?;
-                let response_json: JsonValue = serde_json::from_str(&response_str)?;
-                Ok(response_json)
-            }
-        }
+        let shares_response =
+            protocol::machine::root_as_distribute_shares_response(&response_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to parse DistributeSharesResponse: {}", e))?;
+
+        let results_json = shares_response.results_json().unwrap_or("{}");
+        let results: JsonValue =
+            serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+        Ok(serde_json::json!({
+            "ok": shares_response.ok(),
+            "results": results
+        }))
     }
 
     /// Distribute keyshares using pure flatbuffer envelopes
@@ -633,54 +622,17 @@ impl FlatbufferClient {
             .await?;
 
         // Try to parse as flatbuffer DistributeSharesResponse first
-        match protocol::machine::root_as_distribute_shares_response(&response_bytes) {
-            Ok(shares_response) => {
-                let results_json = shares_response.results_json().unwrap_or("{}");
-                let results: JsonValue =
-                    serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
-                Ok(serde_json::json!({
-                    "ok": shares_response.ok(),
-                    "results": results
-                }))
-            }
-            Err(e) => {
-                // Fallback to JSON parsing for compatibility
-                log::warn!(
-                    "Failed to parse distribute_shares response as flatbuffer: {:?}",
-                    e
-                );
-                match String::from_utf8(response_bytes.clone()) {
-                    Ok(response_str) => {
-                        log::warn!(
-                            "Response string length: {}, content preview: '{}'",
-                            response_str.len(),
-                            response_str.chars().take(100).collect::<String>()
-                        );
-                        if response_str.trim().is_empty() {
-                            log::warn!("Response is empty, returning default response");
-                            return Ok(
-                                serde_json::json!({"ok": false, "error": "empty response", "results": {}}),
-                            );
-                        }
-                        match serde_json::from_str(&response_str) {
-                            Ok(response_json) => Ok(response_json),
-                            Err(json_err) => {
-                                log::warn!("Failed to parse as JSON: {:?}", json_err);
-                                Ok(
-                                    serde_json::json!({"ok": false, "error": "invalid response format", "results": {}}),
-                                )
-                            }
-                        }
-                    }
-                    Err(utf8_err) => {
-                        log::warn!("Failed to convert response to UTF-8: {:?}", utf8_err);
-                        Ok(
-                            serde_json::json!({"ok": false, "error": "invalid utf-8 response", "results": {}}),
-                        )
-                    }
-                }
-            }
-        }
+        let shares_response =
+            protocol::machine::root_as_distribute_shares_response(&response_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to parse DistributeSharesResponse: {}", e))?;
+
+        let results_json = shares_response.results_json().unwrap_or("{}");
+        let results: JsonValue =
+            serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+        Ok(serde_json::json!({
+            "ok": shares_response.ok(),
+            "results": results
+        }))
     }
 
     /// Distribute capability tokens using flatbuffer envelope
@@ -721,54 +673,18 @@ impl FlatbufferClient {
             .await?;
 
         // Try to parse as flatbuffer DistributeCapabilitiesResponse first
-        match protocol::machine::root_as_distribute_capabilities_response(&response_bytes) {
-            Ok(capabilities_response) => {
-                let results_json = capabilities_response.results_json().unwrap_or("{}");
-                let results: JsonValue =
-                    serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
-                Ok(serde_json::json!({
-                    "ok": capabilities_response.ok(),
-                    "results": results
-                }))
-            }
-            Err(e) => {
-                // Fallback to JSON parsing for compatibility
-                log::warn!(
-                    "Failed to parse distribute_capabilities response as flatbuffer: {:?}",
-                    e
-                );
-                match String::from_utf8(response_bytes.clone()) {
-                    Ok(response_str) => {
-                        log::warn!(
-                            "Response string length: {}, content preview: '{}'",
-                            response_str.len(),
-                            response_str.chars().take(100).collect::<String>()
-                        );
-                        if response_str.trim().is_empty() {
-                            log::warn!("Response is empty, returning default response");
-                            return Ok(
-                                serde_json::json!({"ok": false, "error": "empty response", "results": {}}),
-                            );
-                        }
-                        match serde_json::from_str(&response_str) {
-                            Ok(response_json) => Ok(response_json),
-                            Err(json_err) => {
-                                log::warn!("Failed to parse as JSON: {:?}", json_err);
-                                Ok(
-                                    serde_json::json!({"ok": false, "error": "invalid response format", "results": {}}),
-                                )
-                            }
-                        }
-                    }
-                    Err(utf8_err) => {
-                        log::warn!("Failed to convert response to UTF-8: {:?}", utf8_err);
-                        Ok(
-                            serde_json::json!({"ok": false, "error": "invalid utf-8 response", "results": {}}),
-                        )
-                    }
-                }
-            }
-        }
+        let capabilities_response = protocol::machine::root_as_distribute_capabilities_response(
+            &response_bytes,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to parse DistributeCapabilitiesResponse: {}", e))?;
+
+        let results_json = capabilities_response.results_json().unwrap_or("{}");
+        let results: JsonValue =
+            serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+        Ok(serde_json::json!({
+            "ok": capabilities_response.ok(),
+            "results": results
+        }))
     }
 
     /// Assign task using flatbuffer apply request
@@ -809,61 +725,23 @@ impl FlatbufferClient {
         );
 
         // Try to parse as flatbuffer AssignResponse first
-        match protocol::machine::root_as_assign_response(&response_bytes) {
-            Ok(assign_response) => {
-                let assigned_peers: Vec<String> = assign_response
-                    .assigned_peers()
-                    .map(|v| v.iter().map(|s| s.to_string()).collect())
-                    .unwrap_or_default();
-                let per_peer_json = assign_response.per_peer_results_json().unwrap_or("{}");
-                let per_peer: JsonValue =
-                    serde_json::from_str(per_peer_json).unwrap_or(serde_json::json!({}));
+        let assign_response = protocol::machine::root_as_assign_response(&response_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse AssignResponse: {}", e))?;
 
-                Ok(serde_json::json!({
-                    "ok": assign_response.ok(),
-                    "task_id": assign_response.task_id().unwrap_or(""),
-                    "assigned_peers": assigned_peers,
-                    "per_peer": per_peer
-                }))
-            }
-            Err(e) => {
-                // Fallback to JSON parsing for compatibility
-                log::warn!(
-                    "Failed to parse assign_task response as flatbuffer: {:?}",
-                    e
-                );
-                match String::from_utf8(response_bytes.clone()) {
-                    Ok(response_str) => {
-                        log::warn!(
-                            "Response string length: {}, content preview: '{}'",
-                            response_str.len(),
-                            response_str.chars().take(100).collect::<String>()
-                        );
-                        if response_str.trim().is_empty() {
-                            log::warn!("Response is empty, returning default response");
-                            return Ok(
-                                serde_json::json!({"ok": false, "error": "empty response", "task_id": "", "assigned_peers": [], "per_peer": {}}),
-                            );
-                        }
-                        match serde_json::from_str(&response_str) {
-                            Ok(response_json) => Ok(response_json),
-                            Err(json_err) => {
-                                log::warn!("Failed to parse as JSON: {:?}", json_err);
-                                Ok(
-                                    serde_json::json!({"ok": false, "error": "invalid response format", "task_id": "", "assigned_peers": [], "per_peer": {}}),
-                                )
-                            }
-                        }
-                    }
-                    Err(utf8_err) => {
-                        log::warn!("Failed to convert response to UTF-8: {:?}", utf8_err);
-                        Ok(
-                            serde_json::json!({"ok": false, "error": "invalid utf-8 response", "task_id": "", "assigned_peers": [], "per_peer": {}}),
-                        )
-                    }
-                }
-            }
-        }
+        let assigned_peers: Vec<String> = assign_response
+            .assigned_peers()
+            .map(|v| v.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+        let per_peer_json = assign_response.per_peer_results_json().unwrap_or("{}");
+        let per_peer: JsonValue =
+            serde_json::from_str(per_peer_json).unwrap_or(serde_json::json!({}));
+
+        Ok(serde_json::json!({
+            "ok": assign_response.ok(),
+            "task_id": assign_response.task_id().unwrap_or(""),
+            "assigned_peers": assigned_peers,
+            "per_peer": per_peer
+        }))
     }
 
     /// Get manifest ID for a task
@@ -879,16 +757,9 @@ impl FlatbufferClient {
             .send_encrypted_request(&url, &[], "manifest_id_request")
             .await?;
 
-        // Try to parse as flatbuffer response first
+        // Parse as plain string response for now
         let response_str = String::from_utf8(response_bytes)?;
-        let response_json: JsonValue = serde_json::from_str(&response_str)?;
-        let manifest_id = response_json
-            .get("manifest_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("no manifest_id in response"))?
-            .to_string();
-
-        Ok(manifest_id)
+        Ok(response_str.trim_matches('"').to_string())
     }
 
     /// Apply manifest using flatbuffer envelope
@@ -913,31 +784,24 @@ impl FlatbufferClient {
             .await?;
 
         // Try to parse as flatbuffer ApplyManifestResponse first
-        match protocol::machine::root_as_apply_manifest_response(&response_bytes) {
-            Ok(manifest_response) => {
-                let assigned_peers: Vec<String> = manifest_response
-                    .assigned_peers()
-                    .map(|v| v.iter().map(|s| s.to_string()).collect())
-                    .unwrap_or_default();
-                let per_peer_json = manifest_response.per_peer_results_json().unwrap_or("{}");
-                let per_peer: JsonValue =
-                    serde_json::from_str(per_peer_json).unwrap_or(serde_json::json!({}));
+        let manifest_response = protocol::machine::root_as_apply_manifest_response(&response_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse ApplyManifestResponse: {}", e))?;
 
-                Ok(serde_json::json!({
-                    "ok": manifest_response.ok(),
-                    "tenant": manifest_response.tenant().unwrap_or(""),
-                    "replicas_requested": manifest_response.replicas_requested(),
-                    "assigned_peers": assigned_peers,
-                    "per_peer": per_peer
-                }))
-            }
-            Err(_) => {
-                // Fallback to JSON parsing for compatibility
-                let response_str = String::from_utf8(response_bytes)?;
-                let response_json: JsonValue = serde_json::from_str(&response_str)?;
-                Ok(response_json)
-            }
-        }
+        let assigned_peers: Vec<String> = manifest_response
+            .assigned_peers()
+            .map(|v| v.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+        let per_peer_json = manifest_response.per_peer_results_json().unwrap_or("{}");
+        let per_peer: JsonValue =
+            serde_json::from_str(per_peer_json).unwrap_or(serde_json::json!({}));
+
+        Ok(serde_json::json!({
+            "ok": manifest_response.ok(),
+            "tenant": manifest_response.tenant().unwrap_or(""),
+            "replicas_requested": manifest_response.replicas_requested(),
+            "assigned_peers": assigned_peers,
+            "per_peer": per_peer
+        }))
     }
 
     /// Apply keyshares using flatbuffer envelope
@@ -962,23 +826,17 @@ impl FlatbufferClient {
             .await?;
 
         // Try to parse as flatbuffer ApplyKeySharesResponse first
-        match protocol::machine::root_as_apply_key_shares_response(&response_bytes) {
-            Ok(keyshares_response) => {
-                let results_json = keyshares_response.results_json().unwrap_or("{}");
-                let results: JsonValue =
-                    serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
-                Ok(serde_json::json!({
-                    "ok": keyshares_response.ok(),
-                    "results": results
-                }))
-            }
-            Err(_) => {
-                // Fallback to JSON parsing for compatibility
-                let response_str = String::from_utf8(response_bytes)?;
-                let response_json: JsonValue = serde_json::from_str(&response_str)?;
-                Ok(response_json)
-            }
-        }
+        let keyshares_response =
+            protocol::machine::root_as_apply_key_shares_response(&response_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to parse ApplyKeySharesResponse: {}", e))?;
+
+        let results_json = keyshares_response.results_json().unwrap_or("{}");
+        let results: JsonValue =
+            serde_json::from_str(results_json).unwrap_or(serde_json::json!({}));
+        Ok(serde_json::json!({
+            "ok": keyshares_response.ok(),
+            "results": results
+        }))
     }
 }
 

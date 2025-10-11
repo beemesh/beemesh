@@ -5,7 +5,6 @@ use protocol::machine::{
     build_envelope_canonical, build_envelope_canonical_with_peer, build_envelope_signed_with_peer,
     root_as_envelope,
 };
-use serde_json::Value as JsonValue;
 
 /// Helper for building flatbuffer Envelopes instead of JSON
 pub struct FlatbufferEnvelopeBuilder {
@@ -195,35 +194,7 @@ impl FlatbufferEnvelopeBuilder {
         sk_bytes: &[u8],
         pk_bytes: &[u8],
     ) -> Result<Vec<u8>> {
-        // Try to parse as JSON first (for capability envelopes)
-        if let Ok(envelope_json) = serde_json::from_slice::<serde_json::Value>(envelope_bytes) {
-            if let Some(obj) = envelope_json.as_object() {
-                // Create canonical bytes for signing (same as verification does)
-                // This means we exclude sig and pubkey fields, just like verify_json_envelope does
-                let mut canonical = obj.clone();
-                canonical.remove("sig");
-                canonical.remove("pubkey");
-                let canonical_value = serde_json::Value::Object(canonical);
-                let canonical_bytes = serde_json::to_vec(&canonical_value)?;
-
-                // Sign the canonical bytes
-                let (sig_b64, _pub_b64) = sign_envelope(sk_bytes, pk_bytes, &canonical_bytes)?;
-
-                // Add signature and pubkey to the original envelope
-                let mut signed_obj = obj.clone();
-                signed_obj.insert(
-                    "sig".to_string(),
-                    serde_json::Value::String(format!("ml-dsa-65:{}", sig_b64)),
-                );
-                signed_obj.insert(
-                    "pubkey".to_string(),
-                    serde_json::Value::String(self.public_key.clone()),
-                );
-                let signed_envelope = serde_json::Value::Object(signed_obj);
-                return Ok(serde_json::to_vec(&signed_envelope)?);
-            }
-        }
-
+        // Sign flatbuffer envelope
         // Fall back to flatbuffer handling - reconstruct canonical bytes for signing (same as verification)
         let envelope = root_as_envelope(envelope_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to parse envelope: {}", e))?;
@@ -256,76 +227,4 @@ impl FlatbufferEnvelopeBuilder {
             None,
         ))
     }
-}
-
-/// Convert flatbuffer Envelope or JSON envelope to JSON for compatibility with existing code
-pub fn envelope_to_json(envelope_bytes: &[u8]) -> Result<JsonValue> {
-    // Try JSON parsing first - if this works, it's already JSON
-    if let Ok(json_value) = serde_json::from_slice::<JsonValue>(envelope_bytes) {
-        return Ok(json_value);
-    }
-
-    // Fall back to flatbuffer parsing
-    let envelope = root_as_envelope(envelope_bytes)
-        .map_err(|e| anyhow::anyhow!("Failed to parse envelope: {}", e))?;
-
-    let mut json_obj = serde_json::Map::new();
-
-    if let Some(payload) = envelope.payload() {
-        json_obj.insert(
-            "payload".to_string(),
-            serde_json::Value::String(
-                base64::engine::general_purpose::STANDARD.encode(payload.bytes()),
-            ),
-        );
-    }
-
-    if let Some(payload_type) = envelope.payload_type() {
-        json_obj.insert(
-            "payload_type".to_string(),
-            serde_json::Value::String(payload_type.to_string()),
-        );
-    }
-
-    if let Some(nonce) = envelope.nonce() {
-        json_obj.insert(
-            "nonce".to_string(),
-            serde_json::Value::String(nonce.to_string()),
-        );
-    }
-
-    json_obj.insert(
-        "ts".to_string(),
-        serde_json::Value::Number(envelope.ts().into()),
-    );
-
-    if let Some(alg) = envelope.alg() {
-        json_obj.insert(
-            "alg".to_string(),
-            serde_json::Value::String(alg.to_string()),
-        );
-    }
-
-    if let Some(sig) = envelope.sig() {
-        json_obj.insert(
-            "sig".to_string(),
-            serde_json::Value::String(sig.to_string()),
-        );
-    }
-
-    if let Some(pubkey) = envelope.pubkey() {
-        json_obj.insert(
-            "pubkey".to_string(),
-            serde_json::Value::String(pubkey.to_string()),
-        );
-    }
-
-    if let Some(peer_id) = envelope.peer_id() {
-        json_obj.insert(
-            "peer_id".to_string(),
-            serde_json::Value::String(peer_id.to_string()),
-        );
-    }
-
-    Ok(serde_json::Value::Object(json_obj))
 }
