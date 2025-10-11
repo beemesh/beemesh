@@ -20,7 +20,7 @@ impl FlatbufferEnvelopeBuilder {
         }
     }
 
-    /// Build a manifest envelope containing encrypted manifest payload
+    /// Build a signed manifest envelope containing encrypted manifest payload
     pub fn build_manifest_envelope(
         &mut self,
         ciphertext: &[u8],
@@ -28,6 +28,8 @@ impl FlatbufferEnvelopeBuilder {
         n: usize,
         k: usize,
         _count: usize,
+        sk_bytes: &[u8],
+        pk_bytes: &[u8],
     ) -> Result<Vec<u8>> {
         // Create an EncryptedManifest flatbuffer instead of JSON
         let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
@@ -76,12 +78,30 @@ impl FlatbufferEnvelopeBuilder {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        Ok(build_envelope_canonical(
+        // Create canonical bytes for signing
+        let canonical_bytes = build_envelope_canonical(
             &payload_bytes,
             "manifest",
             &nonce_str,
             ts,
             "ml-dsa-65",
+            None,
+        );
+
+        // Sign the canonical bytes
+        let (sig_b64, _pub_b64) = sign_envelope(sk_bytes, pk_bytes, &canonical_bytes)?;
+
+        // Create signed envelope directly
+        Ok(build_envelope_signed_with_peer(
+            &payload_bytes,
+            "manifest",
+            &nonce_str,
+            ts,
+            "ml-dsa-65",
+            "ml-dsa-65",
+            &sig_b64,
+            &self.public_key,
+            &self.peer_id,
             None,
         ))
     }

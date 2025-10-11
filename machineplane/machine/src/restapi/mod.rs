@@ -782,52 +782,49 @@ pub async fn create_task(
         &payload_bytes_for_parsing[..std::cmp::min(20, payload_bytes_for_parsing.len())]
     );
 
-    // Extra debugging: check if this looks like an EncryptedManifest flatbuffer by examining the header
-    if payload_bytes_for_parsing.len() >= 8 {
-        let size_prefix = u32::from_le_bytes([
-            payload_bytes_for_parsing[0],
-            payload_bytes_for_parsing[1],
-            payload_bytes_for_parsing[2],
-            payload_bytes_for_parsing[3],
-        ]);
-        log::info!(
-            "create_task: flatbuffer size_prefix={}, expected=~544",
-            size_prefix
-        );
+    // Validate that we can parse the flatbuffer and create proper envelope for storage
+    let manifest_bytes_to_store =
+        match protocol::machine::root_as_encrypted_manifest(&payload_bytes_for_parsing) {
+            Ok(encrypted_manifest) => {
+                log::info!("create_task: successfully parsed EncryptedManifest flatbuffer");
+                log::info!(
+                    "create_task: nonce={}, threshold={}, total_shares={}",
+                    encrypted_manifest.nonce().unwrap_or(""),
+                    encrypted_manifest.threshold(),
+                    encrypted_manifest.total_shares()
+                );
 
-        // Check if this looks like the start of a different flatbuffer
-        let type_offset = u32::from_le_bytes([
-            payload_bytes_for_parsing[4],
-            payload_bytes_for_parsing[5],
-            payload_bytes_for_parsing[6],
-            payload_bytes_for_parsing[7],
-        ]);
-        log::info!("create_task: flatbuffer type_offset={}", type_offset);
-    }
+                // Create a proper envelope containing the EncryptedManifest for decryption
+                // The decryption process expects an envelope with payload_type="manifest"
+                let envelope_nonce: [u8; 16] = rand::random();
+                let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
 
-    // Validate that we can parse the flatbuffer, but store the raw bytes
-    match protocol::machine::root_as_encrypted_manifest(&payload_bytes_for_parsing) {
-        Ok(encrypted_manifest) => {
-            log::info!("create_task: successfully parsed EncryptedManifest flatbuffer");
-            log::info!(
-                "create_task: nonce={}, threshold={}, total_shares={}",
-                encrypted_manifest.nonce().unwrap_or(""),
-                encrypted_manifest.threshold(),
-                encrypted_manifest.total_shares()
-            );
-        }
-        Err(e) => {
-            log::warn!(
+                protocol::machine::build_envelope_canonical(
+                    &payload_bytes_for_parsing,
+                    "manifest",
+                    &nonce_str,
+                    ts,
+                    "ml-dsa-65",
+                    None,
+                )
+            }
+            Err(e) => {
+                log::warn!(
                 "create_task: failed to parse EncryptedManifest flatbuffer (payload_len={}): {}",
                 payload_bytes_for_parsing.len(),
                 e
             );
-            log::warn!("create_task: proceeding with raw flatbuffer bytes anyway");
-        }
-    }
+                log::warn!("create_task: proceeding with raw flatbuffer bytes anyway");
+                payload_bytes_for_parsing
+            }
+        };
 
     let rec = TaskRecord {
-        manifest_bytes: payload_bytes_for_parsing,
+        manifest_bytes: manifest_bytes_to_store,
         created_at: std::time::SystemTime::now(),
         shares_distributed: HashMap::new(),
         assigned_peers: None,

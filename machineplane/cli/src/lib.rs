@@ -73,21 +73,40 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         fs::write(&fname, share)?;
     }
 
-    // build encrypted manifest envelope using flatbuffers (contains encrypted ciphertext)
+    // build encrypted manifest flatbuffer
     let pk_b64 = base64::engine::general_purpose::STANDARD.encode(&pk_bytes);
     let mut envelope_builder =
         FlatbufferEnvelopeBuilder::with_keys("cli-client".to_string(), pk_b64.clone());
-    let manifest_envelope_bytes = envelope_builder.build_manifest_envelope(
+
+    // Create raw EncryptedManifest
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+    let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&ciphertext);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let encrypted_manifest_bytes = protocol::machine::build_encrypted_manifest(
+        &nonce_b64,
+        &payload_b64,
+        "aes-256-gcm",
+        k as u32,
+        n as u32,
+        Some("kubernetes"),
+        &[],
+        ts,
+        None,
+    );
+
+    // Create signed envelope containing the EncryptedManifest for storage/decryption
+    let manifest_envelope_signed_bytes = envelope_builder.build_manifest_envelope(
         &ciphertext,
         &nonce_bytes,
         n,
         k,
         shares_vec.len(),
+        &sk_bytes,
+        &pk_bytes,
     )?;
-
-    // sign manifest envelope
-    let manifest_envelope_signed_bytes =
-        envelope_builder.sign_envelope(&manifest_envelope_bytes, &sk_bytes, &pk_bytes)?;
 
     // Convert signed envelope to base64 for manifest_id calculation
     let manifest_envelope_signed_b64 =
@@ -153,7 +172,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let create_resp = fb_client
         .create_task(
             tenant,
-            &manifest_envelope_signed_bytes,
+            &encrypted_manifest_bytes,
             None, // Let server compute manifest_id
             Some(operation_id.clone()),
         )
