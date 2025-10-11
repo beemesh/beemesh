@@ -41,7 +41,7 @@ async fn in_process_apply_decrypt_flow_ephemeral_keys() {
 
     // Start a local libp2p swarm (used for in-process DHT/local peer id)
     let (mut swarm, _topic, _peer_rx, _peer_tx) =
-        libp2p_beemesh::setup_libp2p_node().expect("setup_libp2p_node failed");
+        libp2p_beemesh::setup_libp2p_node(0, 0, "0.0.0.0").expect("setup_libp2p_node failed");
 
     // Read manifest file from tests folder (same as integration test)
     let manifest_path = PathBuf::from(format!(

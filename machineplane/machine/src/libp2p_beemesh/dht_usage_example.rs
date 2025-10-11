@@ -10,11 +10,11 @@
 // /// Example of how to use the DHT-enabled mesh for storing applied manifests
 // pub async fn example_dht_usage() -> Result<(), Box<dyn std::error::Error>> {
 //     // 1. Setup the libp2p node with DHT support
-//     let (swarm, topic, peer_rx, peer_tx) = setup_libp2p_node()?;
-    
+//     let (swarm, topic, peer_rx, peer_tx) = setup_libp2p_node(0, 0, "0.0.0.0")?;
+
 //     // 2. Create control channels
 //     let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
-    
+
 //     // 3. Start the libp2p node in the background
 //     let local_peer_id = *swarm.local_peer_id();
 //     tokio::spawn(async move {

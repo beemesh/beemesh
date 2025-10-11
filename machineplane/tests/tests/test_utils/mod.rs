@@ -50,7 +50,9 @@ pub fn make_test_cli(
     disable_rest: bool,
     disable_machine: bool,
     api_socket: Option<String>,
-    bootstrap_peer: Option<String>,
+    bootstrap_peers: Vec<String>,
+    libp2p_tcp_port: u16,
+    libp2p_quic_port: u16,
 ) -> Cli {
     Cli {
         ephemeral: true,
@@ -61,7 +63,10 @@ pub fn make_test_cli(
         node_name: None,
         api_socket,
         key_dir: String::from("/tmp/.beemesh_test_unused"),
-        bootstrap_peer,
+        bootstrap_peer: bootstrap_peers,
+        libp2p_tcp_port,
+        libp2p_quic_port,
+        libp2p_host: "0.0.0.0".to_string(),
     }
 }
 
@@ -101,13 +106,23 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
             .arg("--rest-api-host")
             .arg(&cli.rest_api_host)
             .arg("--rest-api-port")
-            .arg(&cli.rest_api_port.to_string());
+            .arg(&cli.rest_api_port.to_string())
+            .arg("--libp2p-tcp-port")
+            .arg(&cli.libp2p_tcp_port.to_string())
+            .arg("--libp2p-quic-port")
+            .arg(&cli.libp2p_quic_port.to_string())
+            .arg("--libp2p-host")
+            .arg(&cli.libp2p_host);
 
         if cli.disable_rest_api {
             cmd.arg("--disable-rest-api");
         }
         if cli.disable_machine_api {
             cmd.arg("--disable-machine-api");
+        }
+
+        for bootstrap in &cli.bootstrap_peer {
+            cmd.arg("--bootstrap-peer").arg(bootstrap);
         }
 
         // Set environment variables for this process

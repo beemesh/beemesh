@@ -42,9 +42,21 @@ pub struct Cli {
     #[arg(long, default_value = "/etc/beemesh/machine")]
     pub key_dir: String,
 
-    /// Optional bootstrap peer address for explicit peer discovery
+    /// Bootstrap peer addresses for explicit peer discovery (can be specified multiple times)
     #[arg(long)]
-    pub bootstrap_peer: Option<String>,
+    pub bootstrap_peer: Vec<String>,
+
+    /// Port for libp2p TCP transport (default: 0 for auto-assignment)
+    #[arg(long, default_value = "0")]
+    pub libp2p_tcp_port: u16,
+
+    /// Port for libp2p UDP/QUIC transport (default: 0 for auto-assignment)
+    #[arg(long, default_value = "0")]
+    pub libp2p_quic_port: u16,
+
+    /// Host address for libp2p listeners (default: 0.0.0.0)
+    #[arg(long, default_value = "0.0.0.0")]
+    pub libp2p_host: String,
 }
 
 /// Start the machine runtime using the provided CLI configuration.
@@ -140,10 +152,14 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
             kp
         }
     };
-    let (mut swarm, topic, peer_rx, peer_tx) = libp2p_beemesh::setup_libp2p_node()?;
+    let (mut swarm, topic, peer_rx, peer_tx) = libp2p_beemesh::setup_libp2p_node(
+        cli.libp2p_tcp_port,
+        cli.libp2p_quic_port,
+        &cli.libp2p_host,
+    )?;
 
-    // If a bootstrap peer is provided, dial it explicitly (for in-process tests)
-    if let Some(addr) = &cli.bootstrap_peer {
+    // If bootstrap peers are provided, dial them explicitly (for in-process tests)
+    for addr in &cli.bootstrap_peer {
         match addr.parse::<libp2p::multiaddr::Multiaddr>() {
             Ok(ma) => match swarm.dial(ma) {
                 Ok(_) => log::info!("Dialing bootstrap peer: {}", addr),

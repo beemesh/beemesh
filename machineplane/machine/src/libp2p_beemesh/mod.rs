@@ -3,7 +3,7 @@ use base64::engine::general_purpose;
 use base64::Engine;
 use futures::stream::StreamExt;
 use libp2p::{
-    gossipsub, kad, mdns, noise, request_response, swarm::SwarmEvent, tcp, yamux, PeerId, Swarm,
+    gossipsub, kad, noise, request_response, swarm::SwarmEvent, tcp, yamux, PeerId, Swarm,
 };
 use log::{debug, info, warn};
 use once_cell::sync::OnceCell;
@@ -46,7 +46,11 @@ pub struct HandshakeState {
     pub confirmed: bool,
 }
 
-pub fn setup_libp2p_node() -> Result<(
+pub fn setup_libp2p_node(
+    tcp_port: u16,
+    quic_port: u16,
+    host: &str,
+) -> Result<(
     Swarm<MyBehaviour>,
     gossipsub::IdentTopic,
     watch::Receiver<Vec<String>>,
@@ -80,8 +84,6 @@ pub fn setup_libp2p_node() -> Result<(
                 gossipsub::MessageAuthenticity::Signed(key.clone()),
                 gossipsub_config,
             )?;
-            let mdns =
-                mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
 
             // Create the request-response behavior for apply protocol
             let apply_rr = request_response::Behaviour::new(
@@ -135,7 +137,6 @@ pub fn setup_libp2p_node() -> Result<(
 
             Ok(MyBehaviour {
                 gossipsub,
-                mdns,
                 apply_rr,
                 handshake_rr,
                 keyshare_rr,
@@ -155,8 +156,8 @@ pub fn setup_libp2p_node() -> Result<(
         .gossipsub
         .add_explicit_peer(&local_peer);
 
-    swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    swarm.listen_on(format!("/ip4/{}/udp/{}/quic-v1", host, quic_port).parse()?)?;
+    swarm.listen_on(format!("/ip4/{}/tcp/{}", host, tcp_port).parse()?)?;
     // Also listen on localhost for in-process testing
     swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
 
@@ -267,12 +268,7 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::InboundFailure { peer, error, .. })) => {
                         behaviour::apply_inbound_failure(peer, error);
                     }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                        behaviour::mdns_discovered(list, &mut swarm, &mut handshake_states, &peer_tx);
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                        behaviour::mdns_expired(list, &mut swarm, &mut handshake_states, &peer_tx);
-                    }
+
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                         propagation_source: peer_id,
                         message_id: _id,

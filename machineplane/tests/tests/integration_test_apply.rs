@@ -17,9 +17,23 @@ async fn test_apply_functionality() {
 
     // Create separate CLI configs for each node - they will each be separate processes
     // so no global state sharing issues
-    let cli1 = make_test_cli(3000, false, false, None, None);
-    let cli2 = make_test_cli(3100, false, true, None, None);
-    let cli3 = make_test_cli(3200, false, true, None, None);
+    // node_3000 gets fixed libp2p port 4001, node_3100 gets port 4002, both serve as bootstrap peers
+    let cli1 = make_test_cli(3000, false, false, None, vec![], 4001, 0);
+    let cli2 = make_test_cli(
+        3100,
+        false,
+        true,
+        None,
+        vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+        4002,
+        0,
+    );
+    // node_3200 uses both nodes as bootstrap peers for resilience
+    let bootstrap_peers = vec![
+        "/ip4/127.0.0.1/tcp/4001".to_string(),
+        "/ip4/127.0.0.1/tcp/4002".to_string(),
+    ];
+    let cli3 = make_test_cli(3200, false, true, None, bootstrap_peers, 0, 0);
 
     let mut guard = start_nodes_as_processes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await;
 
