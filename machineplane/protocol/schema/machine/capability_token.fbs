@@ -3,7 +3,7 @@ namespace beemesh.machine;
 // Represents the core capability being delegated
 table Capability {
   type: string;              // e.g. "KeyShareRequest"
-  task_id: string;           // ID of the task
+  manifest_id: string;       // ID of the manifest this capability grants access to
   required_quorum: uint8;    // Minimum shares required
   issued_at: uint64;         // UNIX timestamp
   expires_at: uint64;        // Optional expiry

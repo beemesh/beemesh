@@ -1,6 +1,6 @@
 use base64::Engine;
 use libp2p::request_response;
-use log::{info, warn};
+use log::{debug, info, warn};
 /// Handle inbound key-share request-response messages.
 /// Accept only flatbuffer-encoded KeyShareRequest / Envelope formats. JSON paths have been removed.
 pub fn keyshare_message(
@@ -13,7 +13,7 @@ pub fn keyshare_message(
         request_response::Message::Request {
             request, channel, ..
         } => {
-            warn!(
+            debug!(
                 "libp2p: received keyshare request from peer={} request_size={}",
                 peer,
                 request.len()
@@ -23,7 +23,7 @@ pub fn keyshare_message(
             if let Ok(kreq) = protocol::machine::root_as_key_share_request(&request) {
                 // It's a fetch request: respond with the locally stored share if available
                 let manifest_id = kreq.manifest_id().unwrap_or("");
-                warn!(
+                debug!(
                     "libp2p: keyshare fetch request for manifest_id={} from {}",
                     manifest_id, peer
                 );
@@ -40,7 +40,7 @@ pub fn keyshare_message(
                                 std::time::Duration::from_secs(300),
                             ) {
                                 Ok((_canonical, _pub, _sig)) => {
-                                    log::info!(
+                                    log::debug!(
                                         "libp2p: received valid capability blob len={} from {}",
                                         cap_bytes.len(),
                                         peer
@@ -54,7 +54,7 @@ pub fn keyshare_message(
                                             if let Err(e) = ks.put(&cid, &blob_enc, Some(&meta)) {
                                                 log::warn!("keystore put failed for capability cid {}: {:?}", cid, e);
                                             } else {
-                                                log::info!("libp2p: stored received capability for manifest_id={} cid={}", manifest_id, cid);
+                                                log::debug!("libp2p: stored received capability for manifest_id={} cid={}", manifest_id, cid);
                                                 // Announce provider for discovered capability holders
                                                 let manifest_provider_cid =
                                                     format!("manifest:{}", manifest_id);
@@ -100,7 +100,7 @@ pub fn keyshare_message(
                         }
                     }
                 } else {
-                    warn!(
+                    debug!(
                         "keyshare fetch missing capability from {} - rejecting",
                         peer
                     );
@@ -119,7 +119,7 @@ pub fn keyshare_message(
                 // Search keystore for a share with this manifest_id
                 match crate::libp2p_beemesh::open_keystore() {
                     Ok(ks) => {
-                        warn!(
+                        debug!(
                             "libp2p: keyshare fetch searching keystore for manifest_id={}",
                             manifest_id
                         );
@@ -133,7 +133,7 @@ pub fn keyshare_message(
                                             match crypto::decrypt_share_from_blob(&blob, &privb) {
                                                 Ok(plain) => {
                                                     let b64 = base64::engine::general_purpose::STANDARD.encode(&plain);
-                                                    warn!("libp2p: keyshare fetch found and returning share for manifest_id={} from cid={}", manifest_id, cid);
+                                                    debug!("libp2p: keyshare fetch found and returning share for manifest_id={} from cid={}", manifest_id, cid);
                                                     let resp = protocol::machine::build_keyshare_response(true, "fetch", &b64);
                                                     let _ = swarm.behaviour_mut().keyshare_rr.send_response(channel, resp);
                                                     return;
@@ -148,13 +148,13 @@ pub fn keyshare_message(
                                 }
                             }
                             Ok(None) => {
-                                warn!(
+                                debug!(
                                     "libp2p: keyshare fetch no share found for manifest_id={}",
                                     manifest_id
                                 );
                             }
                             Err(e) => {
-                                warn!("libp2p: keyshare fetch error querying keystore: {:?}", e);
+                                debug!("libp2p: keyshare fetch error querying keystore: {:?}", e);
                             }
                         }
                     }
@@ -162,7 +162,7 @@ pub fn keyshare_message(
                 }
 
                 // Not found
-                warn!(
+                debug!(
                     "libp2p: keyshare fetch no share found for manifest_id={}",
                     manifest_id
                 );
@@ -219,6 +219,7 @@ pub fn keyshare_message(
                                                 // Use manifest_id from envelope type or a default meta
                                                 let payload_type = env.payload_type().unwrap_or("");
 
+                                                warn!("libp2p: keyshare processing envelope payload_type={}", payload_type);
                                                 if payload_type == "capability" {
                                                     // Handle capability tokens
                                                     let store_meta = if let Ok(capability_token) =
@@ -228,17 +229,17 @@ pub fn keyshare_message(
                                                         if let Some(root_capability) =
                                                             capability_token.root_capability()
                                                         {
-                                                            if let Some(task_id) =
-                                                                root_capability.task_id()
+                                                            if let Some(manifest_id) =
+                                                                root_capability.manifest_id()
                                                             {
                                                                 let meta = format!(
                                                                     "capability:{}",
-                                                                    task_id
+                                                                    manifest_id
                                                                 );
-                                                                warn!("libp2p: keyshare extracted capability task_id={}, storing with metadata: {}", task_id, meta);
+                                                                warn!("libp2p: keyshare extracted capability manifest_id={}, storing with metadata: {}", manifest_id, meta);
                                                                 Some(meta)
                                                             } else {
-                                                                warn!("libp2p: keyshare capability token has no task_id, storing with no metadata");
+                                                                warn!("libp2p: keyshare capability token has no manifest_id, storing with no metadata");
                                                                 None
                                                             }
                                                         } else {
@@ -258,7 +259,7 @@ pub fn keyshare_message(
                                                             cid, e
                                                         );
                                                     } else {
-                                                        info!("keystore: stored simple keyshare cid={} type={}", cid, payload_type);
+                                                        debug!("keystore: stored simple keyshare cid={} type={}", cid, payload_type);
                                                         // Always announce the CID itself
                                                         let (reply_tx, _rx) =
                                                             tokio::sync::mpsc::unbounded_channel();
@@ -268,6 +269,7 @@ pub fn keyshare_message(
                                                         );
                                                     }
                                                 } else if payload_type == "keyshare" {
+                                                    warn!("libp2p: keyshare processing keyshare payload");
                                                     // Handle keyshares - extract individual raw share bytes from KeyShares flatbuffer
                                                     let mut shares_stored = false;
 
@@ -309,7 +311,7 @@ pub fn keyshare_message(
                                                                 if let Ok(raw_share_bytes) =
                                                                     base64::engine::general_purpose::STANDARD.decode(share_b64)
                                                                 {
-                                                                    warn!("libp2p: keyshare extracting raw share {} len={}", i, raw_share_bytes.len());
+                                                                    debug!("libp2p: keyshare extracting raw share {} len={}", i, raw_share_bytes.len());
 
                                                                     // Store this individual raw share
                                                                     if let Ok((share_blob, share_cid)) =
@@ -322,17 +324,21 @@ pub fn keyshare_message(
                                                                         ) {
                                                                             warn!("libp2p: keyshare keystore put failed for share cid {}: {:?}", share_cid, e);
                                                                         } else {
-                                                                            warn!("libp2p: keyshare keystore SUCCESS stored raw share {} cid={} for manifest_id={:?}", i, share_cid, manifest_id);
+                                                                            debug!("libp2p: keyshare keystore SUCCESS stored raw share {} cid={} for manifest_id={:?}", i, share_cid, manifest_id);
                                                                             shares_stored = true;
 
-                                                                            // Announce this share CID
-                                                                            let (announce_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                                                                            let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider {
-                                                                                cid: share_cid.clone(),
-                                                                                ttl_ms: 3000,
-                                                                                reply_tx: announce_tx,
-                                                                            };
-                                                                            crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                                            // Announce this node as a provider for the manifest
+                                                                            if let Some(ref mid) = manifest_id {
+                                                                                let manifest_provider_cid = format!("manifest:{}", mid);
+                                                                                warn!("libp2p: keyshare announcing provider for manifest_provider_cid={}", manifest_provider_cid);
+                                                                                let (announce_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                                                                                let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider {
+                                                                                    cid: manifest_provider_cid,
+                                                                                    ttl_ms: 3000,
+                                                                                    reply_tx: announce_tx,
+                                                                                };
+                                                                                crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                                            }
                                                                         }
                                                                     } else {
                                                                         warn!("libp2p: keyshare encrypt_share_for_keystore failed for share {}", i);
@@ -367,7 +373,7 @@ pub fn keyshare_message(
                                                             cid, e
                                                         );
                                                     } else {
-                                                        info!("keystore: stored simple keyshare cid={} type={}", cid, payload_type);
+                                                        debug!("keystore: stored simple keyshare cid={} type={}", cid, payload_type);
                                                         // Always announce the CID itself
                                                         let (reply_tx, _rx) =
                                                             tokio::sync::mpsc::unbounded_channel();
@@ -596,13 +602,13 @@ pub fn keyshare_message(
             }
         }
         request_response::Message::Response { response, .. } => {
-            info!("libp2p: received keyshare response from peer={}", peer);
+            debug!("libp2p: received keyshare response from peer={}", peer);
             // Try to parse as KeyShareResponse and forward to pending waiter if present
             match protocol::machine::root_as_key_share_response(&response) {
                 Ok(resp) => {
                     let ok = resp.ok();
                     let msg = resp.message().map(|s| s.to_string()).unwrap_or_default();
-                    info!("libp2p: keyshare response - ok={} msg={}", ok, msg);
+                    debug!("libp2p: keyshare response - ok={} msg={}", ok, msg);
                     // If there's a pending fetch waiter for this peer, forward the raw response bytes
                     if let Some(tx) = crate::libp2p_beemesh::control::take_pending_keyshare_for_peer(
                         &peer.to_string(),

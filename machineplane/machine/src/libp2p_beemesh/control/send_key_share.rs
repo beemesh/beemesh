@@ -66,12 +66,14 @@ pub async fn handle_send_key_share(
                                 protocol::machine::root_as_capability_token(&payload_bytes)
                             {
                                 if let Some(root_capability) = capability_token.root_capability() {
-                                    if let Some(task_id) = root_capability.task_id() {
-                                        let manifest_id = task_id.to_string();
+                                    if let Some(manifest_id) = root_capability.manifest_id() {
+                                        let manifest_id = manifest_id.to_string();
                                         warn!("libp2p: self-send parsed CapabilityToken, manifest_id={}", manifest_id);
                                         Some(manifest_id)
                                     } else {
-                                        warn!("libp2p: self-send capability token has no task_id");
+                                        warn!(
+                                            "libp2p: self-send capability token has no manifest_id"
+                                        );
                                         None
                                     }
                                 } else {
@@ -134,15 +136,19 @@ pub async fn handle_send_key_share(
                                                             warn!("libp2p: self-send keystore SUCCESS stored raw share {} cid={} for manifest_id={}", i, share_cid, mid);
                                                         }
 
-                                                        // Announce this share CID
-                                                        let (announce_tx, _rx) =
-                                                            tokio::sync::mpsc::unbounded_channel();
-                                                        let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider {
-                                                                cid: share_cid.clone(),
-                                                                ttl_ms: 3000,
-                                                                reply_tx: announce_tx,
-                                                            };
-                                                        crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                        // Announce this node as a provider for the manifest
+                                                        if let Some(ref mid) = manifest_id {
+                                                            let manifest_provider_cid =
+                                                                format!("manifest:{}", mid);
+                                                            let (announce_tx, _rx) =
+                                                                tokio::sync::mpsc::unbounded_channel();
+                                                            let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider {
+                                                                    cid: manifest_provider_cid,
+                                                                    ttl_ms: 3000,
+                                                                    reply_tx: announce_tx,
+                                                                };
+                                                            crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                        }
                                                     }
                                                 } else {
                                                     warn!("libp2p: self-send failed to decode share {} base64", i);
@@ -197,15 +203,19 @@ pub async fn handle_send_key_share(
                                                             warn!("libp2p: self-send keystore SUCCESS stored raw share {} cid={} for manifest_id={}", i, share_cid, mid);
                                                         }
 
-                                                        // Announce this share CID
-                                                        let (announce_tx, _rx) =
-                                                            tokio::sync::mpsc::unbounded_channel();
-                                                        let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider {
-                                                                cid: share_cid.clone(),
-                                                                ttl_ms: 3000,
-                                                                reply_tx: announce_tx,
-                                                            };
-                                                        crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                        // Announce this node as a provider for the manifest
+                                                        if let Some(ref mid) = manifest_id {
+                                                            let manifest_provider_cid =
+                                                                format!("manifest:{}", mid);
+                                                            let (announce_tx, _rx) =
+                                                                tokio::sync::mpsc::unbounded_channel();
+                                                            let ctrl = crate::libp2p_beemesh::control::Libp2pControl::AnnounceProvider {
+                                                                    cid: manifest_provider_cid,
+                                                                    ttl_ms: 3000,
+                                                                    reply_tx: announce_tx,
+                                                                };
+                                                            crate::libp2p_beemesh::control::enqueue_control(ctrl);
+                                                        }
                                                     }
                                                 } else {
                                                     warn!("libp2p: self-send failed to decode share {} base64", i);

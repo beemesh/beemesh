@@ -1573,7 +1573,7 @@ pub mod machine {
 
     // Builder for CapabilityToken
     pub fn build_capability_token(
-        task_id: &str,
+        manifest_id: &str,
         issuer_peer_id: &str,
         authorized_peer: &str,
         issued_at: u64,
@@ -1582,7 +1582,7 @@ pub mod machine {
         let mut fbb = FlatBufferBuilder::with_capacity(512);
 
         // Create the root capability
-        let task_id_off = fbb.create_string(task_id);
+        let manifest_id_off = fbb.create_string(manifest_id);
         let issuer_peer_id_off = fbb.create_string(issuer_peer_id);
         let capability_type_off = fbb.create_string("KeyShareRequest");
 
@@ -1591,7 +1591,7 @@ pub mod machine {
                 &mut fbb,
                 &crate::generated::generated_capability_token::beemesh::machine::CapabilityArgs {
                     type_: Some(capability_type_off),
-                    task_id: Some(task_id_off),
+                    manifest_id: Some(manifest_id_off),
                     required_quorum: 1,
                     issued_at,
                     expires_at,

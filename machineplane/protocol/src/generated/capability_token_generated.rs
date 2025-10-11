@@ -43,7 +43,7 @@ impl<'a> flatbuffers::Follow<'a> for Capability<'a> {
 
 impl<'a> Capability<'a> {
   pub const VT_TYPE_: flatbuffers::VOffsetT = 4;
-  pub const VT_TASK_ID: flatbuffers::VOffsetT = 6;
+  pub const VT_MANIFEST_ID: flatbuffers::VOffsetT = 6;
   pub const VT_REQUIRED_QUORUM: flatbuffers::VOffsetT = 8;
   pub const VT_ISSUED_AT: flatbuffers::VOffsetT = 10;
   pub const VT_EXPIRES_AT: flatbuffers::VOffsetT = 12;
@@ -62,7 +62,7 @@ impl<'a> Capability<'a> {
     builder.add_expires_at(args.expires_at);
     builder.add_issued_at(args.issued_at);
     if let Some(x) = args.issuer_peer_id { builder.add_issuer_peer_id(x); }
-    if let Some(x) = args.task_id { builder.add_task_id(x); }
+    if let Some(x) = args.manifest_id { builder.add_manifest_id(x); }
     if let Some(x) = args.type_ { builder.add_type_(x); }
     builder.add_required_quorum(args.required_quorum);
     builder.finish()
@@ -77,11 +77,11 @@ impl<'a> Capability<'a> {
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(Capability::VT_TYPE_, None)}
   }
   #[inline]
-  pub fn task_id(&self) -> Option<&'a str> {
+  pub fn manifest_id(&self) -> Option<&'a str> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(Capability::VT_TASK_ID, None)}
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(Capability::VT_MANIFEST_ID, None)}
   }
   #[inline]
   pub fn required_quorum(&self) -> u8 {
@@ -121,7 +121,7 @@ impl flatbuffers::Verifiable for Capability<'_> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("type_", Self::VT_TYPE_, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("task_id", Self::VT_TASK_ID, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_id", Self::VT_MANIFEST_ID, false)?
      .visit_field::<u8>("required_quorum", Self::VT_REQUIRED_QUORUM, false)?
      .visit_field::<u64>("issued_at", Self::VT_ISSUED_AT, false)?
      .visit_field::<u64>("expires_at", Self::VT_EXPIRES_AT, false)?
@@ -132,7 +132,7 @@ impl flatbuffers::Verifiable for Capability<'_> {
 }
 pub struct CapabilityArgs<'a> {
     pub type_: Option<flatbuffers::WIPOffset<&'a str>>,
-    pub task_id: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub manifest_id: Option<flatbuffers::WIPOffset<&'a str>>,
     pub required_quorum: u8,
     pub issued_at: u64,
     pub expires_at: u64,
@@ -143,7 +143,7 @@ impl<'a> Default for CapabilityArgs<'a> {
   fn default() -> Self {
     CapabilityArgs {
       type_: None,
-      task_id: None,
+      manifest_id: None,
       required_quorum: 0,
       issued_at: 0,
       expires_at: 0,
@@ -162,8 +162,8 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> CapabilityBuilder<'a, 'b, A> {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(Capability::VT_TYPE_, type_);
   }
   #[inline]
-  pub fn add_task_id(&mut self, task_id: flatbuffers::WIPOffset<&'b  str>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(Capability::VT_TASK_ID, task_id);
+  pub fn add_manifest_id(&mut self, manifest_id: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(Capability::VT_MANIFEST_ID, manifest_id);
   }
   #[inline]
   pub fn add_required_quorum(&mut self, required_quorum: u8) {
@@ -200,7 +200,7 @@ impl core::fmt::Debug for Capability<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("Capability");
       ds.field("type_", &self.type_());
-      ds.field("task_id", &self.task_id());
+      ds.field("manifest_id", &self.manifest_id());
       ds.field("required_quorum", &self.required_quorum());
       ds.field("issued_at", &self.issued_at());
       ds.field("expires_at", &self.expires_at());

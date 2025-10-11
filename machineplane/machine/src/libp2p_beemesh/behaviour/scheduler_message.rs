@@ -1,6 +1,6 @@
 use base64::Engine;
 use libp2p::request_response;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
@@ -15,7 +15,7 @@ pub fn scheduler_message(
         request_response::Message::Request {
             request, channel, ..
         } => {
-            info!("libp2p: received scheduler request from peer={}", peer);
+            debug!("libp2p: received scheduler request from peer={}", peer);
             // First, attempt to verify request as an Envelope (JSON or FlatBuffer)
             let effective_request =
                 match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&request) {
@@ -33,7 +33,7 @@ pub fn scheduler_message(
             match protocol::machine::root_as_capacity_request(&effective_request) {
                 Ok(cap_req) => {
                     let orig_request_id = cap_req.request_id().unwrap_or("");
-                    info!(
+                    debug!(
                         "libp2p: scheduler capacity request id={} from {}",
                         orig_request_id, peer
                     );
@@ -65,7 +65,7 @@ pub fn scheduler_message(
                         .behaviour_mut()
                         .scheduler_rr
                         .send_response(channel, finished);
-                    info!(
+                    debug!(
                         "libp2p: sent scheduler capacity reply for id={} to {}",
                         orig_request_id, peer
                     );
@@ -76,10 +76,10 @@ pub fn scheduler_message(
             }
         }
         request_response::Message::Response { response, .. } => {
-            info!("libp2p: received scheduler response from peer={}", peer);
+            debug!("libp2p: received scheduler response from peer={}", peer);
             if let Ok(cap_reply) = protocol::machine::root_as_capacity_reply(&response) {
                 let request_part = cap_reply.request_id().unwrap_or("").to_string();
-                info!(
+                debug!(
                     "libp2p: scheduler reply ok={} from {} for request_id={}",
                     cap_reply.ok(),
                     peer,

@@ -136,7 +136,7 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
         // Set environment variables for this process
         cmd.env("RUST_LOG", "info,libp2p=warn,quinn=warn");
 
-        println!("Starting machine process on port {}", cli.rest_api_port);
+        //println!("Starting machine process on port {}", cli.rest_api_port);
         match cmd.spawn() {
             Ok(child) => {
                 guard.processes.push(child);

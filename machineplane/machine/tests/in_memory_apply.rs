@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose;
 use base64::Engine as _;
+use log::debug;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -132,7 +133,7 @@ async fn in_process_apply_decrypt_flow_ephemeral_keys() {
     let token_obj = serde_json::json!({
         "task_id": manifest_id,
         "issuer": swarm.local_peer_id().to_string(),
-        "required_quorum": 1,
+        "required_quorum": 3,
         "caveats": { "authorized_peer": swarm.local_peer_id().to_string() },
         "ts": ts_millis,
     });
@@ -252,7 +253,7 @@ async fn in_process_apply_decrypt_flow_ephemeral_keys() {
     );
 
     // Directly process self-apply (bypassing control/send_apply_request) which stores manifest in DHT
-    println!(
+    debug!(
         "TEST DEBUG: About to call process_self_apply_request with apply_fb len={}",
         apply_fb.len()
     );

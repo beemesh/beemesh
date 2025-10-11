@@ -104,30 +104,43 @@ async fn decrypt_encrypted_manifest_with_id(
         );
 
         // Try DHT provider discovery first
-        let holders = find_manifest_holders(manifest_id).await?;
+        let mut holders = find_manifest_holders(manifest_id).await?;
         log::info!(
             "libp2p: decrypt_with_id found {} potential holders via DHT: {:?}",
             holders.len(),
             holders
         );
 
-        // Always get all connected peers and combine with DHT results to maximize our chances of finding keyshares
-        let connected_peers = get_connected_peers().await;
-        log::info!(
-            "libp2p: decrypt_with_id found {} connected peers: {:?}",
-            connected_peers.len(),
-            connected_peers
-        );
+        // If DHT discovery didn't find enough providers, use connected peers as fallback
+        if holders.len() < 2 {
+            log::warn!(
+                "libp2p: DHT found only {} providers, using connected peers as fallback",
+                holders.len()
+            );
+            let connected_peers = get_connected_peers().await;
+            log::info!(
+                "libp2p: found {} connected peers for fallback: {:?}",
+                connected_peers.len(),
+                connected_peers
+            );
 
-        // Combine DHT holders and connected peers, removing duplicates
-        let mut peers_to_query = holders;
-        for peer in connected_peers {
-            if !peers_to_query.contains(&peer) {
-                peers_to_query.push(peer);
+            // Add connected peers that aren't already in holders
+            for peer_id in connected_peers {
+                if !holders.contains(&peer_id) {
+                    holders.push(peer_id);
+                }
             }
+
+            log::info!(
+                "libp2p: after fallback, have {} total providers: {:?}",
+                holders.len(),
+                holders
+            );
         }
+
+        let peers_to_query = holders;
         log::info!(
-            "libp2p: decrypt_with_id will query {} total peers: {:?}",
+            "libp2p: decrypt_with_id will query {} providers: {:?}",
             peers_to_query.len(),
             peers_to_query
         );
@@ -140,7 +153,7 @@ async fn decrypt_encrypted_manifest_with_id(
             }
 
             // Prepare the keyshare request - for inter-node fetching, we MUST include capability token
-            log::warn!("libp2p: KEYSHARE DEBUG - building keyshare request with manifest_id='{}' capability=''", manifest_id);
+            log::debug!("libp2p: KEYSHARE DEBUG - building keyshare request with manifest_id='{}' capability=''", manifest_id);
             let keyshare_request_fb = build_keyshare_request(manifest_id, "");
 
             // Attempt to attach a locally-held capability token (if present) so
@@ -150,13 +163,13 @@ async fn decrypt_encrypted_manifest_with_id(
             let mut request_fb_to_send = keyshare_request_fb.clone();
             if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
                 let cap_meta = format!("capability:{}", manifest_id);
-                log::info!(
+                log::debug!(
                     "libp2p: attempting keystore capability lookup for meta='{}'",
                     cap_meta
                 );
                 match ks.find_cid_for_manifest(&cap_meta) {
                     Ok(Some(cap_cid)) => {
-                        log::info!(
+                        log::debug!(
                             "libp2p: keystore lookup succeeded for meta='{}' -> cid={}",
                             cap_meta,
                             cap_cid
@@ -169,7 +182,7 @@ async fn decrypt_encrypted_manifest_with_id(
                                     crypto::decrypt_share_from_blob(&cap_blob, &privb)
                                 {
                                     // cap_plain contains the signed JSON envelope bytes
-                                    log::info!("libp2p: decrypt local capability plain_len={} prefix={:02x}{:02x}{:02x}", cap_plain.len(),
+                                    log::debug!("libp2p: decrypt local capability plain_len={} prefix={:02x}{:02x}{:02x}", cap_plain.len(),
                                         if cap_plain.len() > 0 { cap_plain[0] } else { 0u8 },
                                         if cap_plain.len() > 1 { cap_plain[1] } else { 0u8 },
                                         if cap_plain.len() > 2 { cap_plain[2] } else { 0u8 }
@@ -178,7 +191,7 @@ async fn decrypt_encrypted_manifest_with_id(
                                         .encode(&cap_plain);
                                     // Log diagnostics about attached capability so remote holders can
                                     // be inspected when they reject/parsing fails.
-                                    log::warn!("libp2p: CAPABILITY DEBUG - attaching local capability for manifest_id={} cap_len={} cap_b64_len={} first_byte=0x{:02x}",
+                                    log::debug!("libp2p: CAPABILITY DEBUG - attaching local capability for manifest_id={} cap_len={} cap_b64_len={} first_byte=0x{:02x}",
                                         manifest_id,
                                         cap_plain.len(),
                                         cap_b64.len(),
@@ -188,14 +201,14 @@ async fn decrypt_encrypted_manifest_with_id(
                                     match base64::engine::general_purpose::STANDARD.decode(&cap_b64)
                                     {
                                         Ok(decoded) => {
-                                            log::warn!("libp2p: CAPABILITY DEBUG - base64 encode/decode test successful, decoded_len={}", decoded.len());
+                                            log::debug!("libp2p: CAPABILITY DEBUG - base64 encode/decode test successful, decoded_len={}", decoded.len());
                                         }
                                         Err(e) => {
                                             log::error!("libp2p: CAPABILITY DEBUG - base64 encode/decode test FAILED: {:?}", e);
                                         }
                                     }
 
-                                    log::warn!("libp2p: KEYSHARE DEBUG - building keyshare request with manifest_id='{}' cap_b64_len={} cap_b64_prefix='{}'",
+                                    log::debug!("libp2p: KEYSHARE DEBUG - building keyshare request with manifest_id='{}' cap_b64_len={} cap_b64_prefix='{}'",
                                         manifest_id, cap_b64.len(),
                                         if cap_b64.len() > 50 { &cap_b64[..50] } else { &cap_b64 });
                                     request_fb_to_send =
@@ -205,7 +218,7 @@ async fn decrypt_encrypted_manifest_with_id(
                         }
                     }
                     Ok(None) => {
-                        log::info!(
+                        log::debug!(
                             "libp2p: keystore lookup found no cid for meta='{}'",
                             cap_meta
                         );
@@ -325,7 +338,7 @@ async fn decrypt_encrypted_manifest_with_id(
             );
             return Err(error_helpers::insufficient_key_shares(key_shares.len(), 2));
         }
-        log::warn!(
+        log::debug!(
             "libp2p: DECRYPTION DEBUG - after fetching, have {} shares",
             key_shares.len()
         );
@@ -599,7 +612,7 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    log::info!(
+    log::debug!(
         "libp2p: processing self-apply request (manifest len={})",
         manifest.len()
     );
@@ -607,7 +620,7 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
     // Parse the FlatBuffer apply request (same logic as in apply_message)
     match protocol::machine::root_as_apply_request(manifest) {
         Ok(apply_req) => {
-            log::info!(
+            log::debug!(
                 "libp2p: self-apply request - tenant={:?} operation_id={:?} replicas={}",
                 apply_req.tenant(),
                 apply_req.operation_id(),
@@ -634,7 +647,7 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
                     let manifest_id = if let Some(stored_cid) =
                         crate::restapi::get_manifest_cid_for_operation(operation_id).await
                     {
-                        log::info!(
+                        log::debug!(
                             "libp2p: self-apply using stored manifest_cid={} for operation_id={}",
                             stored_cid,
                             operation_id
@@ -652,29 +665,29 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
                         calculated_id
                     };
 
-                    log::info!(
+                    log::debug!(
                         "libp2p: self-apply triggering decryption for manifest_id={}",
                         manifest_id
                     );
 
                     // Parse manifest_json as base64-encoded flatbuffer envelope
-                    log::warn!(
+                    log::debug!(
                         "libp2p: SELF-APPLY DEBUG - parsing manifest_json len={}",
                         manifest_json.len()
                     );
                     let manifest_value = if let Ok(envelope_bytes) =
                         base64::engine::general_purpose::STANDARD.decode(&manifest_json)
                     {
-                        log::warn!("libp2p: SELF-APPLY DEBUG - decoded base64 successfully, envelope_bytes len={}", envelope_bytes.len());
+                        log::debug!("libp2p: SELF-APPLY DEBUG - decoded base64 successfully, envelope_bytes len={}", envelope_bytes.len());
                         // Try to parse as flatbuffer envelope
                         if let Ok(envelope) = protocol::machine::root_as_envelope(&envelope_bytes) {
                             let payload_type = envelope.payload_type().unwrap_or("");
-                            log::warn!(
+                            log::debug!(
                                 "libp2p: SELF-APPLY DEBUG - parsed envelope with payload_type='{}'",
                                 payload_type
                             );
                             if payload_type == "manifest" {
-                                log::warn!("libp2p: self-apply detected encrypted manifest envelope - attempting decryption");
+                                log::debug!("libp2p: self-apply detected encrypted manifest envelope - attempting decryption");
 
                                 // Extract the encrypted manifest from the envelope payload
                                 if let Some(payload_vector) = envelope.payload() {
@@ -691,7 +704,7 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
                                         .await
                                         {
                                             Ok(decrypted_yaml) => {
-                                                log::info!(
+                                                log::debug!(
                                                 "libp2p: self-apply successfully decrypted FlatBuffer manifest"
                                             );
                                                 // Parse the decrypted YAML content
@@ -699,13 +712,13 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
                                                     &decrypted_yaml,
                                                 ) {
                                                     Ok(v) => {
-                                                        log::info!(
+                                                        log::debug!(
                                                         "libp2p: self-apply parsed decrypted YAML successfully"
                                                     );
                                                         v
                                                     }
                                                     Err(_) => {
-                                                        log::info!(
+                                                        log::warn!(
                                                         "libp2p: self-apply treating decrypted content as raw"
                                                     );
                                                         serde_json::json!({ "raw": decrypted_yaml })
@@ -722,15 +735,15 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
                                             }
                                         }
                                     } else {
-                                        log::warn!("libp2p: self-apply failed to parse payload as EncryptedManifest");
+                                        log::error!("libp2p: self-apply failed to parse payload as EncryptedManifest");
                                         serde_json::json!({})
                                     }
                                 } else {
-                                    log::warn!("libp2p: self-apply envelope missing payload");
+                                    log::error!("libp2p: self-apply envelope missing payload");
                                     serde_json::json!({})
                                 }
                             } else {
-                                log::warn!(
+                                log::error!(
                                     "libp2p: self-apply envelope has wrong payload type: '{}', expected 'manifest'",
                                     payload_type
                                 );
@@ -741,11 +754,11 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
                             serde_json::json!({})
                         }
                     } else {
-                        log::warn!("libp2p: self-apply failed to decode base64 manifest_json, manifest_json len={}", manifest_json.len());
+                        log::error!("libp2p: self-apply failed to decode base64 manifest_json, manifest_json len={}", manifest_json.len());
                         serde_json::json!({})
                     };
 
-                    log::info!("libp2p: self-apply storing decrypted manifest for testing");
+                    log::debug!("libp2p: self-apply storing decrypted manifest for testing");
                     let _ = crate::restapi::store_decrypted_manifest(&manifest_id, manifest_value)
                         .await;
                 } else {
@@ -763,8 +776,11 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
 async fn find_manifest_holders(manifest_id: &str) -> Result<Vec<libp2p::PeerId>, anyhow::Error> {
     use tokio::sync::mpsc;
 
-    // Retry up to 3 times with delays to allow provider announcements to propagate
-    for attempt in 1..=3 {
+    let mut all_holders = std::collections::HashSet::new();
+
+    // Retry up to 5 times with delays to allow provider announcements to propagate
+    // Continue searching until we find at least 2 providers (k=2) or exhaust attempts
+    for attempt in 1..=5 {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         // Send control message to find manifest holders
@@ -772,22 +788,21 @@ async fn find_manifest_holders(manifest_id: &str) -> Result<Vec<libp2p::PeerId>,
             manifest_id: manifest_id.to_string(),
             reply_tx: tx,
         };
+        crate::libp2p_beemesh::control::enqueue_control(control_msg);
 
-        // Get the control sender from the global context
-        if let Some(control_tx) = crate::libp2p_beemesh::get_control_sender() {
-            if let Err(e) = control_tx.send(control_msg) {
-                return Err(error_helpers::wrap_send_error("FindManifestHolders", e));
-            }
-        } else {
-            return Err(error_helpers::control_sender_unavailable());
-        }
-
-        // Wait for response with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+        // Wait for response with longer timeout for local tests
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
             Ok(Some(peer_ids)) => {
                 if !peer_ids.is_empty() {
-                    log::info!("libp2p: find_manifest_holders found {} holders for manifest_id={} (attempt {})", peer_ids.len(), manifest_id, attempt);
-                    return Ok(peer_ids);
+                    for peer_id in peer_ids {
+                        all_holders.insert(peer_id);
+                    }
+                    log::info!("libp2p: find_manifest_holders found {} total holders for manifest_id={} (attempt {})", all_holders.len(), manifest_id, attempt);
+
+                    // Continue searching until we have at least 2 providers or this is the last attempt
+                    if all_holders.len() >= 2 || attempt == 5 {
+                        return Ok(all_holders.into_iter().collect());
+                    }
                 } else {
                     log::info!("libp2p: find_manifest_holders attempt {} returned empty result for manifest_id={}", attempt, manifest_id);
                 }
@@ -799,8 +814,8 @@ async fn find_manifest_holders(manifest_id: &str) -> Result<Vec<libp2p::PeerId>,
                     attempt
                 );
             }
-            Err(_) => {
-                log::info!(
+            Err(_timeout) => {
+                log::warn!(
                     "libp2p: find_manifest_holders timeout for manifest_id={} (attempt {})",
                     manifest_id,
                     attempt
@@ -809,22 +824,24 @@ async fn find_manifest_holders(manifest_id: &str) -> Result<Vec<libp2p::PeerId>,
         }
 
         // If not the last attempt, wait before retrying to allow provider announcements to propagate
-        if attempt < 3 {
+        if attempt < 5 {
             log::info!(
-                "libp2p: find_manifest_holders waiting 1s before retry {} for manifest_id={}",
+                "libp2p: find_manifest_holders waiting 3s before retry {} for manifest_id={}",
                 attempt + 1,
                 manifest_id
             );
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            // Shorter retry delay for local tests but allow DHT to propagate
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     }
 
-    // All attempts failed
+    // Return whatever providers we found, even if less than ideal
     log::warn!(
-        "libp2p: find_manifest_holders exhausted all attempts for manifest_id={}",
-        manifest_id
+        "libp2p: find_manifest_holders exhausted all attempts for manifest_id={}, found {} providers",
+        manifest_id,
+        all_holders.len()
     );
-    Ok(vec![])
+    Ok(all_holders.into_iter().collect())
 }
 
 /// Get list of currently connected peers as fallback when DHT provider discovery fails
@@ -902,7 +919,7 @@ async fn fetch_keyshare_from_peer(
     // Wait for response with timeout
     match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
         Ok(Some(Ok(response_bytes))) => {
-            log::info!("libp2p: fetch_keyshare_from_peer successfully received response from peer={} (len={})", peer_id, response_bytes.len());
+            log::debug!("libp2p: fetch_keyshare_from_peer successfully received response from peer={} (len={})", peer_id, response_bytes.len());
             Ok(response_bytes)
         }
         Ok(Some(Err(e))) => {

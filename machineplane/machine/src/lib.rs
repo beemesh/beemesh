@@ -162,7 +162,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
     for addr in &cli.bootstrap_peer {
         match addr.parse::<libp2p::multiaddr::Multiaddr>() {
             Ok(ma) => match swarm.dial(ma) {
-                Ok(_) => log::info!("Dialing bootstrap peer: {}", addr),
+                Ok(_) => log::debug!("Dialing bootstrap peer: {}", addr),
                 Err(e) => log::warn!("Failed to dial bootstrap peer {}: {}", addr, e),
             },
             Err(e) => log::warn!("Invalid bootstrap peer address {}: {}", addr, e),

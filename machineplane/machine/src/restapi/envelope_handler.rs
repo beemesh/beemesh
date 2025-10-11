@@ -227,22 +227,22 @@ impl EnvelopeHandler {
         // Prefer KEM public key embedded in the envelope (if present). Fall back to the
         // envelope.pubkey only if it looks like a KEM public key (length check).
         if let Some(peer_id) = envelope.peer_id() {
-            // TODO: Try kem_pub field first (currently disabled due to schema issues)
-            // if let Some(kem_b64) = envelope.kem_pub() {
-            //     match base64::engine::general_purpose::STANDARD.decode(kem_b64) {
-            //         Ok(kem_bytes) => {
-            //             self.add_peer_pubkey(peer_id, kem_bytes).await;
-            //             debug!(
-            //                 "Stored KEM public key from envelope.kem_pub for peer: {}",
-            //                 peer_id
-            //             );
-            //             return Ok(());
-            //         }
-            //         Err(e) => {
-            //             warn!("Failed to decode envelope.kem_pub (base64): {}", e);
-            //         }
-            //     }
-            // }
+            // Try kem_pub field first
+            if let Some(kem_b64) = envelope.kem_pubkey() {
+                match base64::engine::general_purpose::STANDARD.decode(kem_b64) {
+                    Ok(kem_bytes) => {
+                        self.add_peer_pubkey(peer_id, kem_bytes).await;
+                        debug!(
+                            "Stored KEM public key from envelope.kem_pubkey for peer: {}",
+                            peer_id
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!("Failed to decode envelope.kem_pubkey (base64): {}", e);
+                    }
+                }
+            }
 
             // If envelope.kem_pub not present, check envelope.pubkey (may be a KEM pubkey)
             if let Some(pubkey_b64) = envelope.pubkey() {

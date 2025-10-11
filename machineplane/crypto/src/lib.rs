@@ -215,14 +215,14 @@ pub fn encrypt_share_for_keystore(payload: &[u8]) -> anyhow::Result<(Vec<u8>, St
     hasher.update(&blob);
     let cid = hex::encode(hasher.finalize());
     // log some diagnostics about the blob we produced
-    log::warn!(
+    log::debug!(
         "encrypt_share_for_keystore: payload_len={} wrapped_len={} ciphertext_len={} cid={}",
         payload.len(),
         wrapped_key_ct.len(),
         ciphertext.len(),
         cid
     );
-    log::warn!(
+    log::debug!(
         "encrypt_share_for_keystore: produced blob len={} cid={}",
         blob.len(),
         cid
@@ -302,7 +302,7 @@ pub fn open_keystore_default() -> anyhow::Result<Keystore> {
 
 pub fn open_keystore_with_shared_name(shared_name: &str) -> anyhow::Result<Keystore> {
     let ephemeral = std::env::var("BEEMESH_KEYSTORE_EPHEMERAL").is_ok();
-    log::warn!(
+    log::debug!(
         "open_keystore_with_shared_name: ephemeral={} shared_name='{}' thread_id={:?}",
         ephemeral,
         shared_name,

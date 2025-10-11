@@ -392,7 +392,7 @@ impl FlatbufferClient {
         }
 
         let response_bytes = self
-            .send_unencrypted_request(&url, manifest_bytes, "task_create_request")
+            .send_encrypted_request(&url, manifest_bytes, "task_create_request")
             .await?;
 
         // Parse as flatbuffer TaskCreateResponse
@@ -409,11 +409,7 @@ impl FlatbufferClient {
 
     /// Get candidates using flatbuffer capacity request
     pub async fn get_candidates(&self, tenant: &str, task_id: &str) -> Result<Vec<String>> {
-        println!(
-            "get_candidates: called with tenant={}, task_id={}",
-            tenant, task_id
-        );
-        log::info!(
+        log::debug!(
             "get_candidates: called with tenant={}, task_id={}",
             tenant,
             task_id
@@ -424,40 +420,28 @@ impl FlatbufferClient {
             tenant,
             task_id
         );
-        println!("get_candidates: requesting URL: {}", url);
-        log::info!("get_candidates: requesting URL: {}", url);
+        log::debug!("get_candidates: requesting URL: {}", url);
+        println!("CLI: get_candidates requesting URL: {}", url);
 
         // Send empty payload for GET-like request
-        println!("get_candidates: sending request...");
-        log::info!("get_candidates: sending request...");
+        log::debug!("get_candidates: sending request...");
         let response_bytes = self
             .send_encrypted_request(&url, &[], "candidates_request")
             .await?;
-        println!(
-            "get_candidates: received response, {} bytes",
-            response_bytes.len()
-        );
+
         log::info!(
             "get_candidates: received response, {} bytes",
             response_bytes.len()
         );
 
         // Try to parse as flatbuffer CandidatesResponse first
-        println!(
-            "get_candidates: attempting to parse {} bytes as flatbuffer",
-            response_bytes.len()
-        );
-        log::info!(
+        log::debug!(
             "get_candidates: attempting to parse {} bytes as flatbuffer",
             response_bytes.len()
         );
         match protocol::machine::root_as_candidates_response(&response_bytes) {
             Ok(candidates_response) => {
-                println!(
-                    "get_candidates: successfully parsed flatbuffer, ok={}",
-                    candidates_response.ok()
-                );
-                log::info!(
+                log::debug!(
                     "get_candidates: successfully parsed flatbuffer, ok={}",
                     candidates_response.ok()
                 );
@@ -471,23 +455,16 @@ impl FlatbufferClient {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    println!("get_candidates: found {} responders", responders.len());
-                    log::info!("get_candidates: found {} responders", responders.len());
+                    log::debug!("get_candidates: found {} responders", responders.len());
                     Ok(responders)
                 } else {
-                    println!("get_candidates: flatbuffer indicates error, returning empty");
-                    log::warn!("get_candidates: flatbuffer indicates error, returning empty");
+                    log::debug!("get_candidates: flatbuffer indicates error, returning empty");
                     Ok(vec![])
                 }
             }
             Err(e) => {
                 // Fallback to JSON parsing for compatibility
-                println!("get_candidates: flatbuffer parsing failed: {:?}", e);
                 log::warn!("Failed to parse candidates response as flatbuffer: {:?}", e);
-                println!(
-                    "get_candidates: first 100 bytes of response: {:?}",
-                    &response_bytes[..std::cmp::min(100, response_bytes.len())]
-                );
                 log::warn!(
                     "First 100 bytes of response: {:?}",
                     &response_bytes[..std::cmp::min(100, response_bytes.len())]

@@ -1,6 +1,8 @@
 use base64::Engine;
 use crypto::{encrypt_manifest, ensure_keypair_on_disk, split_symmetric_key, KEY_DIR};
 use dirs::home_dir;
+use log::debug;
+use log::error;
 use log::info;
 use serde_json::Value as JsonValue;
 use serde_yaml;
@@ -15,17 +17,15 @@ mod flatbuffer_envelope;
 use flatbuffer_envelope::FlatbufferEnvelopeBuilder;
 
 pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
-    println!("apply_file: starting with path: {:?}", path);
-    info!("apply_file called for path: {:?}", path);
+    debug!("apply_file called for path: {:?}", path);
 
     if !path.exists() {
-        println!("apply_file: file not found: {}", path.display());
+        error!("apply_file: file not found: {}", path.display());
         anyhow::bail!("file not found: {}", path.display());
     }
 
-    println!("apply_file: file exists, reading contents...");
     let contents = tokio::fs::read_to_string(&path).await?;
-    println!(
+    debug!(
         "apply_file: file contents read successfully, length: {}",
         contents.len()
     );
@@ -35,29 +35,24 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     );
 
     // Parse manifest to JSON if possible, else wrap raw
-    println!("apply_file: parsing manifest...");
     let manifest_json: JsonValue = match serde_yaml::from_str(&contents) {
         Ok(v) => v,
         Err(_) => serde_json::json!({"raw": contents}),
     };
-    println!("apply_file: manifest parsed successfully");
+    debug!("apply_file: manifest parsed successfully");
 
     // ensure keypair
-    println!("apply_file: ensuring keypair...");
     let (pk_bytes, sk_bytes) = ensure_keypair_on_disk()?;
-    println!("apply_file: keypair ensured");
 
     // encrypt manifest
-    println!("apply_file: encrypting manifest...");
     let (ciphertext, nonce_bytes, sym, _nonce) = encrypt_manifest(&manifest_json)?;
-    println!("apply_file: manifest encrypted");
 
     // split symmetric key into shares (n=3, k=2)
-    println!("apply_file: splitting symmetric key...");
+    debug!("apply_file: splitting symmetric key...");
     let n = 3usize;
     let k = 2usize;
     let shares_vec = split_symmetric_key(&sym, n, k);
-    println!(
+    debug!(
         "apply_file: symmetric key split into {} shares",
         shares_vec.len()
     );
@@ -148,27 +143,24 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
     // API base URL can be overridden with BEEMESH_API env var
     let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
-    println!(
+    debug!(
         "apply_file: creating FlatbufferClient with base URL: {}",
         base
     );
-    info!("Creating FlatbufferClient with base URL: {}", base);
+    debug!("Creating FlatbufferClient with base URL: {}", base);
     let mut fb_client = FlatbufferClient::new(base)?;
-    println!("apply_file: FlatbufferClient created");
+    debug!("apply_file: FlatbufferClient created");
 
     // Fetch machine's public key for encrypted communication
-    println!("apply_file: fetching machine's public key...");
-    info!("Fetching machine's public key...");
+    debug!("Fetching machine's public key...");
     fb_client.fetch_machine_public_key().await?;
-    println!("apply_file: machine's public key fetched successfully");
-    info!("Successfully fetched machine's public key");
+    debug!("Successfully fetched machine's public key");
 
     // TODO: Get machine's public key from somewhere (e.g., discovery, config file, etc.)
     // For now, communication will work but won't be encrypted without the machine's pubkey
 
     // 1) Create task using flatbuffer client (store manifest in task store)
-    println!("apply_file: about to call create_task...");
-    info!("About to call create_task...");
+    debug!("About to call create_task...");
     let create_resp = fb_client
         .create_task(
             tenant,
@@ -177,13 +169,27 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
             Some(operation_id.clone()),
         )
         .await?;
-    println!("apply_file: create_task completed successfully");
-    info!("create_task completed successfully");
+    debug!("create_task completed successfully");
+    debug!("create_task response: {:?}", create_resp);
+    println!("CLI: create_task response: {:?}", create_resp);
     let returned_manifest_id = create_resp
         .get("manifest_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("no manifest_id in response"))?
         .to_string();
+    let returned_task_id = create_resp
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    debug!(
+        "create_task returned: manifest_id={}, task_id={}",
+        returned_manifest_id, returned_task_id
+    );
+    println!(
+        "CLI: create_task returned: manifest_id={}, task_id={}",
+        returned_manifest_id, returned_task_id
+    );
     info!("Created task with manifest_id {}", returned_manifest_id);
 
     // Now rebuild the shares envelope with the correct manifest_id
@@ -204,17 +210,17 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         base64::engine::general_purpose::STANDARD.encode(&shares_envelope_signed_bytes);
 
     // 2) Query candidates using flatbuffer client
-    println!("apply_file: about to call get_candidates...");
-    info!("About to call get_candidates...");
+    debug!("About to call get_candidates...");
+    debug!("get_candidates: using manifest_id={}", returned_manifest_id);
     let peers = fb_client
         .get_candidates(tenant, &returned_manifest_id)
         .await?;
-    println!(
+    debug!(
         "apply_file: get_candidates completed successfully, found {} peers",
         peers.len()
     );
-    info!("get_candidates completed successfully");
-    info!("Candidates: {:?}", peers);
+    debug!("get_candidates completed successfully");
+    debug!("Candidates: {:?}", peers);
 
     // 3) Distribute shares to the responders using flatbuffers
     let mut target_flatbuffers: Vec<Vec<u8>> = Vec::new();
@@ -259,8 +265,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         }
     }
 
-    println!("apply_file: about to call distribute_shares_flatbuffer...");
-    info!("About to call distribute_shares_flatbuffer...");
+    debug!("About to call distribute_shares_flatbuffer...");
     let dist_resp = fb_client
         .distribute_shares_flatbuffer(
             tenant,
@@ -270,21 +275,23 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
             &target_flatbuffers,
         )
         .await?;
-    println!("apply_file: distribute_shares_flatbuffer completed successfully");
-    info!("distribute_shares_flatbuffer completed successfully");
-    info!("Distribute shares response: {:?}", dist_resp);
+    debug!("Distribute shares response: {:?}", dist_resp);
 
     // 4) Distribute capability tokens using flatbuffers
-    let capability_targets =
-        create_capability_tokens(&peers, &returned_manifest_id, &pk_bytes, &sk_bytes).await?;
-    println!("apply_file: about to call distribute_capabilities...");
-    info!("About to call distribute_capabilities...");
+    // Only create capability tokens for the first n peers (where n = number of shares)
+    let capability_peers: Vec<String> = peers.iter().take(n).cloned().collect();
+    let capability_targets = create_capability_tokens(
+        &capability_peers,
+        &returned_manifest_id,
+        &pk_bytes,
+        &sk_bytes,
+    )
+    .await?;
+    debug!("About to call distribute_capabilities...");
     let capability_resp = fb_client
         .distribute_capabilities(tenant, &returned_manifest_id, &capability_targets)
         .await?;
-    println!("apply_file: distribute_capabilities completed successfully");
-    info!("distribute_capabilities completed successfully");
-    info!("Distribute capabilities response: {:?}", capability_resp);
+    debug!("Distribute capabilities response: {:?}", capability_resp);
 
     // 5) Assign task to replicas using flatbuffers
     // Determine replicas desired from manifest
@@ -298,7 +305,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         })
         .unwrap_or(1) as usize;
     let chosen_peers: Vec<String> = peers.into_iter().take(replicas).collect();
-    println!(
+    debug!(
         "apply_file: about to call assign_task with {} chosen_peers",
         chosen_peers.len()
     );
@@ -310,8 +317,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let assign_resp = fb_client
         .assign_task(tenant, &returned_manifest_id, chosen_peers)
         .await?;
-    println!("apply_file: assign_task completed successfully");
-    info!("Assign response: {:?}", assign_resp);
+    debug!("Assign response: {:?}", assign_resp);
 
     let ok = assign_resp
         .get("ok")

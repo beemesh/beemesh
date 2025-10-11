@@ -268,30 +268,75 @@ pub async fn handle_control_message(
             ttl_ms,
             reply_tx,
         } => {
-            // perform announce and register for periodic renewal
-            match announce_provider_direct(swarm, cid.clone(), ttl_ms) {
-                Ok(()) => {
-                    // schedule next renewal at half the TTL (or 1s minimum)
-                    let ttl = if ttl_ms == 0 { 0 } else { ttl_ms };
-                    let next = if ttl == 0 {
-                        Instant::now() + Duration::from_secs(3600) // effectively never
-                    } else {
-                        Instant::now() + Duration::from_millis(std::cmp::max(1000, ttl / 2))
-                    };
-                    let mut map = ACTIVE_ANNOUNCES.lock().unwrap();
-                    map.insert(
-                        cid.clone(),
-                        AnnounceEntry {
-                            ttl_ms: ttl_ms,
-                            next_due: next,
-                        },
-                    );
-                    let _ = reply_tx.send(Ok(()));
-                }
-                Err(e) => {
-                    let _ = reply_tx.send(Err(e));
+            log::warn!(
+                "libp2p: processing AnnounceProvider for cid={} ttl_ms={}",
+                cid,
+                ttl_ms
+            );
+
+            // For local tests, announce multiple times with short intervals to improve discovery
+            let mut announce_success = false;
+            for attempt in 1..=3 {
+                match announce_provider_direct(swarm, cid.clone(), ttl_ms) {
+                    Ok(()) => {
+                        announce_success = true;
+                        if attempt > 1 {
+                            log::info!(
+                                "libp2p: AnnounceProvider succeeded for cid={} on attempt {}",
+                                cid,
+                                attempt
+                            );
+                        }
+                        break;
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "libp2p: AnnounceProvider attempt {} failed for cid={}: {}",
+                            attempt,
+                            cid,
+                            e
+                        );
+                        if attempt < 3 {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    }
                 }
             }
+
+            if announce_success {
+                // schedule next renewal at half the TTL (or 1s minimum) with more frequent updates for local tests
+                let ttl = if ttl_ms == 0 { 0 } else { ttl_ms };
+                let next = if ttl == 0 {
+                    Instant::now() + Duration::from_secs(3600) // effectively never
+                } else {
+                    // More frequent renewal for local tests - every 2 seconds minimum
+                    Instant::now() + Duration::from_millis(std::cmp::max(2000, ttl / 3))
+                };
+                let mut map = ACTIVE_ANNOUNCES.lock().unwrap();
+                map.insert(
+                    cid.clone(),
+                    AnnounceEntry {
+                        ttl_ms: ttl_ms,
+                        next_due: next,
+                    },
+                );
+                let _ = reply_tx.send(Ok(()));
+            } else {
+                let _ = reply_tx.send(Err("All provider announcement attempts failed".to_string()));
+            }
+        }
+        Libp2pControl::GetDhtPeers { reply_tx } => {
+            // Get DHT peer information for debugging
+            let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
+            let local_peer_id = *swarm.local_peer_id();
+
+            let dht_info = serde_json::json!({
+                "local_peer_id": local_peer_id.to_string(),
+                "connected_peers": connected_peers.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+                "connected_count": connected_peers.len()
+            });
+
+            let _ = reply_tx.send(Ok(dht_info));
         }
         Libp2pControl::WithdrawProvider { cid, reply_tx } => {
             // Remove from active announces and issue a withdraw (expiry=now)
@@ -326,9 +371,20 @@ pub fn announce_provider_direct(
     // Use Kademlia's provider mechanism instead of records
     let record_key = RecordKey::new(&cid);
 
+    // Check if we have sufficient DHT connectivity before announcing
+    let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
+    if connected_peers.is_empty() {
+        return Err("No connected peers for DHT announcement".to_string());
+    }
+
     match swarm.behaviour_mut().kademlia.start_providing(record_key) {
-        Ok(_query_id) => {
-            log::debug!("DHT: announced provider for cid={}", cid);
+        Ok(query_id) => {
+            log::info!(
+                "DHT: announced provider for cid={} (query_id={:?}) with {} connected peers",
+                cid,
+                query_id,
+                connected_peers.len()
+            );
             Ok(())
         }
         Err(e) => Err(format!("kademlia start_providing failed: {:?}", e)),
@@ -455,8 +511,9 @@ pub fn renew_due_providers(swarm: &mut Swarm<MyBehaviour>) {
         }
         if entry.next_due <= now {
             let _ = announce_provider_direct(swarm, cid.clone(), entry.ttl_ms);
+            // More frequent renewal for local tests - every 2 seconds minimum
             entry.next_due =
-                Instant::now() + Duration::from_millis(std::cmp::max(1000, entry.ttl_ms / 2));
+                Instant::now() + Duration::from_millis(std::cmp::max(2000, entry.ttl_ms / 3));
         }
     }
 }
@@ -536,6 +593,10 @@ pub enum Libp2pControl {
     WithdrawProvider {
         cid: String,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
+    },
+    /// Get DHT peer information for debugging
+    GetDhtPeers {
+        reply_tx: mpsc::UnboundedSender<Result<serde_json::Value, String>>,
     },
     /// Get list of currently connected peers
     GetConnectedPeers {

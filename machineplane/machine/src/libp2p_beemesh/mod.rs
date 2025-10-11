@@ -62,7 +62,7 @@ pub fn setup_libp2p_node(
         })?
         .with_quic()
         .with_behaviour(|key| {
-            info!("Local PeerId: {}", key.public().to_peer_id());
+            debug!("Local PeerId: {}", key.public().to_peer_id());
             let message_id_fn = |message: &gossipsub::Message| {
                 let mut s = DefaultHasher::new();
                 message.data.hash(&mut s);
@@ -128,8 +128,13 @@ pub fn setup_libp2p_node(
             kademlia_config.set_max_packet_size(1024 * 1024); // Allow larger packets
 
             // Configure timeouts and parallelism for small networks
-            kademlia_config.set_parallelism(std::num::NonZeroUsize::new(1).unwrap()); // Only 1 parallel query
-            kademlia_config.set_query_timeout(std::time::Duration::from_secs(10)); // Longer timeout
+            kademlia_config.set_parallelism(std::num::NonZeroUsize::new(3).unwrap()); // Increase parallelism for local tests
+            kademlia_config.set_query_timeout(std::time::Duration::from_secs(15)); // Longer timeout for local tests
+
+            // Configure provider record settings for better local discovery
+            kademlia_config.set_provider_record_ttl(Some(std::time::Duration::from_secs(30))); // Shorter TTL for local tests
+            kademlia_config
+                .set_provider_publication_interval(Some(std::time::Duration::from_secs(5))); // More frequent republishing
 
             let kademlia =
                 kad::Behaviour::with_config(key.public().to_peer_id(), store, kademlia_config);
@@ -146,7 +151,7 @@ pub fn setup_libp2p_node(
         .build();
 
     let topic = gossipsub::IdentTopic::new(BEEMESH_CLUSTER);
-    info!("Subscribing to topic: {}", topic.hash());
+    debug!("Subscribing to topic: {}", topic.hash());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
     // Ensure local host is an explicit mesh peer for the topic so publish() finds at least one subscriber
     let local_peer = swarm.local_peer_id().clone();
@@ -161,7 +166,7 @@ pub fn setup_libp2p_node(
     swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
 
     let (peer_tx, peer_rx) = watch::channel(Vec::new());
-    info!("Libp2p gossip node started. Listening for messages...");
+    //debug!("Libp2p gossip node started. Listening for messages...");
     Ok((swarm, topic, peer_rx, peer_tx))
 }
 
@@ -293,11 +298,18 @@ pub async fn start_libp2p_node(
                         behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id: _, endpoint, num_established: _, concurrent_dial_errors: _, established_in: _ } => {
-                        //info!("DHT: Connection established with peer {}, adding to Kademlia", peer_id);
+                        info!("DHT: Connection established with peer {}, adding to Kademlia", peer_id);
                         // Add the connected peer to Kademlia DHT for provider announcements
                         // Use the connection endpoint address for Kademlia
                         let addr = endpoint.get_remote_address();
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+
+                        // Bootstrap DHT after establishing connections to improve local test reliability
+                        let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
+                        if connected_peers.len() >= 2 {
+                            info!("DHT: Bootstrapping with {} connected peers", connected_peers.len());
+                            let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                        }
                     }
                     SwarmEvent::ConnectionClosed { peer_id, connection_id: _, endpoint: _, num_established, cause: _ } => {
                         if num_established == 0 {

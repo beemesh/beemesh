@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::info;
+use log::debug;
 use rusqlite::{params, Connection, OpenFlags};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,7 +24,7 @@ impl Keystore {
                 // Try temp file approach instead of pure in-memory with cache=shared
                 let temp_path =
                     std::env::temp_dir().join(format!("beemesh_keystore_{}", shared_name));
-                info!(
+                debug!(
                     "Keystore::open using shared temp file: {:?} thread_id={:?}",
                     temp_path,
                     std::thread::current().id()
@@ -33,13 +33,13 @@ impl Keystore {
                     | OpenFlags::SQLITE_OPEN_CREATE
                     | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
                 let conn = Connection::open_with_flags(&temp_path, flags)?;
-                info!(
+                debug!(
                     "Keystore::open connection established for thread {:?}",
                     std::thread::current().id()
                 );
                 conn
             } else {
-                info!("Keystore::open using private in-memory database (:memory:)");
+                debug!("Keystore::open using private in-memory database (:memory:)");
                 Connection::open_in_memory()?
             }
         } else {
@@ -50,7 +50,7 @@ impl Keystore {
             let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
-            info!("Keystore::open using file path: {}", path.display());
+            debug!("Keystore::open using file path: {}", path.display());
             Connection::open_with_flags(path, flags)?
         };
 
@@ -70,7 +70,7 @@ impl Keystore {
         let existing_count: i64 = conn
             .prepare("SELECT COUNT(*) FROM shares")?
             .query_row([], |row| row.get(0))?;
-        info!(
+        debug!(
             "Keystore::open initialized with {} existing records thread_id={:?}",
             existing_count,
             std::thread::current().id()
@@ -151,21 +151,21 @@ impl Keystore {
         let mut stmt = self
             .conn
             .prepare("SELECT cid FROM shares WHERE meta = ?1")?;
-        log::info!(
+        log::debug!(
             "Keystore::find_cid_for_manifest looking up meta='{}'",
             manifest_id
         );
         let mut rows = stmt.query([manifest_id])?;
         if let Some(row) = rows.next()? {
             let cid: String = row.get(0)?;
-            log::info!(
+            log::debug!(
                 "Keystore::find_cid_for_manifest found cid='{}' for meta='{}'",
                 cid,
                 manifest_id
             );
             Ok(Some(cid))
         } else {
-            log::info!(
+            log::debug!(
                 "Keystore::find_cid_for_manifest no cid found for meta='{}'",
                 manifest_id
             );

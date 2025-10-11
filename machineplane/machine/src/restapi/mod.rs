@@ -139,6 +139,7 @@ pub fn build_router(
         .route("/debug/keystore/entries", get(debug_keystore_entries))
         .route("/debug/dht/active_announces", get(debug_active_announces))
         .route("/debug/dht/manifest/{manifest_id}", get(debug_get_manifest))
+        .route("/debug/dht/peers", get(debug_dht_peers))
         .route("/debug/peers", get(debug_peers))
         .route("/debug/tasks", get(debug_all_tasks))
         .route(
@@ -873,7 +874,7 @@ pub async fn create_task(
 async fn debug_keystore_shares(State(state): State<RestState>) -> axum::Json<serde_json::Value> {
     log::warn!("debug_keystore_shares: attempting to open keystore");
     let keystore_result = if let Some(shared_name) = &state.shared_name {
-        log::warn!("debug_keystore_shares: using shared name: {}", shared_name);
+        log::debug!("debug_keystore_shares: using shared name: {}", shared_name);
         crypto::open_keystore_with_shared_name(shared_name)
     } else {
         crypto::open_keystore_default()
@@ -904,9 +905,9 @@ async fn debug_keystore_shares(State(state): State<RestState>) -> axum::Json<ser
 
 // Debug: list keystore entries with metadata for this node
 async fn debug_keystore_entries(State(state): State<RestState>) -> axum::Json<serde_json::Value> {
-    log::warn!("debug_keystore_entries: attempting to open keystore");
+    log::debug!("debug_keystore_entries: attempting to open keystore");
     let keystore_result = if let Some(shared_name) = &state.shared_name {
-        log::warn!("debug_keystore_entries: using shared name: {}", shared_name);
+        log::debug!("debug_keystore_entries: using shared name: {}", shared_name);
         crypto::open_keystore_with_shared_name(shared_name)
     } else {
         crypto::open_keystore_default()
@@ -914,10 +915,10 @@ async fn debug_keystore_entries(State(state): State<RestState>) -> axum::Json<se
 
     match keystore_result {
         Ok(ks) => {
-            log::warn!("debug_keystore_entries: keystore opened, listing entries with metadata");
+            log::debug!("debug_keystore_entries: keystore opened, listing entries with metadata");
             match ks.list_entries_with_metadata() {
                 Ok(entries) => {
-                    log::warn!(
+                    log::debug!(
                         "debug_keystore_entries: found {} entries: {:?}",
                         entries.len(),
                         entries
@@ -982,6 +983,43 @@ async fn debug_get_manifest(
         Err(_) => axum::Json(serde_json::json!({
             "ok": false,
             "error": "timeout waiting for manifest"
+        })),
+    }
+}
+
+// Debug: get DHT peer information
+async fn debug_dht_peers(State(state): State<RestState>) -> axum::Json<serde_json::Value> {
+    use tokio::sync::mpsc;
+
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
+
+    // Send control message to get DHT peer info
+    let control_msg = crate::libp2p_beemesh::control::Libp2pControl::GetDhtPeers { reply_tx };
+
+    if let Err(e) = state.control_tx.send(control_msg) {
+        return axum::Json(serde_json::json!({
+            "ok": false,
+            "error": format!("Failed to send DHT peers request: {}", e)
+        }));
+    }
+
+    // Wait for response with timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv()).await {
+        Ok(Some(Ok(peer_info))) => axum::Json(serde_json::json!({
+            "ok": true,
+            "dht_peers": peer_info
+        })),
+        Ok(Some(Err(e))) => axum::Json(serde_json::json!({
+            "ok": false,
+            "error": format!("DHT peers query failed: {}", e)
+        })),
+        Ok(None) => axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "DHT peers channel closed"
+        })),
+        Err(_) => axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "DHT peers request timed out"
         })),
     }
 }

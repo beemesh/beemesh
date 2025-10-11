@@ -1,5 +1,5 @@
 use libp2p::{PeerId, Swarm};
-use log::info;
+use log::{debug, info};
 use tokio::sync::mpsc;
 
 use base64::Engine;
@@ -26,11 +26,7 @@ pub async fn handle_send_apply_request(
 
     // Check if this is a self-send - handle locally instead of using RequestResponse
     if peer_id == *swarm.local_peer_id() {
-        info!("libp2p: handling self-apply locally for peer {}", peer_id);
-
-        // Note: For self-apply, the capability token should already be stored in the keystore
-        // from the CLI's distribute_capabilities call. We don't create a new one here.
-        log::info!("libp2p: self-apply will use CLI-distributed capability token from keystore");
+        debug!("libp2p: handling self-apply locally for peer {}", peer_id);
 
         // Now that the local capability (if any) has been stored, perform the self-apply
         // which may request key shares and will be able to find the capability in the keystore.
@@ -87,8 +83,8 @@ pub async fn handle_send_apply_request(
         let caves_vec = fbb.create_vector(&[caveat_off]);
 
         let mut cap_args = protocol::machine::CapabilityArgs::default();
-        cap_args.task_id = Some(task_off);
-        cap_args.required_quorum = 1;
+        cap_args.manifest_id = Some(task_off);
+        cap_args.required_quorum = 3;
         cap_args.issued_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
