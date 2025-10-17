@@ -24,7 +24,7 @@ async fn test_capability_holder_signature_end_to_end() -> Result<()> {
     // Setup test data
     let manifest_id = "test_manifest_123";
     let issuer_peer_id = "12D3KooWIssuerPeerIdExample123";
-    let authorized_peer_id = "12D3KooWAuthorizedPeerExample123";
+    let _authorized_peer_id = "12D3KooWAuthorizedPeerExample123";
     let holder_peer_id = PeerId::random();
 
     let timestamp = SystemTime::now()
@@ -62,7 +62,7 @@ async fn test_capability_holder_signature_end_to_end() -> Result<()> {
 
     let (sig_b64, pub_b64) = crypto::sign_envelope(&issuer_priv, &issuer_pub, &canonical)?;
 
-    let signed_envelope = build_envelope_signed(
+    let _signed_envelope = build_envelope_signed(
         &original_token,
         "capability",
         &nonce_str,

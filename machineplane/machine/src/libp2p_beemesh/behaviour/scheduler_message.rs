@@ -1,6 +1,6 @@
 use base64::Engine;
 use libp2p::request_response;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 

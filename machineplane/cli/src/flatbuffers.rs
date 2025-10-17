@@ -113,6 +113,7 @@ impl FlatbufferClient {
     }
 
     /// Send an unencrypted flatbuffer request (for already-signed envelopes)
+    #[allow(dead_code)]
     async fn send_unencrypted_request(
         &self,
         url: &str,
@@ -450,8 +451,12 @@ impl FlatbufferClient {
                         .candidates()
                         .map(|v| {
                             v.iter()
-                                .filter_map(|candidate| candidate.peer_id())
-                                .map(|s| s.to_string())
+                                .filter_map(|candidate| {
+                                    let peer_id = candidate.peer_id()?.to_string();
+                                    let public_key =
+                                        candidate.public_key().unwrap_or("").to_string();
+                                    Some(format!("{}:{}", peer_id, public_key))
+                                })
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -497,6 +502,7 @@ impl FlatbufferClient {
     }
 
     /// Distribute keyshares using pure flatbuffer envelopes
+    #[allow(dead_code)]
     pub async fn distribute_shares_flatbuffer(
         &self,
         tenant: &str,
@@ -547,6 +553,7 @@ impl FlatbufferClient {
     }
 
     /// Distribute capability tokens using flatbuffer envelope
+    #[allow(dead_code)]
     pub async fn distribute_capabilities(
         &self,
         tenant: &str,
@@ -712,6 +719,7 @@ impl FlatbufferClient {
 
 /// Helper structure for capability distribution
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CapabilityTarget {
     pub peer_id: String,
     pub payload: Vec<u8>,

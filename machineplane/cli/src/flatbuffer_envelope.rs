@@ -21,6 +21,7 @@ impl FlatbufferEnvelopeBuilder {
     }
 
     /// Build a signed manifest envelope containing encrypted manifest payload
+    #[allow(dead_code)]
     pub fn build_manifest_envelope(
         &mut self,
         ciphertext: &[u8],
@@ -107,6 +108,7 @@ impl FlatbufferEnvelopeBuilder {
     }
 
     /// Build a simple envelope with just payload and type
+    #[allow(dead_code)]
     pub fn build_simple_envelope(
         &mut self,
         payload_type: &str,
@@ -133,6 +135,7 @@ impl FlatbufferEnvelopeBuilder {
     }
 
     /// Build a shares envelope containing encrypted share data
+    #[allow(dead_code)]
     pub fn build_shares_envelope(
         &mut self,
         shares_b64: &[String],
@@ -169,6 +172,7 @@ impl FlatbufferEnvelopeBuilder {
     }
 
     /// Build a capability token envelope - creates flatbuffer format for machine REST API
+    #[allow(dead_code)]
     pub fn build_capability_envelope(
         &mut self,
         manifest_id: &str,
@@ -201,6 +205,7 @@ impl FlatbufferEnvelopeBuilder {
     }
 
     /// Build a keyshare capability token envelope - allows fetching keyshares for decryption
+    #[allow(dead_code)]
     pub fn build_keyshare_capability_envelope(
         &mut self,
         manifest_id: &str,
@@ -233,6 +238,7 @@ impl FlatbufferEnvelopeBuilder {
     }
 
     /// Build a manifest capability token envelope - allows fetching manifests
+    #[allow(dead_code)]
     pub fn build_manifest_capability_envelope(
         &mut self,
         manifest_id: &str,

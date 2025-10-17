@@ -2,8 +2,6 @@ use base64::Engine;
 use libp2p::{request_response, PeerId};
 use log::{info, warn};
 
-use crate::libp2p_beemesh::manifest_store::LocalManifestStore;
-
 /// Handle manifest fetch request/response messages and manifest storage requests
 pub fn manifest_fetch_message(
     message: request_response::Message<Vec<u8>, Vec<u8>>,

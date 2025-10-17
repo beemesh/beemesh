@@ -2,425 +2,67 @@ use crate::libp2p_beemesh::error_helpers;
 use base64::prelude::*;
 use libp2p::request_response;
 use log::{debug, info, warn};
-use protocol::machine::build_keyshare_request;
 use rand;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Search for local key shares for a specific manifest ID
-fn search_local_key_shares(manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, anyhow::Error> {
-    // Open the keystore
-    let keystore = crate::libp2p_beemesh::open_keystore()?;
-
-    // Get all CIDs
-    let all_cids = keystore.list_cids()?;
-
-    log::debug!(
-        "libp2p: searching through {} CIDs in keystore for manifest_id={}",
-        all_cids.len(),
-        manifest_id
-    );
-
-    let mut key_shares = Vec::new();
-
-    // Instead of searching all CIDs, directly look for all CIDs matching the manifest_id in keystore metadata
-    match keystore.find_cids_for_manifest(manifest_id) {
-        Ok(cids) => {
-            log::debug!(
-                "libp2p: find_cids_for_manifest returned {} CIDs for manifest_id={}",
-                cids.len(),
-                manifest_id
-            );
-            for cid in cids.iter() {
-                if let Ok(Some(blob)) = keystore.get(cid) {
-                    match crypto::ensure_kem_keypair_on_disk() {
-                        Ok((_pubb, privb)) => {
-                            match crypto::decrypt_share_from_blob(&blob, &privb) {
-                                Ok(decrypted_share) => {
-                                    log::debug!("libp2p: found matching local key share for manifest_id={} (cid={})", manifest_id, cid);
-                                    key_shares.push((cid.clone(), decrypted_share));
-                                }
-                                Err(e) => {
-                                    log::debug!(
-                                        "libp2p: failed to get blob for cid={}: {:?}",
-                                        cid,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("libp2p: decrypt could not get KEM keypair: {}", e);
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!(
-                "libp2p: DECRYPT DEBUG - error searching keystore for manifest_id {}: {}",
-                manifest_id,
-                e
-            );
-        }
-    }
-
-    log::warn!(
-        "libp2p: DECRYPT DEBUG - returning {} key_shares for manifest_id={}",
-        key_shares.len(),
-        manifest_id
-    );
-    Ok(key_shares)
+/// Keyshare helper removed.
+/// The system now uses direct recipient-blob delivery only; keyshare helpers are deprecated/removed.
+#[allow(dead_code)]
+fn search_local_key_shares(_manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, anyhow::Error> {
+    // This helper is intentionally disabled in the direct-delivery-only design.
+    Ok(Vec::new())
 }
 
 /// Decrypt an encrypted manifest using a specific manifest ID and encrypted manifest
+/// This implementation supports direct delivery only: the EncryptedManifest.payload MUST
+/// be a base64-encoded recipient-blob (versioned recipient blob starting with 0x02)
+/// produced by `crypto::encrypt_payload_for_recipient`. No share-based reconstruction
+/// or legacy fallback is supported; any other payload format is treated as an error.
 async fn decrypt_encrypted_manifest_with_id(
-    manifest_id: &str,
+    _manifest_id: &str,
     encrypted_manifest: &protocol::machine::EncryptedManifest<'_>,
-    local_peer_id: &libp2p::PeerId,
+    _local_peer_id: &libp2p::PeerId,
 ) -> Result<String, anyhow::Error> {
-    log::warn!(
-        "libp2p: DECRYPT ENTRY - starting decryption for manifest_id={}",
-        manifest_id
-    );
-    let nonce_str = encrypted_manifest.nonce().unwrap_or("");
-    let payload_str = encrypted_manifest.payload().unwrap_or("");
+    log::info!("libp2p: DECRYPT ENTRY - direct recipient-blob only path");
 
-    if nonce_str.is_empty() || payload_str.is_empty() {
+    // Extract payload (base64-encoded recipient blob)
+    let payload_b64 = encrypted_manifest.payload().unwrap_or("");
+    if payload_b64.is_empty() {
         return Err(anyhow::anyhow!(
-            "missing nonce or payload in encrypted manifest"
+            "missing payload in encrypted manifest (expected recipient-blob)"
         ));
     }
 
-    // Get the threshold from the encrypted manifest
-    let threshold = encrypted_manifest.threshold() as usize;
-    log::debug!(
-        "libp2p: decrypt_with_id using threshold={} from encrypted manifest",
-        threshold
-    );
+    // Decode the base64 recipient-blob
+    let decoded_blob = base64::engine::general_purpose::STANDARD
+        .decode(payload_b64)
+        .map_err(|e| anyhow::anyhow!("failed to base64-decode payload: {}", e))?;
 
-    // Step 1: Search for key shares in local keystore
-    let mut key_shares = search_local_key_shares(manifest_id)?;
-    log::debug!(
-        "libp2p: found {} local key shares for manifest_id={}, need {} for decryption",
-        key_shares.len(),
-        manifest_id,
-        threshold
-    );
-
-    // Step 2: If we don't have enough local shares, fetch from other nodes
-    if key_shares.len() < threshold {
-        let needed_shares = threshold - key_shares.len();
-        log::debug!(
-            "libp2p: need {} more key shares, initiating distributed retrieval",
-            needed_shares
-        );
-
-        // Try DHT provider discovery first
-        let mut holders = find_manifest_holders(manifest_id).await?;
-        log::info!(
-            "libp2p: decrypt_with_id found {} potential holders via DHT: {:?}",
-            holders.len(),
-            holders
-        );
-
-        // If DHT discovery didn't find enough providers, use connected peers as fallback
-        if holders.len() < 2 {
-            log::warn!(
-                "libp2p: DHT found only {} providers, using connected peers as fallback",
-                holders.len()
-            );
-            let connected_peers = get_connected_peers().await;
-            log::info!(
-                "libp2p: found {} connected peers for fallback: {:?}",
-                connected_peers.len(),
-                connected_peers
-            );
-
-            // Add connected peers that aren't already in holders
-            for peer_id in connected_peers {
-                if !holders.contains(&peer_id) {
-                    holders.push(peer_id);
-                }
-            }
-
-            log::info!(
-                "libp2p: after fallback, have {} total providers: {:?}",
-                holders.len(),
-                holders
-            );
-        }
-
-        let peers_to_query = holders;
-        log::info!(
-            "libp2p: decrypt_with_id will query {} providers: {:?}",
-            peers_to_query.len(),
-            peers_to_query
-        );
-
-        // Fetch shares from remote peers until we have enough
-        let mut fetched_shares = 0;
-        for peer_id in peers_to_query {
-            if key_shares.len() >= threshold {
-                break; // We have enough shares
-            }
-
-            // Prepare the keyshare request - for inter-node fetching, we MUST include capability token
-            log::debug!("libp2p: KEYSHARE DEBUG - building keyshare request with manifest_id='{}' capability=''", manifest_id);
-            let keyshare_request_fb = build_keyshare_request(manifest_id, "");
-
-            // Attempt to attach a locally-held capability token (if present) so
-            // the remote peer can authorize this fetch. The capability token is
-            // stored in the keystore under metadata `keyshare_capability:<manifest_id>` by
-            // the originator when it distributed capabilities during apply.
-            let mut request_fb_to_send = keyshare_request_fb.clone();
-            if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
-                // Try keyshare_capability first, then fall back to legacy capability format
-                let keyshare_cap_meta = format!("keyshare_capability:{}", manifest_id);
-                let legacy_cap_meta = format!("capability:{}", manifest_id);
-
-                log::debug!(
-                    "libp2p: attempting keystore capability lookup for meta='{}' (legacy fallback: '{}')",
-                    keyshare_cap_meta, legacy_cap_meta
-                );
-
-                let cap_lookup_result = ks
-                    .find_cid_for_manifest(&keyshare_cap_meta)
-                    .or_else(|_| ks.find_cid_for_manifest(&legacy_cap_meta));
-
-                match cap_lookup_result {
-                    Ok(Some(cap_cid)) => {
-                        log::debug!("libp2p: keystore lookup succeeded -> cid={}", cap_cid);
-
-                        if let Ok(Some(cap_blob)) = ks.get(&cap_cid) {
-                            // Decrypt the stored capability blob using our KEM privkey
-                            if let Ok((_pubb, privb)) = crypto::ensure_kem_keypair_on_disk() {
-                                if let Ok(cap_plain) =
-                                    crypto::decrypt_share_from_blob(&cap_blob, &privb)
-                                {
-                                    // cap_plain contains the signed envelope bytes
-                                    log::debug!("libp2p: decrypt local capability plain_len={} prefix={:02x}{:02x}{:02x}", cap_plain.len(),
-                                        if cap_plain.len() > 0 { cap_plain[0] } else { 0u8 },
-                                        if cap_plain.len() > 1 { cap_plain[1] } else { 0u8 },
-                                        if cap_plain.len() > 2 { cap_plain[2] } else { 0u8 }
-                                    );
-
-                                    // Extract capability token from envelope and add holder signature
-                                    match add_holder_signature_to_capability(
-                                        &cap_plain,
-                                        manifest_id,
-                                        local_peer_id,
-                                    ) {
-                                        Ok(signed_cap_envelope) => {
-                                            let cap_b64 = base64::engine::general_purpose::STANDARD
-                                                .encode(&signed_cap_envelope);
-
-                                            log::debug!("libp2p: CAPABILITY DEBUG - added holder signature for manifest_id={} cap_len={} cap_b64_len={}",
-                                                manifest_id, signed_cap_envelope.len(), cap_b64.len());
-
-                                            request_fb_to_send =
-                                                build_keyshare_request(manifest_id, &cap_b64);
-                                        }
-                                        Err(e) => {
-                                            log::warn!("libp2p: failed to add holder signature to capability: {:?}", e);
-                                            // Fall back to original unsigned token
-                                            let cap_b64 = base64::engine::general_purpose::STANDARD
-                                                .encode(&cap_plain);
-                                            request_fb_to_send =
-                                                build_keyshare_request(manifest_id, &cap_b64);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        log::debug!("libp2p: keystore lookup found no cid for keyshare capability");
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "libp2p: keystore lookup error for keyshare capability: {:?}",
-                            e
-                        );
-                    }
-                }
-            }
-
-            // Check if this is a self-request and handle it locally to avoid libp2p request-response issues
-            if peer_id == *local_peer_id {
-                log::info!(
-                    "libp2p: handling self-fetch locally for manifest_id={}",
-                    manifest_id
-                );
-                // Handle self-fetch locally by directly querying our keystore
-                if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
-                    match ks.find_cids_for_manifest(manifest_id) {
-                        Ok(cids) => {
-                            for cid in cids.iter() {
-                                // Skip CIDs we already have from local search to avoid duplicates
-                                if key_shares
-                                    .iter()
-                                    .any(|(existing_cid, _)| existing_cid == cid)
-                                {
-                                    log::info!("libp2p: self-fetch skipping duplicate CID {} for manifest_id={}", cid, manifest_id);
-                                    continue;
-                                }
-
-                                if let Ok(Some(blob)) = ks.get(cid) {
-                                    if let Ok((_pubb, privb)) = crypto::ensure_kem_keypair_on_disk()
-                                    {
-                                        if let Ok(plain) =
-                                            crypto::decrypt_share_from_blob(&blob, &privb)
-                                        {
-                                            log::info!("libp2p: self-fetch found new keyshare for manifest_id={} cid={}", manifest_id, cid);
-                                            let self_share_key = format!("self_{}", cid);
-                                            key_shares.push((self_share_key, plain));
-                                            fetched_shares += 1;
-
-                                            // Break if we have enough shares
-                                            if key_shares.len() >= threshold {
-                                                break;
-                                            }
-                                        } else {
-                                            log::warn!("libp2p: self-fetch failed to decrypt keyshare for manifest_id={} cid={}", manifest_id, cid);
-                                        }
-                                    } else {
-                                        log::warn!("libp2p: self-fetch could not load KEM keypair for decryption");
-                                    }
-                                } else {
-                                    log::warn!("libp2p: self-fetch could not get blob for manifest_id={} cid={}", manifest_id, cid);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "libp2p: self-fetch keystore error for manifest_id={}: {:?}",
-                                manifest_id,
-                                e
-                            );
-                        }
-                    }
-                } else {
-                    log::warn!("libp2p: self-fetch could not open keystore");
-                }
-            } else {
-                // Fetch share from remote peer
-                match fetch_keyshare_from_peer(&peer_id, request_fb_to_send).await {
-                    Ok(keyshare_response_bytes) => {
-                        // Parse the FlatBuffer response
-                        if let Ok(keyshare_response) =
-                            protocol::machine::root_as_key_share_response(&keyshare_response_bytes)
-                        {
-                            if keyshare_response.ok() {
-                                if let Some(share_b64) = keyshare_response.message() {
-                                    if let Ok(share_bytes) =
-                                        base64::engine::general_purpose::STANDARD.decode(share_b64)
-                                    {
-                                        // Store the fetched share in our collection
-                                        let share_cid =
-                                            format!("remote_{}_{}", peer_id, fetched_shares);
-                                        key_shares.push((share_cid, share_bytes));
-                                        fetched_shares += 1;
-                                        log::info!("libp2p: decrypt_with_id successfully fetched share from peer={} (now have {} shares)", peer_id, key_shares.len());
-                                    }
-                                }
-                            } else {
-                                log::warn!(
-                                    "libp2p: decrypt_with_id peer={} returned error: {:?}",
-                                    peer_id,
-                                    keyshare_response.message()
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "libp2p: decrypt_with_id failed to fetch from peer={}: {}",
-                            peer_id,
-                            e
-                        );
-                    }
-                }
-            }
-        }
-
-        if key_shares.len() < threshold {
-            log::error!(
-                "libp2p: insufficient shares for decryption! Have {} but need {}",
-                key_shares.len(),
-                threshold
-            );
-            return Err(error_helpers::insufficient_key_shares(
-                key_shares.len(),
-                threshold,
-            ));
-        }
-        log::debug!(
-            "libp2p: after fetching, have {} shares for decryption",
-            key_shares.len()
-        );
-    } else {
-        log::debug!(
-            "libp2p: have enough local shares ({}) for decryption",
-            key_shares.len()
-        );
+    // Validate recipient-blob version byte
+    if decoded_blob.is_empty() || decoded_blob[0] != 0x02 {
+        return Err(anyhow::anyhow!(
+            "unsupported payload format: expected recipient-blob (version byte 0x02)"
+        ));
     }
 
-    // Step 3: Recover the symmetric key from the shares
-    let mut shares = Vec::new();
-    for (cid, share_data) in &key_shares {
-        log::warn!(
-            "libp2p: SHARE DEBUG - cid={} share_len={} first_4_bytes={:02x}{:02x}{:02x}{:02x}",
-            cid,
-            share_data.len(),
-            if share_data.len() > 0 {
-                share_data[0]
-            } else {
-                0u8
-            },
-            if share_data.len() > 1 {
-                share_data[1]
-            } else {
-                0u8
-            },
-            if share_data.len() > 2 {
-                share_data[2]
-            } else {
-                0u8
-            },
-            if share_data.len() > 3 {
-                share_data[3]
-            } else {
-                0u8
-            }
-        );
-        shares.push(share_data.clone());
-    }
+    // Use the node's KEM private key to decapsulate and decrypt the recipient-blob
+    let (_pub_bytes, priv_bytes) = crypto::ensure_kem_keypair_on_disk()
+        .map_err(|e| anyhow::anyhow!("failed to load KEM keypair: {}", e))?;
 
-    log::debug!(
-        "libp2p: attempting to recover symmetric key with {} shares",
-        shares.len()
-    );
-    let symmetric_key = crypto::recover_symmetric_key(&shares, threshold)?;
+    let plaintext = crypto::decrypt_payload_from_recipient_blob(&decoded_blob, &priv_bytes)
+        .map_err(|e| anyhow::anyhow!("recipient-blob decryption failed: {}", e))?;
+
+    // Interpret plaintext as UTF-8 manifest content (YAML/JSON)
+    let manifest_str = String::from_utf8(plaintext)
+        .map_err(|e| anyhow::anyhow!("decrypted manifest is not valid UTF-8: {}", e))?;
 
     log::info!(
-        "libp2p: decrypt_with_id successfully recovered symmetric key using {} share(s)",
-        shares.len()
+        "libp2p: direct recipient-blob decryption succeeded (len={})",
+        manifest_str.len()
     );
 
-    // Step 4: Decrypt the manifest
-    let nonce_bytes = base64::engine::general_purpose::STANDARD.decode(nonce_str)?;
-    let payload_bytes = base64::engine::general_purpose::STANDARD.decode(payload_str)?;
-
-    let decrypted_bytes = crypto::decrypt_manifest(&symmetric_key, &nonce_bytes, &payload_bytes)?;
-    let decrypted_yaml_str = String::from_utf8(decrypted_bytes)?;
-
-    log::info!(
-        "libp2p: decrypt_with_id successfully decrypted manifest to YAML (len={})",
-        decrypted_yaml_str.len()
-    );
-
-    Ok(decrypted_yaml_str)
+    Ok(manifest_str)
 }
 
 /// Store an applied manifest in the DHT after successful deployment
@@ -511,6 +153,82 @@ fn store_applied_manifest_in_dht(
         );
     } else {
         warn!("DHT: Cannot store manifest - missing required fields");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use base64::Engine;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn test_init() {
+        INIT.call_once(|| {
+            // Ensure PQC is initialized for tests
+            let _ = crypto::ensure_pqc_init();
+            // Use ephemeral KEM mode so tests don't write to disk
+            std::env::set_var("BEEMESH_KEM_EPHEMERAL", "1");
+        });
+    }
+
+    /// Verify that an EncryptedManifest whose payload is a recipient-blob (ml-kem) can be
+    /// decrypted by `decrypt_encrypted_manifest_with_id`.
+    #[tokio::test]
+    async fn test_recipient_blob_encrypted_manifest_decrypts() {
+        test_init();
+
+        // Prepare a simple manifest YAML payload
+        let manifest_yaml = "apiVersion: v1\nkind: Pod\nmetadata:\n  name: test-pod\nspec:\n  containers:\n  - name: nginx\n    image: nginx:latest\n";
+
+        // Get the ephemeral KEM keypair that our node will use as recipient
+        let (kem_pub, _kem_priv) =
+            crypto::ensure_kem_keypair_on_disk().expect("ensure_kem_keypair_on_disk");
+
+        // Encrypt the manifest payload for the recipient (returns recipient-blob)
+        let recipient_blob =
+            crypto::encrypt_payload_for_recipient(&kem_pub, manifest_yaml.as_bytes())
+                .expect("encrypt_payload_for_recipient");
+
+        // Base64-encode the recipient blob for storage inside EncryptedManifest.payload()
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&recipient_blob);
+
+        // Build an EncryptedManifest flatbuffer with the recipient-blob as payload
+        let nonce = "test-recipient-blob-nonce";
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let encrypted_manifest_fb = protocol::machine::build_encrypted_manifest(
+            nonce,
+            &payload_b64,
+            "ml-kem-512", // encryption algorithm marker for recipient-blob
+            1,            // threshold
+            1,            // total_shares
+            Some("kubernetes"),
+            &[],
+            ts,
+            None,
+        );
+
+        // Parse back into EncryptedManifest view
+        let encrypted_manifest =
+            protocol::machine::root_as_encrypted_manifest(&encrypted_manifest_fb)
+                .expect("root_as_encrypted_manifest");
+
+        // Use a dummy local_peer id for the call; the decryption path uses the KEM privkey on disk
+        let fake_peer = libp2p::PeerId::random();
+
+        // Attempt decryption via the function under test
+        let decrypted =
+            decrypt_encrypted_manifest_with_id("test-manifest", &encrypted_manifest, &fake_peer)
+                .await
+                .expect("decrypt_encrypted_manifest_with_id");
+
+        // The decrypted string should match our original manifest YAML
+        assert_eq!(decrypted, manifest_yaml);
     }
 }
 
@@ -826,186 +544,25 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
 }
 
 /// Find peers that hold key shares for a given manifest ID using DHT providers
-async fn find_manifest_holders(manifest_id: &str) -> Result<Vec<libp2p::PeerId>, anyhow::Error> {
-    use tokio::sync::mpsc;
-
-    let mut all_holders = std::collections::HashSet::new();
-
-    // Retry up to 5 times with delays to allow provider announcements to propagate
-    // Continue searching until we find at least 2 providers (k=2) or exhaust attempts
-    for attempt in 1..=5 {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        // Send control message to find manifest holders using new announcement system
-        let control_msg =
-            crate::libp2p_beemesh::control::Libp2pControl::FindManifestHoldersWithVersion {
-                manifest_id: manifest_id.to_string(),
-                version: None, // Find any version
-                reply_tx: tx,
-            };
-        crate::libp2p_beemesh::control::enqueue_control(control_msg);
-
-        // Wait for response with longer timeout for local tests
-        match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
-            Ok(Some(holder_infos)) => {
-                if !holder_infos.is_empty() {
-                    for holder_info in holder_infos {
-                        // Convert holder info to PeerId
-                        if let Ok(peer_id) = holder_info.peer_id.parse::<libp2p::PeerId>() {
-                            all_holders.insert(peer_id);
-                        }
-                    }
-                    log::info!("libp2p: find_manifest_holders found {} total holders for manifest_id={} (attempt {})", all_holders.len(), manifest_id, attempt);
-
-                    // Continue searching until we have at least 2 providers or this is the last attempt
-                    if all_holders.len() >= 2 || attempt == 5 {
-                        return Ok(all_holders.into_iter().collect());
-                    }
-                } else {
-                    log::info!("libp2p: find_manifest_holders attempt {} returned empty result for manifest_id={}", attempt, manifest_id);
-                }
-            }
-            Ok(None) => {
-                log::warn!(
-                    "libp2p: find_manifest_holders channel closed for manifest_id={} (attempt {})",
-                    manifest_id,
-                    attempt
-                );
-            }
-            Err(_timeout) => {
-                log::warn!(
-                    "libp2p: find_manifest_holders timeout for manifest_id={} (attempt {})",
-                    manifest_id,
-                    attempt
-                );
-            }
-        }
-
-        // If not the last attempt, wait before retrying to allow provider announcements to propagate
-        if attempt < 5 {
-            log::info!(
-                "libp2p: find_manifest_holders waiting 3s before retry {} for manifest_id={}",
-                attempt + 1,
-                manifest_id
-            );
-            // Shorter retry delay for local tests but allow DHT to propagate
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
-    }
-
-    // Return whatever providers we found, even if less than ideal
-    log::warn!(
-        "libp2p: find_manifest_holders exhausted all attempts for manifest_id={}, found {} providers",
-        manifest_id,
-        all_holders.len()
-    );
-    Ok(all_holders.into_iter().collect())
+/// find_manifest_holders removed - direct-delivery design no longer queries holders.
+/// Kept a small stub to avoid accidental references in other modules.
+#[allow(dead_code)]
+async fn find_manifest_holders(_manifest_id: &str) -> Result<Vec<libp2p::PeerId>, anyhow::Error> {
+    Ok(Vec::new())
 }
 
 /// Fetch manifest from holders using the new peer-based system
-async fn fetch_manifest_from_holders(
-    manifest_id: &str,
-    version: Option<u64>,
-) -> Result<Vec<u8>, anyhow::Error> {
-    use tokio::sync::mpsc;
-
-    // First, find manifest holders
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let control_msg =
-        crate::libp2p_beemesh::control::Libp2pControl::FindManifestHoldersWithVersion {
-            manifest_id: manifest_id.to_string(),
-            version,
-            reply_tx: tx,
-        };
-    crate::libp2p_beemesh::control::enqueue_control(control_msg);
-
-    // Wait for response
-    let holders = match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
-        Ok(Some(holder_infos)) => holder_infos,
-        Ok(None) => {
-            return Err(anyhow::anyhow!(
-                "No response received when finding manifest holders"
-            ));
-        }
-        Err(_) => {
-            return Err(anyhow::anyhow!("Timeout when finding manifest holders"));
-        }
-    };
-
-    if holders.is_empty() {
-        return Err(anyhow::anyhow!(
-            "No holders found for manifest {}",
-            manifest_id
-        ));
-    }
-
-    // Try to fetch from the first available holder
-    for holder in holders {
-        if let Ok(peer_id) = holder.peer_id.parse::<libp2p::PeerId>() {
-            log::info!(
-                "Attempting to fetch manifest {} version {:?} from peer {}",
-                manifest_id,
-                version,
-                peer_id
-            );
-
-            // For now, return an error since we need async coordination with the swarm
-            // In a full implementation, this would use the manifest_fetch protocol
-            return Err(anyhow::anyhow!(
-                "Manifest fetching from peer {} not yet implemented",
-                peer_id
-            ));
-        }
-    }
-
-    Err(anyhow::anyhow!("No valid peer IDs found in holders list"))
-}
+// fetch_manifest_from_holders removed - unused helper cleaned up to avoid dead_code warning.
 
 /// Get list of currently connected peers as fallback when DHT provider discovery fails
+/// get_connected_peers removed in direct-delivery design. Stub retained for compatibility.
+#[allow(dead_code)]
 async fn get_connected_peers() -> Vec<libp2p::PeerId> {
-    use tokio::sync::mpsc;
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-
-    // Send control message to get connected peers
-    let control_msg =
-        crate::libp2p_beemesh::control::Libp2pControl::GetConnectedPeers { reply_tx: tx };
-
-    // Get the control sender from the global context
-    if let Some(control_tx) = crate::libp2p_beemesh::get_control_sender() {
-        if let Err(e) = control_tx.send(control_msg) {
-            log::warn!(
-                "libp2p: failed to send GetConnectedPeers control message: {}",
-                e
-            );
-            return vec![];
-        }
-    } else {
-        log::warn!("libp2p: control sender not available");
-        return vec![];
-    }
-
-    // Wait for response with timeout
-    match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
-        Ok(Some(peer_ids)) => {
-            log::info!(
-                "libp2p: get_connected_peers found {} connected peers",
-                peer_ids.len()
-            );
-            peer_ids
-        }
-        Ok(None) => {
-            log::warn!("libp2p: get_connected_peers channel closed");
-            vec![]
-        }
-        Err(_) => {
-            log::warn!("libp2p: get_connected_peers timeout");
-            vec![]
-        }
-    }
+    Vec::new()
 }
 
 /// Fetch a keyshare from a specific peer using FlatBuffer request/response
+#[allow(dead_code)]
 async fn fetch_keyshare_from_peer(
     peer_id: &libp2p::PeerId,
     request_fb: Vec<u8>,
@@ -1066,6 +623,7 @@ async fn fetch_keyshare_from_peer(
 
 /// Add holder signature to capability token
 /// Extracts token from envelope, adds holder signature, and returns new envelope
+#[allow(dead_code)]
 fn add_holder_signature_to_capability(
     envelope_bytes: &[u8],
     manifest_id: &str,

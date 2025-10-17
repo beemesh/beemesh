@@ -1,5 +1,4 @@
 use anyhow::Result;
-use base64::Engine;
 
 use futures::stream::StreamExt;
 use libp2p::{

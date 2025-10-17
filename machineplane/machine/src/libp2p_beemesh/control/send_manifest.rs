@@ -1,7 +1,6 @@
 use base64::Engine;
 use libp2p::{PeerId, Swarm};
 use log::{info, warn};
-use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
@@ -15,6 +14,8 @@ pub async fn handle_send_manifest(
     swarm: &mut Swarm<MyBehaviour>,
 ) {
     warn!("libp2p: control SendManifest for peer={}", peer_id);
+
+    // Single delivery format enforced: expect raw envelope bytes (no base64 variants).
 
     // Check if this is a self-send - handle locally instead of using RequestResponse
     if peer_id == *swarm.local_peer_id() {
@@ -47,47 +48,42 @@ pub async fn handle_send_manifest(
                     payload_bytes.len()
                 );
 
-                // Decode base64 manifest data
-                if let Ok(manifest_data) = base64::engine::general_purpose::STANDARD
-                    .decode(std::str::from_utf8(&payload_bytes).unwrap_or(""))
-                {
-                    warn!(
-                        "libp2p: self-send manifest decoded successfully, manifest_id={}, data len={}",
-                        manifest_id, manifest_data.len()
-                    );
+                // Enforce single delivery format: payload must be raw envelope bytes (no base64).
+                let manifest_data = payload_bytes.clone();
+                warn!(
+                    "libp2p: self-send manifest prepared for storage, manifest_id={}, data len={}",
+                    manifest_id,
+                    manifest_data.len()
+                );
 
-                    // Create manifest entry for storage using the provided manifest_id
-                    let manifest_entry = crate::libp2p_beemesh::manifest_store::ManifestEntry {
-                        manifest_id: manifest_id.clone(),
-                        version: 1,
-                        encrypted_data: manifest_data,
-                        stored_at: crate::libp2p_beemesh::manifest_store::current_timestamp(),
-                        access_tokens: vec![],
-                        owner_pubkey: vec![],
-                    };
+                // Create manifest entry for storage using the provided manifest_id
+                let manifest_entry = crate::libp2p_beemesh::manifest_store::ManifestEntry {
+                    manifest_id: manifest_id.clone(),
+                    version: 1,
+                    encrypted_data: manifest_data,
+                    stored_at: crate::libp2p_beemesh::manifest_store::current_timestamp(),
+                    access_tokens: vec![],
+                    owner_pubkey: vec![],
+                };
 
-                    // Store the manifest using the global manifest store
-                    let mut manifest_store =
-                        crate::libp2p_beemesh::control::get_local_manifest_store()
-                            .lock()
-                            .unwrap();
+                // Store the manifest using the global manifest store
+                let mut manifest_store = crate::libp2p_beemesh::control::get_local_manifest_store()
+                    .lock()
+                    .unwrap();
 
-                    match manifest_store.store_manifest(manifest_entry) {
-                        Ok(()) => {
-                            warn!(
-                                "libp2p: self-send successfully stored manifest {} locally",
-                                manifest_id
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                "libp2p: self-send failed to store manifest {}: {:?}",
-                                manifest_id, e
-                            );
-                        }
+                match manifest_store.store_manifest(manifest_entry) {
+                    Ok(()) => {
+                        warn!(
+                            "libp2p: self-send successfully stored manifest {} locally",
+                            manifest_id
+                        );
                     }
-                } else {
-                    warn!("libp2p: self-send failed to decode manifest data");
+                    Err(e) => {
+                        warn!(
+                            "libp2p: self-send failed to store manifest {}: {:?}",
+                            manifest_id, e
+                        );
+                    }
                 }
             } else {
                 warn!("libp2p: self-send envelope has empty payload or wrong type");

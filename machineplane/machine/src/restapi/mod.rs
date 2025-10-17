@@ -3,6 +3,7 @@ use axum::{
     body::Bytes,
     extract::{Path, Query, State},
     http::HeaderMap,
+    middleware,
     routing::{get, post},
     Router,
 };
@@ -13,16 +14,12 @@ use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
 use protocol::libp2p_constants::{
     FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS, REPLICAS_FIELD, SPEC_REPLICAS_FIELD,
 };
-use scheduler::{DistributionConfig, DistributionPlan, SecurityLevel};
-
-// Zero-trust configuration constants
-const DEFAULT_TOTAL_CAPABILITY_TOKENS: usize = 6;
-const DEFAULT_FAULT_TOLERANCE_THRESHOLD: usize = 2;
 use protocol::machine::{
     root_as_apply_key_shares_request, root_as_apply_manifest_request, root_as_assign_request,
     root_as_distribute_capabilities_request, root_as_distribute_manifests_request,
     root_as_distribute_shares_request, root_as_envelope,
 };
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -203,6 +200,11 @@ pub fn build_router(
         .route("/tenant/{tenant}/apply_manifest", post(apply_manifest))
         .route("/tenant/{tenant}/apply_keyshares", post(apply_keyshares))
         .route("/tenant/{tenant}/nodes", get(get_nodes))
+        // Add envelope middleware to decrypt incoming requests and extract peer keys
+        .layer(middleware::from_fn_with_state(
+            state.envelope_handler.clone(),
+            envelope_handler::envelope_middleware,
+        ))
         // state
         .with_state(state)
 }
@@ -213,108 +215,18 @@ pub async fn get_candidates(
     headers: HeaderMap,
     _body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    log::info!("get_candidates: called for task_id={}", task_id);
-    // lookup task
-    let maybe = {
-        let store = state.task_store.read().await;
-        log::info!("get_candidates: task_store has {} tasks", store.len());
-        log::info!(
-            "get_candidates: task_store keys: {:?}",
-            store.keys().collect::<Vec<_>>()
-        );
-        store.get(&task_id).cloned()
-    };
-    let task = match maybe {
-        Some(t) => t,
-        None => {
-            let error_response = protocol::machine::build_candidates_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "candidates_response",
-                peer_id.as_deref(),
-            )
-            .await;
-        }
-    };
-
-    // Extract replicas from the flatbuffer manifest
-    let replicas = match protocol::machine::root_as_encrypted_manifest(&task.manifest_bytes) {
-        Ok(_encrypted_manifest) => {
-            // For encrypted manifests, default to 1 replica
-            1
-        }
-        Err(_) => {
-            // If it's not an encrypted manifest, default to 1
-            1
-        }
-    } as usize;
-
-    // Extract shares metadata from the flatbuffer manifest
-    let shares_n = match protocol::machine::root_as_encrypted_manifest(&task.manifest_bytes) {
-        Ok(encrypted_manifest) => encrypted_manifest.total_shares() as usize,
-        Err(_) => 3, // default to 3 if parsing fails
-    };
-
-    // Calculate total capability tokens from task record
-    let total_capability_tokens = task.shares_distributed.len() + task.manifests_distributed.len();
-    let total_capability_tokens = if total_capability_tokens == 0 {
-        DEFAULT_TOTAL_CAPABILITY_TOKENS
-    } else {
-        total_capability_tokens
-    };
-
-    // Use scheduler for optimal responder calculation
-    let distribution_config = DistributionConfig {
-        min_threshold: (shares_n + 1) / 2, // Convert shares_n to reasonable threshold
-        max_fault_tolerance: DEFAULT_FAULT_TOLERANCE_THRESHOLD,
-        security_level: SecurityLevel::Standard,
-    };
-
-    // We don't know exact candidate count yet, but we can estimate based on total_capability_tokens
-    // This gives us a baseline calculation that will be refined during actual candidate gathering
-    let estimated_candidates = std::cmp::max(total_capability_tokens, 5); // At least 5 for reasonable distribution
-
-    let min_required_responders = match DistributionPlan::calculate_optimal_distribution(
-        estimated_candidates,
-        &distribution_config,
-    ) {
-        Ok(plan) => {
-            log::info!(
-                "get_candidates: scheduler calculated optimal plan: keyshares={}, threshold={}, manifests={}, min_responders={}, byzantine_ft={}",
-                plan.keyshare_count, plan.reconstruction_threshold, plan.manifest_count, plan.min_required_responders, plan.byzantine_fault_tolerance
-            );
-            plan.min_required_responders
-        }
-        Err(e) => {
-            log::warn!("get_candidates: scheduler calculation failed: {}, falling back to legacy calculation", e);
-
-            // Fallback to legacy calculation
-            let min_for_key_reconstruction = (shares_n + 1) / 2;
-            let min_for_manifest_access = 1;
-            let fault_tolerance_buffer = DEFAULT_FAULT_TOLERANCE_THRESHOLD;
-
-            let balanced_min = std::cmp::min(
-                min_for_key_reconstruction + min_for_manifest_access + fault_tolerance_buffer,
-                total_capability_tokens.saturating_sub(1),
-            );
-
-            std::cmp::max(balanced_min, std::cmp::max(replicas, shares_n))
-        }
-    };
-
     log::info!(
-        "get_candidates: final min_required_responders={} (total_tokens={}, replicas={}, shares_n={})",
-        min_required_responders, total_capability_tokens, replicas, shares_n
+        "get_candidates: called for task_id={} (direct delivery mode)",
+        task_id
     );
 
+    // For direct delivery, simply query available nodes with their public keys
     let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
     let capacity_fb = protocol::machine::build_capacity_request(
         500u32,
         512u64 * 1024 * 1024,
         10u64 * 1024 * 1024 * 1024,
-        replicas as u32,
+        1u32, // Just need 1 winning node
     );
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
     let _ = state.control_tx.send(
@@ -327,44 +239,46 @@ pub async fn get_candidates(
 
     let mut responders: Vec<String> = Vec::new();
     let start = std::time::Instant::now();
+    let timeout_secs = 3; // Shorter timeout for direct delivery
     log::info!(
-        "get_candidates: waiting for capacity responses, timeout={}s, required={}",
-        FREE_CAPACITY_TIMEOUT_SECS,
-        min_required_responders
+        "get_candidates: waiting for capacity responses, timeout={}s",
+        timeout_secs
     );
-    while start.elapsed() < Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS) {
-        let remaining =
-            Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS).saturating_sub(start.elapsed());
+
+    while start.elapsed() < Duration::from_secs(timeout_secs) {
+        let remaining = Duration::from_secs(timeout_secs).saturating_sub(start.elapsed());
         match tokio::time::timeout(remaining, reply_rx.recv()).await {
             Ok(Some(peer)) => {
                 log::info!("get_candidates: received response from peer: {}", peer);
                 if !responders.contains(&peer) {
                     responders.push(peer);
-                }
-                // TODO: Handle case when not enough responders respond in time, always wait
-                if responders.len() >= min_required_responders {
-                    log::info!(
-                        "get_candidates: got enough responders ({}), breaking",
-                        responders.len()
-                    );
-                    break;
+                    // Get a few candidates to choose from
+                    if responders.len() >= 5 {
+                        log::info!(
+                            "get_candidates: got {} candidates, that's enough",
+                            responders.len()
+                        );
+                        break;
+                    }
                 }
             }
-            _ => {
-                log::warn!(
-                    "get_candidates: timeout or channel closed, elapsed: {:?}",
-                    start.elapsed()
-                );
+            Ok(None) => {
+                log::warn!("get_candidates: channel closed");
+                break;
+            }
+            Err(_) => {
+                log::warn!("get_candidates: timeout waiting for responses");
                 break;
             }
         }
     }
+
     log::info!(
         "get_candidates: finished with {} responders",
         responders.len()
     );
 
-    // Parse candidates with their public keys directly from capacity responses
+    // Parse candidates with their public keys
     let mut candidates: Vec<(String, String)> = Vec::new();
     for peer_with_key in &responders {
         if let Some(colon_pos) = peer_with_key.find(':') {
@@ -377,14 +291,12 @@ pub async fn get_candidates(
                     peer_id_str
                 );
             } else {
-                // No public key provided - skip this peer for capability distribution
                 log::warn!(
                     "get_candidates: peer {} has no public key, skipping",
                     peer_id_str
                 );
             }
         } else {
-            // No colon separator found - skip this peer for capability distribution
             log::warn!(
                 "get_candidates: no public key separator found for: {}, skipping",
                 peer_with_key
@@ -704,12 +616,14 @@ pub async fn create_task(
     };
 
     // Store peer's public key for future responses
-    if let Err(e) = state
+    if let Some(_kem_pubkey_b64) = state
         .envelope_handler
         .store_peer_pubkey_from_envelope(&envelope)
         .await
     {
-        log::warn!("create_task: failed to store peer public key: {}", e);
+        log::debug!("create_task: stored peer public key for future responses");
+    } else {
+        log::warn!("create_task: failed to extract peer public key from envelope");
     }
 
     // Extract payload from envelope (may be encrypted)

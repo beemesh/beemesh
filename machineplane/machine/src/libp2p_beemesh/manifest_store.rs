@@ -1,4 +1,3 @@
-use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -201,7 +200,7 @@ pub fn verify_manifest_access_token(
 
     let expected_signature = {
         use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hash;
         // We don't have the private key for verification, so this is a simplified check
         // In production, use proper signature verification
         let mut hasher = DefaultHasher::new();
