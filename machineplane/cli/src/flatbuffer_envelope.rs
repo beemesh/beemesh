@@ -13,6 +13,7 @@ pub struct FlatbufferEnvelopeBuilder {
 }
 
 impl FlatbufferEnvelopeBuilder {
+    #[allow(dead_code)]
     pub fn with_keys(peer_id: String, public_key: String) -> Self {
         Self {
             peer_id,
@@ -271,6 +272,7 @@ impl FlatbufferEnvelopeBuilder {
     }
 
     /// Add signature and pubkey to an existing envelope
+    #[allow(dead_code)]
     pub fn sign_envelope(
         &self,
         envelope_bytes: &[u8],

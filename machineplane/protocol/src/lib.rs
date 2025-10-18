@@ -1678,16 +1678,16 @@ pub mod machine {
     // Builder for KeyShares
     pub fn build_key_shares(
         shares_b64: &[String],
-        n: u32,
-        k: u32,
-        count: u32,
+        _n: u32,
+        _k: u32,
+        _count: u32,
         manifest_id: &str,
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(512);
 
         let share_strings: Vec<_> = shares_b64.iter().map(|s| fbb.create_string(s)).collect();
-        let shares_vector = fbb.create_vector(&share_strings);
-        let manifest_id_off = fbb.create_string(manifest_id);
+        let _shares_vector = fbb.create_vector(&share_strings);
+        let _manifest_id_off = fbb.create_string(manifest_id);
 
         // let key_shares =
         //     crate::generated::generated_key_shares::beemesh::machine::KeyShares::create(
@@ -1702,7 +1702,7 @@ pub mod machine {
         //     );
         // For now, create an empty flatbuffer to avoid build errors
         let key_shares = {
-            let mut args =
+            let args =
                 crate::generated::generated_envelope::beemesh::machine::EnvelopeArgs::default();
             crate::generated::generated_envelope::beemesh::machine::Envelope::create(
                 &mut fbb, &args,

@@ -415,7 +415,7 @@ pub fn apply_message(
 pub fn process_self_apply_request(
     manifest: &[u8],
     swarm: &mut libp2p::Swarm<super::MyBehaviour>,
-    local_peer: libp2p::PeerId,
+    _local_peer: libp2p::PeerId,
 ) {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -793,6 +793,7 @@ fn create_deployment_config_from_manifest(
     })
 }
 
+#[allow(dead_code)]
 async fn get_connected_peers() -> Vec<libp2p::PeerId> {
     Vec::new()
 }

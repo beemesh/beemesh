@@ -34,7 +34,7 @@ use envelope_handler::{
 
 async fn get_nodes(
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     let peers = state.peer_rx.borrow().clone();
     let response_data = protocol::machine::build_nodes_response(&peers);
@@ -215,7 +215,7 @@ pub fn build_router(
 pub async fn get_candidates(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     _body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     log::info!(
@@ -330,7 +330,7 @@ pub struct TaskRecord {
 pub async fn apply_manifest(
     Path(tenant): Path<String>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     debug!("tenant: {:?}", tenant);
@@ -547,7 +547,7 @@ pub async fn create_task(
     Path(tenant): Path<String>,
     State(state): State<RestState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Extension(envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
@@ -1171,7 +1171,7 @@ async fn debug_all_tasks(State(state): State<RestState>) -> axum::Json<serde_jso
 async fn get_task_manifest_id(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     let maybe = { state.task_store.read().await.get(&task_id).cloned() };
     let task = match maybe {
@@ -1232,7 +1232,7 @@ async fn get_task_manifest_id(
 pub async fn distribute_shares(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     // Parse flatbuffer envelope first, then extract inner DistributeSharesRequest
@@ -1417,7 +1417,7 @@ pub async fn distribute_shares(
 pub async fn distribute_manifests(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     debug!("distribute_manifests: parsing decrypted payload from envelope middleware");
@@ -1587,7 +1587,7 @@ pub async fn distribute_manifests(
 pub async fn distribute_capabilities(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     // Parse flatbuffer envelope first, then extract inner DistributeCapabilitiesRequest
@@ -1745,7 +1745,7 @@ pub async fn distribute_capabilities(
 pub async fn assign_task(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     debug!("assign_task: parsing decrypted payload from envelope middleware");
@@ -1942,7 +1942,7 @@ pub async fn assign_task(
 pub async fn get_task_status(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     let maybe = { state.task_store.read().await.get(&task_id).cloned() };
     if let Some(r) = maybe {
@@ -1977,7 +1977,7 @@ struct ShareTarget {
 pub async fn apply_keyshares(
     Path(_tenant): Path<String>,
     State(state): State<RestState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     // Parse flatbuffer ApplyKeySharesRequest

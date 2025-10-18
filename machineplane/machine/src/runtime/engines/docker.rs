@@ -95,6 +95,7 @@ impl DockerEngine {
     }
 
     /// Extract port mappings from docker container inspect output
+    #[allow(dead_code)]
     async fn extract_port_mappings(&self, container_name: &str) -> RuntimeResult<Vec<PortMapping>> {
         let output = self
             .execute_command(&[

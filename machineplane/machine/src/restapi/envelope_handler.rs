@@ -156,7 +156,7 @@ impl EnvelopeHandler {
         );
 
         // Try parsing provided pubkey bytes as an ml_kem_512 public key
-        let ml_kem_pubkey = match saorsa_pqc::api::kem::MlKemPublicKey::from_bytes(
+        let _ml_kem_pubkey = match saorsa_pqc::api::kem::MlKemPublicKey::from_bytes(
             saorsa_pqc::api::kem::MlKemVariant::MlKem512,
             kem_pubkey,
         ) {

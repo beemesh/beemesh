@@ -603,6 +603,7 @@ impl WorkloadManager {
     }
 
     /// Internal method to get a runtime engine by name
+    #[allow(dead_code)]
     fn get_runtime_engine_by_name(&self, name: &str) -> WorkloadManagerResult<String> {
         let registry = self.runtime_registry.read().unwrap();
         if registry.get_engine(name).is_some() {

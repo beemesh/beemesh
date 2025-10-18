@@ -67,8 +67,8 @@ pub async fn handle_control_message(
             handle_send_apply_request(peer_id, manifest, reply_tx, swarm).await;
         }
         Libp2pControl::SendKeyShare {
-            peer_id,
-            share_payload,
+            peer_id: _peer_id,
+            share_payload: _share_payload,
             reply_tx,
         } => {
             // Key share functionality has been deprecated/removed
