@@ -3,9 +3,11 @@ use crypto::{encrypt_payload_for_recipient, ensure_keypair_on_disk};
 use log::debug;
 use log::error;
 use log::info;
+use scheduler::{NodeCandidate, NodeCapabilities, Scheduler, SchedulerConfig, SchedulingStrategy};
 
 use serde_json::Value as JsonValue;
 use serde_yaml;
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 
@@ -95,16 +97,27 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         );
     }
 
-    // 2) Parse peer IDs and public keys from candidates response for the required replicas
+    // 2) Parse peer IDs and public keys from candidates response and use scheduler
     // Expected format: "peer_id:pubkey_b64"
-    let mut selected_nodes: Vec<(String, String)> = Vec::new();
+    let mut node_candidates = Vec::new();
+    let mut peer_info_map = HashMap::new();
 
-    for i in 0..replicas {
-        let peer = &peers[i];
+    for peer in &peers {
         if let Some(colon_pos) = peer.find(':') {
             let peer_id = &peer[..colon_pos];
             let pubkey_b64 = &peer[colon_pos + 1..];
-            selected_nodes.push((peer_id.to_string(), pubkey_b64.to_string()));
+
+            // Store peer info for later lookup
+            peer_info_map.insert(peer_id.to_string(), pubkey_b64.to_string());
+
+            // Create NodeCandidate for scheduler
+            let candidate = NodeCandidate {
+                node_id: peer_id.to_string(),
+                load_factor: 0.0, // We don't have load info, assume available
+                available: true,
+                capabilities: NodeCapabilities::default(),
+            };
+            node_candidates.push(candidate);
         } else {
             anyhow::bail!(
                 "Invalid candidate format: expected 'peer_id:pubkey_b64', got '{}'",
@@ -113,14 +126,51 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         }
     }
 
-    info!(
-        "Selected {} nodes for {} replicas: {:?}",
-        selected_nodes.len(),
-        replicas,
-        selected_nodes.iter().map(|(id, _)| id).collect::<Vec<_>>()
+    debug!(
+        "Parsed {} node candidates from peers",
+        node_candidates.len()
     );
 
-    // 3) Create encrypted tasks for each node sequentially with same manifest_id
+    // 3) Use scheduler to select candidates with round-robin strategy
+    let scheduler_config = SchedulerConfig {
+        strategy: SchedulingStrategy::RoundRobin,
+        max_candidates: None,
+        enable_load_balancing: false,
+    };
+    let scheduler = Scheduler::new(scheduler_config);
+
+    debug!(
+        "Using scheduler with round-robin strategy to select {} replicas from {} candidates",
+        replicas,
+        node_candidates.len()
+    );
+    let scheduling_plan = scheduler.schedule_workload(&node_candidates, replicas)?;
+    debug!(
+        "Scheduler selected candidate indices: {:?}",
+        scheduling_plan.selected_candidates
+    );
+
+    // 4) Build selected_nodes list from scheduling plan
+    let mut selected_nodes: Vec<(String, String)> = Vec::new();
+    for candidate_idx in scheduling_plan.selected_candidates {
+        let candidate = &node_candidates[candidate_idx];
+        let node_id = &candidate.node_id;
+        let pubkey_b64 = peer_info_map
+            .get(node_id)
+            .ok_or_else(|| anyhow::anyhow!("Missing pubkey for node: {}", node_id))?;
+        selected_nodes.push((node_id.clone(), pubkey_b64.clone()));
+    }
+
+    info!(
+        "Scheduled {} nodes for {} replicas using {:?} strategy: {:?}",
+        selected_nodes.len(),
+        replicas,
+        scheduling_plan.strategy_used,
+        selected_nodes.iter().map(|(id, _)| id).collect::<Vec<_>>()
+    );
+    debug!("Selected nodes with pubkeys: {:?}", selected_nodes);
+
+    // 5) Create encrypted tasks for each node sequentially with same manifest_id
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -230,4 +280,97 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     );
 
     Ok(manifest_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_candidate_parsing_and_scheduling() {
+        // Test data in the format returned by get_candidates
+        let peers = vec![
+            "peer1:dGVzdF9wdWJrZXlfMQ==".to_string(),
+            "peer2:dGVzdF9wdWJrZXlfMg==".to_string(),
+            "peer3:dGVzdF9wdWJrZXlfMw==".to_string(),
+            "peer4:dGVzdF9wdWJrZXlfNA==".to_string(),
+        ];
+
+        // Parse candidates
+        let mut node_candidates = Vec::new();
+        let mut peer_info_map = HashMap::new();
+
+        for peer in &peers {
+            if let Some(colon_pos) = peer.find(':') {
+                let peer_id = &peer[..colon_pos];
+                let pubkey_b64 = &peer[colon_pos + 1..];
+
+                peer_info_map.insert(peer_id.to_string(), pubkey_b64.to_string());
+
+                let candidate = NodeCandidate {
+                    node_id: peer_id.to_string(),
+                    load_factor: 0.0,
+                    available: true,
+                    capabilities: NodeCapabilities::default(),
+                };
+                node_candidates.push(candidate);
+            }
+        }
+
+        // Test scheduler with round-robin
+        let scheduler_config = SchedulerConfig {
+            strategy: SchedulingStrategy::RoundRobin,
+            max_candidates: None,
+            enable_load_balancing: false,
+        };
+        let scheduler = Scheduler::new(scheduler_config);
+
+        // Schedule 2 replicas
+        let replicas = 2;
+        let scheduling_plan = scheduler
+            .schedule_workload(&node_candidates, replicas)
+            .unwrap();
+
+        assert_eq!(scheduling_plan.selected_candidates.len(), replicas);
+        assert_eq!(scheduling_plan.total_candidates, peers.len());
+        assert_eq!(
+            scheduling_plan.strategy_used,
+            SchedulingStrategy::RoundRobin
+        );
+
+        // Verify selected nodes can be mapped back to peer info
+        for candidate_idx in &scheduling_plan.selected_candidates {
+            let candidate = &node_candidates[*candidate_idx];
+            assert!(peer_info_map.contains_key(&candidate.node_id));
+        }
+    }
+
+    #[test]
+    fn test_invalid_peer_format() {
+        let peers = vec!["invalid_peer_format".to_string()];
+
+        // This should result in a format error when parsing
+        let mut node_candidates = Vec::new();
+        let mut has_error = false;
+
+        for peer in &peers {
+            if let Some(colon_pos) = peer.find(':') {
+                let peer_id = &peer[..colon_pos];
+                let _pubkey_b64 = &peer[colon_pos + 1..];
+
+                let candidate = NodeCandidate {
+                    node_id: peer_id.to_string(),
+                    load_factor: 0.0,
+                    available: true,
+                    capabilities: NodeCapabilities::default(),
+                };
+                node_candidates.push(candidate);
+            } else {
+                has_error = true;
+            }
+        }
+
+        assert!(has_error);
+        assert!(node_candidates.is_empty());
+    }
 }

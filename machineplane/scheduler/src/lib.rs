@@ -1,324 +1,365 @@
-//! Zero-Trust Distribution Scheduler
+//! Workload Scheduler
 //!
-//! This crate provides optimal distribution strategies for keyshares, manifests, and capability tokens
-//! in a zero-trust decentralized environment to maximize security and fault tolerance.
+//! This crate provides scheduling strategies for placing workloads on available nodes
+//! in a decentralized environment. The scheduler focuses on optimal node selection
+//! for workload placement rather than cryptographic distribution.
 
 use log::info;
 
-/// Configuration for distribution strategy
+/// Configuration for scheduling strategy
 #[derive(Debug, Clone)]
-pub struct DistributionConfig {
-    /// Minimum threshold for secret reconstruction (k in k-of-n)
-    pub min_threshold: usize,
-    /// Maximum acceptable fault tolerance (number of nodes that can fail)
-    pub max_fault_tolerance: usize,
-    /// Minimum security level (affects how many extra nodes we use)
-    pub security_level: SecurityLevel,
+pub struct SchedulerConfig {
+    /// Maximum number of nodes to consider for scheduling
+    pub max_candidates: Option<usize>,
+    /// Scheduling strategy to use
+    pub strategy: SchedulingStrategy,
+    /// Whether to enable load balancing considerations
+    pub enable_load_balancing: bool,
 }
 
-/// Security level determines how aggressively we distribute
+/// Scheduling strategy determines how nodes are selected
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SecurityLevel {
-    /// Minimal distribution - just meets requirements
-    Basic,
-    /// Balanced distribution - good security/efficiency trade-off
-    Standard,
-    /// Maximum distribution - prioritizes security over efficiency
-    High,
+pub enum SchedulingStrategy {
+    /// Round-robin selection among available nodes
+    RoundRobin,
+    /// Random selection from available nodes
+    Random,
+    /// Load-based selection (future: consider node capacity/load)
+    LoadBased,
+    /// First available node
+    FirstAvailable,
 }
 
-/// Result of distribution calculation
+/// Result of scheduling calculation
 #[derive(Debug, Clone)]
-pub struct DistributionPlan {
-    /// Number of keyshare replicas to create
-    pub keyshare_count: usize,
-    /// Threshold required for reconstruction (k in k-of-n)
-    pub reconstruction_threshold: usize,
-    /// Number of manifest replicas to distribute
-    pub manifest_count: usize,
-    /// Total capability tokens needed (keyshare + manifest)
-    pub total_capability_tokens: usize,
-    /// Minimum responders needed for zero-trust operation
-    pub min_required_responders: usize,
-    /// Byzantine fault tolerance (max failures system can handle)
-    pub byzantine_fault_tolerance: usize,
+pub struct SchedulingPlan {
+    /// Selected node candidates for workload placement
+    pub selected_candidates: Vec<usize>,
+    /// Total number of available candidates
+    pub total_candidates: usize,
+    /// Strategy used for selection
+    pub strategy_used: SchedulingStrategy,
 }
 
-impl Default for DistributionConfig {
+/// Node candidate information
+#[derive(Debug, Clone)]
+pub struct NodeCandidate {
+    /// Unique identifier for the node
+    pub node_id: String,
+    /// Current load factor (0.0 = no load, 1.0 = full capacity)
+    pub load_factor: f32,
+    /// Whether the node is currently available
+    pub available: bool,
+    /// Node capabilities/resources
+    pub capabilities: NodeCapabilities,
+}
+
+/// Node capabilities and resources
+#[derive(Debug, Clone)]
+pub struct NodeCapabilities {
+    /// Available CPU cores
+    pub cpu_cores: u32,
+    /// Available memory in MB
+    pub memory_mb: u64,
+    /// Available storage in MB
+    pub storage_mb: u64,
+    /// Supported container runtimes
+    pub container_runtimes: Vec<String>,
+}
+
+impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
-            min_threshold: 2,
-            max_fault_tolerance: 3,
-            security_level: SecurityLevel::Standard,
+            max_candidates: None,
+            strategy: SchedulingStrategy::RoundRobin,
+            enable_load_balancing: true,
         }
     }
 }
 
-impl DistributionPlan {
-    /// Calculate optimal distribution based on available candidates and security requirements
-    pub fn calculate_optimal_distribution(
-        available_candidates: usize,
-        config: &DistributionConfig,
-    ) -> Result<DistributionPlan, DistributionError> {
-        if available_candidates == 0 {
-            return Err(DistributionError::InsufficientCandidates {
-                available: 0,
-                minimum_required: config.min_threshold + 1,
+impl Default for NodeCapabilities {
+    fn default() -> Self {
+        Self {
+            cpu_cores: 1,
+            memory_mb: 1024,
+            storage_mb: 10240,
+            container_runtimes: vec!["docker".to_string()],
+        }
+    }
+}
+
+/// Main scheduler implementation
+pub struct Scheduler {
+    config: SchedulerConfig,
+    round_robin_counter: std::sync::atomic::AtomicUsize,
+}
+
+impl Scheduler {
+    /// Create a new scheduler with the given configuration
+    pub fn new(config: SchedulerConfig) -> Self {
+        Self {
+            config,
+            round_robin_counter: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Schedule a workload on available candidates
+    pub fn schedule_workload(
+        &self,
+        candidates: &[NodeCandidate],
+        required_count: usize,
+    ) -> Result<SchedulingPlan, SchedulingError> {
+        if candidates.is_empty() {
+            return Err(SchedulingError::NoCandidatesAvailable);
+        }
+
+        // Filter available candidates
+        let available_candidates: Vec<(usize, &NodeCandidate)> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| candidate.available)
+            .collect();
+
+        if available_candidates.is_empty() {
+            return Err(SchedulingError::NoAvailableCandidates);
+        }
+
+        let available_count = available_candidates.len();
+        let actual_required_count = if let Some(max) = self.config.max_candidates {
+            std::cmp::min(required_count, max)
+        } else {
+            required_count
+        };
+
+        if available_count < actual_required_count {
+            return Err(SchedulingError::InsufficientCandidates {
+                available: available_count,
+                required: actual_required_count,
             });
         }
 
-        // Ensure we have enough candidates for basic operation
-        let min_required = config.min_threshold + 1;
-        if available_candidates < min_required {
-            return Err(DistributionError::InsufficientCandidates {
-                available: available_candidates,
-                minimum_required: min_required,
-            });
-        }
+        let selected_indices =
+            self.select_candidates(&available_candidates, actual_required_count)?;
 
-        // Calculate Byzantine fault tolerance based on available nodes
-        // For f failures, need at least 3f+1 nodes (Byzantine agreement)
-        let max_byzantine_failures = (available_candidates.saturating_sub(1)) / 3;
-        let byzantine_fault_tolerance =
-            std::cmp::min(max_byzantine_failures, config.max_fault_tolerance);
-
-        // Calculate keyshare distribution
-        let (keyshare_count, reconstruction_threshold) = Self::calculate_keyshare_distribution(
-            available_candidates,
-            config,
-            byzantine_fault_tolerance,
-        )?;
-
-        // Calculate manifest distribution
-        let manifest_count = Self::calculate_manifest_distribution(
-            available_candidates,
-            keyshare_count,
-            config,
-            byzantine_fault_tolerance,
-        )?;
-
-        // Total capability tokens
-        let total_capability_tokens = keyshare_count + manifest_count;
-
-        // Calculate minimum responders needed
-        let min_required_responders = Self::calculate_min_responders(
-            keyshare_count,
-            manifest_count,
-            reconstruction_threshold,
-            byzantine_fault_tolerance,
-        );
-
-        let plan = DistributionPlan {
-            keyshare_count,
-            reconstruction_threshold,
-            manifest_count,
-            total_capability_tokens,
-            min_required_responders,
-            byzantine_fault_tolerance,
+        let plan = SchedulingPlan {
+            selected_candidates: selected_indices,
+            total_candidates: candidates.len(),
+            strategy_used: self.config.strategy,
         };
 
         info!(
-            "Calculated distribution plan: keyshares={}, threshold={}, manifests={}, total_tokens={}, min_responders={}, byzantine_ft={}",
-            plan.keyshare_count,
-            plan.reconstruction_threshold,
-            plan.manifest_count,
-            plan.total_capability_tokens,
-            plan.min_required_responders,
-            plan.byzantine_fault_tolerance
+            "Scheduled workload: selected {} candidates from {} available using {:?} strategy",
+            plan.selected_candidates.len(),
+            available_count,
+            plan.strategy_used
         );
 
         Ok(plan)
     }
 
-    /// Calculate optimal keyshare distribution
-    fn calculate_keyshare_distribution(
-        available_candidates: usize,
-        config: &DistributionConfig,
-        byzantine_fault_tolerance: usize,
-    ) -> Result<(usize, usize), DistributionError> {
-        // Keyshare count based on security level and available candidates
-        let keyshare_count = match config.security_level {
-            SecurityLevel::Basic => {
-                // Minimum viable: k+1 shares (just above threshold)
-                config.min_threshold + 1
-            }
-            SecurityLevel::Standard => {
-                // Balanced: use up to 60% of available candidates, but at least k+2
-                let balanced = (available_candidates * 3) / 5; // 60%
-                std::cmp::max(balanced, config.min_threshold + 2)
-            }
-            SecurityLevel::High => {
-                // Maximum security: use up to 80% of available candidates
-                let high_security = (available_candidates * 4) / 5; // 80%
-                std::cmp::max(
-                    high_security,
-                    config.min_threshold + byzantine_fault_tolerance,
-                )
-            }
-        };
+    /// Select candidates based on the configured strategy
+    fn select_candidates(
+        &self,
+        available_candidates: &[(usize, &NodeCandidate)],
+        count: usize,
+    ) -> Result<Vec<usize>, SchedulingError> {
+        match self.config.strategy {
+            SchedulingStrategy::FirstAvailable => Ok(available_candidates
+                .iter()
+                .take(count)
+                .map(|(idx, _)| *idx)
+                .collect()),
+            SchedulingStrategy::RoundRobin => self.select_round_robin(available_candidates, count),
+            SchedulingStrategy::Random => self.select_random(available_candidates, count),
+            SchedulingStrategy::LoadBased => self.select_load_based(available_candidates, count),
+        }
+    }
 
-        // Ensure we don't exceed available candidates
-        let keyshare_count = std::cmp::min(keyshare_count, available_candidates);
+    /// Round-robin selection
+    fn select_round_robin(
+        &self,
+        available_candidates: &[(usize, &NodeCandidate)],
+        count: usize,
+    ) -> Result<Vec<usize>, SchedulingError> {
+        let start_index = self
+            .round_robin_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut selected = Vec::new();
 
-        // Reconstruction threshold should be based on the number of shares
-        // For k-of-n threshold schemes, k should be > n/2 for security
-        // but we also respect the configured minimum
-        let reconstruction_threshold = std::cmp::max(
-            config.min_threshold,
-            (keyshare_count / 2) + 1, // Majority + 1
-        );
-
-        // Sanity check
-        if reconstruction_threshold >= keyshare_count {
-            return Err(DistributionError::InvalidThreshold {
-                threshold: reconstruction_threshold,
-                total_shares: keyshare_count,
-            });
+        for i in 0..count {
+            let idx = (start_index + i) % available_candidates.len();
+            selected.push(available_candidates[idx].0);
         }
 
-        Ok((keyshare_count, reconstruction_threshold))
+        Ok(selected)
     }
 
-    /// Calculate optimal manifest distribution
-    fn calculate_manifest_distribution(
-        available_candidates: usize,
-        keyshare_count: usize,
-        config: &DistributionConfig,
-        byzantine_fault_tolerance: usize,
-    ) -> Result<usize, DistributionError> {
-        let manifest_count = match config.security_level {
-            SecurityLevel::Basic => {
-                // Basic: same nodes that get keyshares also get manifests
-                keyshare_count
-            }
-            SecurityLevel::Standard => {
-                // Standard: manifests can go to more nodes for redundancy
-                // Use keyshare count + some additional nodes for redundancy
-                let additional_redundancy = std::cmp::min(byzantine_fault_tolerance, 2);
-                std::cmp::min(keyshare_count + additional_redundancy, available_candidates)
-            }
-            SecurityLevel::High => {
-                // High security: distribute manifests to most available nodes
-                // But ensure at least the keyshare holders get them
-                let high_distribution = (available_candidates * 3) / 4; // 75%
-                std::cmp::max(high_distribution, keyshare_count)
-            }
-        };
+    /// Random selection
+    fn select_random(
+        &self,
+        available_candidates: &[(usize, &NodeCandidate)],
+        count: usize,
+    ) -> Result<Vec<usize>, SchedulingError> {
+        use std::collections::HashSet;
 
-        Ok(std::cmp::min(manifest_count, available_candidates))
+        let mut selected = HashSet::new();
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: usize = 1000;
+
+        // Simple pseudo-random selection (in production, use a proper RNG)
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as usize;
+
+        while selected.len() < count && attempts < MAX_ATTEMPTS {
+            let idx = (seed.wrapping_add(attempts)) % available_candidates.len();
+            selected.insert(available_candidates[idx].0);
+            attempts += 1;
+        }
+
+        if selected.len() < count {
+            return Err(SchedulingError::SelectionFailed);
+        }
+
+        Ok(selected.into_iter().collect())
     }
 
-    /// Calculate minimum responders needed for zero-trust operation
-    fn calculate_min_responders(
-        keyshare_count: usize,
-        manifest_count: usize,
-        reconstruction_threshold: usize,
-        byzantine_fault_tolerance: usize,
-    ) -> usize {
-        // Need enough responders for:
-        // 1. Secret reconstruction (at least threshold keyshare holders)
-        // 2. Manifest access (at least 1 manifest holder)
-        // 3. Fault tolerance buffer
+    /// Load-based selection (selects nodes with lowest load first)
+    fn select_load_based(
+        &self,
+        available_candidates: &[(usize, &NodeCandidate)],
+        count: usize,
+    ) -> Result<Vec<usize>, SchedulingError> {
+        let mut candidates_with_load: Vec<_> = available_candidates
+            .iter()
+            .map(|(idx, candidate)| (*idx, candidate.load_factor))
+            .collect();
 
-        let min_for_reconstruction = reconstruction_threshold;
-        let min_for_manifest_access = 1;
-        let fault_tolerance_buffer = byzantine_fault_tolerance;
+        // Sort by load factor (lowest first)
+        candidates_with_load
+            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let calculated_min =
-            min_for_reconstruction + min_for_manifest_access + fault_tolerance_buffer;
-
-        // But don't require more than total available tokens - 1 (leave room for 1 failure)
-        let total_tokens = keyshare_count + manifest_count;
-        let max_reasonable = total_tokens.saturating_sub(1);
-
-        std::cmp::min(calculated_min, max_reasonable)
+        Ok(candidates_with_load
+            .into_iter()
+            .take(count)
+            .map(|(idx, _)| idx)
+            .collect())
     }
 
-    /// Check if a distribution plan can handle the specified number of failures
-    pub fn can_handle_failures(&self, failure_count: usize) -> bool {
-        // Check if we can still reconstruct secrets
-        let remaining_keyshares = self.keyshare_count.saturating_sub(failure_count);
-        let can_reconstruct = remaining_keyshares >= self.reconstruction_threshold;
-
-        // Check if we still have manifest access
-        let remaining_manifests = self.manifest_count.saturating_sub(failure_count);
-        let has_manifest_access = remaining_manifests > 0;
-
-        can_reconstruct && has_manifest_access
-    }
-
-    /// Get recommended candidate selection strategy
-    pub fn get_selection_strategy(&self) -> CandidateSelectionStrategy {
-        CandidateSelectionStrategy {
-            keyshare_selection: SelectionMethod::FirstN(self.keyshare_count),
-            manifest_selection: if self.manifest_count == self.keyshare_count {
-                SelectionMethod::SameAsKeyshares
-            } else {
-                SelectionMethod::FirstN(self.manifest_count)
-            },
+    /// Get scheduler statistics
+    pub fn get_stats(&self) -> SchedulerStats {
+        SchedulerStats {
+            strategy: self.config.strategy,
+            round_robin_counter: self
+                .round_robin_counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            load_balancing_enabled: self.config.enable_load_balancing,
         }
     }
 }
 
-/// Strategy for selecting which candidates get what
-#[derive(Debug, Clone)]
-pub struct CandidateSelectionStrategy {
-    pub keyshare_selection: SelectionMethod,
-    pub manifest_selection: SelectionMethod,
+/// Scheduler statistics
+#[derive(Debug)]
+pub struct SchedulerStats {
+    pub strategy: SchedulingStrategy,
+    pub round_robin_counter: usize,
+    pub load_balancing_enabled: bool,
 }
 
+/// Errors that can occur during scheduling
 #[derive(Debug, Clone)]
-pub enum SelectionMethod {
-    /// Select first N candidates
-    FirstN(usize),
-    /// Use same candidates as keyshares
-    SameAsKeyshares,
-    /// Distributed selection (future: could implement ring hashing, etc.)
-    Distributed(usize),
+pub enum SchedulingError {
+    /// No candidates provided
+    NoCandidatesAvailable,
+    /// No candidates are currently available
+    NoAvailableCandidates,
+    /// Not enough candidates to meet requirements
+    InsufficientCandidates { available: usize, required: usize },
+    /// Selection algorithm failed
+    SelectionFailed,
 }
 
-/// Errors that can occur during distribution calculation
-#[derive(Debug, Clone)]
-pub enum DistributionError {
-    InsufficientCandidates {
-        available: usize,
-        minimum_required: usize,
-    },
-    InvalidThreshold {
-        threshold: usize,
-        total_shares: usize,
-    },
-    SecurityLevelNotSupported,
-}
-
-impl std::fmt::Display for DistributionError {
+impl std::fmt::Display for SchedulingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DistributionError::InsufficientCandidates {
+            SchedulingError::NoCandidatesAvailable => {
+                write!(f, "No candidates available for scheduling")
+            }
+            SchedulingError::NoAvailableCandidates => {
+                write!(f, "No candidates are currently available")
+            }
+            SchedulingError::InsufficientCandidates {
                 available,
-                minimum_required,
+                required,
             } => {
                 write!(
                     f,
-                    "Insufficient candidates: have {}, need at least {}",
-                    available, minimum_required
+                    "Insufficient candidates: have {}, need {}",
+                    available, required
                 )
             }
-            DistributionError::InvalidThreshold {
-                threshold,
-                total_shares,
-            } => {
-                write!(
-                    f,
-                    "Invalid threshold: {} must be less than total shares {}",
-                    threshold, total_shares
-                )
-            }
-            DistributionError::SecurityLevelNotSupported => {
-                write!(f, "Security level not supported")
+            SchedulingError::SelectionFailed => {
+                write!(f, "Failed to select candidates")
             }
         }
     }
 }
 
-impl std::error::Error for DistributionError {}
+impl std::error::Error for SchedulingError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_candidates(count: usize) -> Vec<NodeCandidate> {
+        (0..count)
+            .map(|i| NodeCandidate {
+                node_id: format!("node-{}", i),
+                load_factor: (i as f32) * 0.1,
+                available: true,
+                capabilities: NodeCapabilities::default(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_first_available_scheduling() {
+        let config = SchedulerConfig {
+            strategy: SchedulingStrategy::FirstAvailable,
+            ..Default::default()
+        };
+        let scheduler = Scheduler::new(config);
+        let candidates = create_test_candidates(5);
+
+        let plan = scheduler.schedule_workload(&candidates, 2).unwrap();
+        assert_eq!(plan.selected_candidates, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_insufficient_candidates() {
+        let config = SchedulerConfig::default();
+        let scheduler = Scheduler::new(config);
+        let candidates = create_test_candidates(2);
+
+        let result = scheduler.schedule_workload(&candidates, 5);
+        assert!(matches!(
+            result,
+            Err(SchedulingError::InsufficientCandidates { .. })
+        ));
+    }
+
+    #[test]
+    fn test_load_based_scheduling() {
+        let config = SchedulerConfig {
+            strategy: SchedulingStrategy::LoadBased,
+            ..Default::default()
+        };
+        let scheduler = Scheduler::new(config);
+        let candidates = create_test_candidates(5);
+
+        let plan = scheduler.schedule_workload(&candidates, 2).unwrap();
+        // Should select nodes with lowest load (0 and 1)
+        assert_eq!(plan.selected_candidates, vec![0, 1]);
+    }
+}
