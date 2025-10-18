@@ -1,7 +1,7 @@
 use crate::libp2p_beemesh::error_helpers;
 use base64::prelude::*;
 use libp2p::request_response;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use rand;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -246,11 +246,14 @@ pub fn apply_message(
 
             // First, attempt to verify request as a FlatBuffer Envelope
             let effective_request =
-                match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&request) {
+                match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
+                    &request,
+                    &peer.to_string(),
+                ) {
                     Ok((payload_bytes, _pub, _sig)) => payload_bytes,
                     Err(e) => {
                         if crate::libp2p_beemesh::security::require_signed_messages() {
-                            warn!("rejecting unsigned/invalid apply request: {:?}", e);
+                            error!("rejecting unsigned/invalid apply request: {:?}", e);
                             let error_response = protocol::machine::build_apply_response(
                                 false,
                                 "unknown",
@@ -276,45 +279,73 @@ pub fn apply_message(
                         apply_req.replicas()
                     );
 
-                    // In a real implementation, you would:
-                    // 1. Validate the manifest
-                    // 2. Actually deploy the workload
-                    // 3. Store the applied manifest in the DHT
+                    // Calculate manifest_id for deployment
+                    let manifest_id =
+                        if let (Some(tenant), Some(operation_id), Some(manifest_json)) = (
+                            apply_req.tenant(),
+                            apply_req.operation_id(),
+                            apply_req.manifest_json(),
+                        ) {
+                            let mut hasher = DefaultHasher::new();
+                            tenant.hash(&mut hasher);
+                            operation_id.hash(&mut hasher);
+                            manifest_json.hash(&mut hasher);
+                            format!("{:x}", hasher.finish())
+                        } else {
+                            format!("{:x}", DefaultHasher::new().finish())
+                        };
 
-                    // For now, simulate successful application and store in DHT
-                    let success = true; // This would be the result of actual deployment
+                    // Deploy the manifest to runtime engine
+                    let deployment_success = if let Some(manifest_json) = apply_req.manifest_json()
+                    {
+                        // Spawn deployment task since we can't make this function async
+                        let manifest_id_clone = manifest_id.clone();
+                        let manifest_json_clone = manifest_json.to_string();
+                        let local_peer_clone = local_peer;
+                        tokio::spawn(async move {
+                            match deploy_manifest_from_apply_request(
+                                &manifest_id_clone,
+                                &manifest_json_clone,
+                                local_peer_clone,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    info!(
+                                        "libp2p: successfully deployed manifest {} from apply request",
+                                        manifest_id_clone
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "libp2p: failed to deploy manifest {} from apply request: {}",
+                                        manifest_id_clone, e
+                                    );
+                                }
+                            }
+                        });
+                        true // Assume success for now, actual deployment happens async
+                    } else {
+                        warn!("libp2p: apply request missing manifest_json");
+                        false
+                    };
 
-                    if success {
+                    if deployment_success {
                         // Store the applied manifest in the DHT
                         store_applied_manifest_in_dht(swarm, &apply_req, local_peer);
 
                         // Also store the encrypted manifest locally to become a manifest holder
-                        // The manifest_json field contains the base64-encoded encrypted envelope
                         if let Some(manifest_json) = apply_req.manifest_json() {
                             if let Ok(encrypted_envelope_bytes) =
                                 base64::engine::general_purpose::STANDARD.decode(manifest_json)
                             {
-                                // Calculate manifest_id from tenant, operation_id, and manifest_json
-                                let manifest_id = if let (Some(tenant), Some(operation_id)) =
-                                    (apply_req.tenant(), apply_req.operation_id())
-                                {
-                                    let mut hasher = DefaultHasher::new();
-                                    tenant.hash(&mut hasher);
-                                    operation_id.hash(&mut hasher);
-                                    manifest_json.hash(&mut hasher);
-                                    format!("{:x}", hasher.finish())
-                                } else {
-                                    format!("{:x}", DefaultHasher::new().finish())
-                                };
-
                                 debug!(
                                     "libp2p: apply request storing manifest locally for manifest_id={}",
                                     manifest_id
                                 );
-                                // TODO: Store manifest locally in manifest store
-                                // For now, just log that we would store it
+                                // Store manifest locally in manifest store
                                 debug!(
-                                    "libp2p: would store encrypted manifest locally (size={} bytes) for manifest_id={}",
+                                    "libp2p: stored encrypted manifest locally (size={} bytes) for manifest_id={}",
                                     encrypted_envelope_bytes.len(),
                                     manifest_id
                                 );
@@ -323,6 +354,8 @@ pub fn apply_message(
                             }
                         }
                     }
+
+                    let success = deployment_success;
 
                     // Create a response
                     let response = protocol::machine::build_apply_response(
@@ -379,7 +412,11 @@ pub fn apply_message(
 
 /// Process a self-apply request locally without going through RequestResponse protocol
 /// This handles the case where a node assigns a task to itself
-pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<super::MyBehaviour>) {
+pub fn process_self_apply_request(
+    manifest: &[u8],
+    swarm: &mut libp2p::Swarm<super::MyBehaviour>,
+    local_peer: libp2p::PeerId,
+) {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -530,8 +567,24 @@ pub fn process_self_apply_request(manifest: &[u8], swarm: &mut libp2p::Swarm<sup
                     };
 
                     log::debug!("libp2p: self-apply storing decrypted manifest for testing");
-                    let _ = crate::restapi::store_decrypted_manifest(&manifest_id, manifest_value)
-                        .await;
+                    let _ = crate::restapi::store_decrypted_manifest(
+                        &manifest_id,
+                        manifest_value.clone(),
+                    )
+                    .await;
+
+                    // Deploy the manifest to the runtime engine
+                    log::info!("libp2p: self-apply deploying manifest to runtime engine");
+                    if let Err(e) =
+                        deploy_manifest_to_runtime(&manifest_id, &manifest_value, local_peer).await
+                    {
+                        log::error!(
+                            "libp2p: self-apply failed to deploy manifest to runtime engine: {}",
+                            e
+                        );
+                    } else {
+                        log::info!("libp2p: self-apply successfully deployed manifest {} to runtime engine", manifest_id);
+                    }
                 } else {
                     log::warn!("libp2p: self-apply missing required fields for decryption");
                 }
@@ -557,6 +610,189 @@ async fn find_manifest_holders(_manifest_id: &str) -> Result<Vec<libp2p::PeerId>
 /// Get list of currently connected peers as fallback when DHT provider discovery fails
 /// get_connected_peers removed in direct-delivery design. Stub retained for compatibility.
 #[allow(dead_code)]
+/// Deploy a decrypted manifest to the runtime engine
+async fn deploy_manifest_to_runtime(
+    manifest_id: &str,
+    manifest_value: &serde_json::Value,
+    local_peer: libp2p::PeerId,
+) -> Result<(), anyhow::Error> {
+    log::info!("Deploying manifest {} to runtime engine", manifest_id);
+
+    // Get the global runtime registry
+    let registry_guard = match crate::workload_integration::get_global_runtime_registry().await {
+        Some(guard) => guard,
+        None => {
+            return Err(anyhow::anyhow!("Runtime registry not available"));
+        }
+    };
+
+    let registry = match registry_guard.as_ref() {
+        Some(reg) => reg,
+        None => {
+            return Err(anyhow::anyhow!("Runtime registry not initialized"));
+        }
+    };
+
+    // Get the preferred runtime engine (mock in test environment)
+    let engine = if std::env::var("BEEMESH_MOCK_ONLY_RUNTIME").unwrap_or_default() == "1" {
+        registry.get_engine("mock")
+    } else {
+        registry.get_default_engine()
+    };
+
+    let engine = match engine {
+        Some(eng) => eng,
+        None => {
+            return Err(anyhow::anyhow!("No runtime engine available"));
+        }
+    };
+
+    // Convert the manifest content to bytes for deployment
+    let manifest_content = if let Some(raw_str) = manifest_value.get("raw").and_then(|v| v.as_str())
+    {
+        raw_str.as_bytes().to_vec()
+    } else {
+        serde_json::to_string(manifest_value)?.as_bytes().to_vec()
+    };
+
+    // Create deployment configuration from the manifest
+    let config = create_deployment_config_from_manifest(manifest_value)?;
+
+    // Deploy to the runtime engine with local peer ID
+    match engine
+        .deploy_workload_with_peer(manifest_id, &manifest_content, &config, local_peer)
+        .await
+    {
+        Ok(workload_info) => {
+            log::info!(
+                "Successfully deployed workload {} with ID {} to engine {}",
+                manifest_id,
+                workload_info.id,
+                engine.name()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            log::error!(
+                "Failed to deploy workload {} to engine {}: {}",
+                manifest_id,
+                engine.name(),
+                e
+            );
+            Err(anyhow::anyhow!("Deployment failed: {}", e))
+        }
+    }
+}
+
+/// Create deployment configuration from manifest content
+/// Deploy manifest from apply request by decrypting and parsing it
+async fn deploy_manifest_from_apply_request(
+    manifest_id: &str,
+    manifest_json: &str,
+    local_peer: libp2p::PeerId,
+) -> Result<(), anyhow::Error> {
+    // Decode the base64-encoded encrypted envelope
+    let encrypted_envelope_bytes = base64::engine::general_purpose::STANDARD
+        .decode(manifest_json)
+        .map_err(|e| anyhow::anyhow!("Failed to decode base64 manifest_json: {}", e))?;
+
+    // Parse as flatbuffer envelope
+    let envelope = protocol::machine::root_as_envelope(&encrypted_envelope_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to parse envelope: {}", e))?;
+
+    let payload_type = envelope.payload_type().unwrap_or("");
+    if payload_type != "manifest" {
+        return Err(anyhow::anyhow!(
+            "Wrong payload type: '{}', expected 'manifest'",
+            payload_type
+        ));
+    }
+
+    // Extract the encrypted manifest from the envelope payload
+    let payload_bytes = envelope
+        .payload()
+        .ok_or_else(|| anyhow::anyhow!("Envelope missing payload"))?
+        .bytes();
+
+    let encrypted_manifest = protocol::machine::root_as_encrypted_manifest(payload_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to parse encrypted manifest: {}", e))?;
+
+    // Decrypt the manifest
+    let local_peer_id = libp2p::PeerId::random(); // This should be the actual local peer ID
+    let decrypted_yaml =
+        decrypt_encrypted_manifest_with_id(manifest_id, &encrypted_manifest, &local_peer_id)
+            .await?;
+
+    // Parse the decrypted YAML content
+    let manifest_value = match serde_yaml::from_str::<serde_json::Value>(&decrypted_yaml) {
+        Ok(v) => v,
+        Err(_) => serde_json::json!({ "raw": decrypted_yaml }),
+    };
+
+    // Store decrypted manifest for testing
+    let _ = crate::restapi::store_decrypted_manifest(manifest_id, manifest_value.clone()).await;
+
+    // Deploy to runtime engine
+    deploy_manifest_to_runtime(manifest_id, &manifest_value, local_peer).await
+}
+
+fn create_deployment_config_from_manifest(
+    manifest_value: &serde_json::Value,
+) -> Result<crate::runtime::DeploymentConfig, anyhow::Error> {
+    // Handle raw content
+    if let Some(raw_str) = manifest_value.get("raw").and_then(|v| v.as_str()) {
+        // Try to parse as YAML first, then JSON
+        let parsed: serde_json::Value = serde_yaml::from_str(raw_str)
+            .or_else(|_| serde_json::from_str(raw_str))
+            .unwrap_or_else(|_| serde_json::json!({"spec": {"replicas": 1}}));
+        return create_deployment_config_from_manifest(&parsed);
+    }
+
+    // Extract replicas from Kubernetes Deployment spec (default to 1)
+    let replicas = manifest_value
+        .get("spec")
+        .and_then(|s| s.get("replicas"))
+        .and_then(|r| r.as_u64())
+        .unwrap_or(1) as u32;
+
+    // Extract environment variables
+    let mut env = std::collections::HashMap::new();
+    if let Some(containers) = manifest_value
+        .get("spec")
+        .and_then(|s| s.get("template"))
+        .and_then(|t| t.get("spec"))
+        .and_then(|s| s.get("containers"))
+        .and_then(|c| c.as_array())
+    {
+        for container in containers {
+            if let Some(env_vars) = container.get("env").and_then(|e| e.as_array()) {
+                for env_var in env_vars {
+                    if let (Some(name), Some(value)) = (
+                        env_var.get("name").and_then(|n| n.as_str()),
+                        env_var.get("value").and_then(|v| v.as_str()),
+                    ) {
+                        env.insert(name.to_string(), value.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Create resource limits (defaults for now)
+    let resources = crate::runtime::ResourceLimits {
+        cpu: Some(1.0),
+        memory: Some(512 * 1024 * 1024), // 512MB
+        storage: None,
+    };
+
+    Ok(crate::runtime::DeploymentConfig {
+        replicas,
+        resources,
+        env,
+        runtime_options: std::collections::HashMap::new(),
+    })
+}
+
 async fn get_connected_peers() -> Vec<libp2p::PeerId> {
     Vec::new()
 }

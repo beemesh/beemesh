@@ -17,11 +17,24 @@ pub fn require_signed_messages() -> bool {
 pub fn verify_envelope_and_check_nonce(
     envelope_bytes: &[u8],
 ) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    verify_envelope_and_check_nonce_for_peer(envelope_bytes, "global")
+}
+
+/// Verify a FlatBuffer envelope and check nonce for replay protection for a specific peer.
+/// Returns (payload_bytes, pub_bytes, sig_bytes) on successful verification.
+pub fn verify_envelope_and_check_nonce_for_peer(
+    envelope_bytes: &[u8],
+    peer_id: &str,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     // Use standard 5 minute nonce window for backward compatibility
     let nonce_window = Duration::from_secs(300);
 
     // All envelopes must be FlatBuffers now
-    crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(envelope_bytes, nonce_window)
+    crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope_for_peer(
+        envelope_bytes,
+        nonce_window,
+        peer_id,
+    )
 }
 
 #[cfg(test)]

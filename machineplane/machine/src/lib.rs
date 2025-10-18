@@ -7,7 +7,11 @@ use std::io::Write;
 mod hostapi;
 pub mod libp2p_beemesh;
 mod pod_communication;
+pub mod provider;
 pub mod restapi;
+pub mod runtime;
+pub mod workload_integration;
+pub mod workload_manager;
 
 /// beemesh Host Agent
 #[derive(Parser, Debug)]
@@ -220,6 +224,17 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
             log::error!("libp2p node error: {}", e);
         }
     });
+
+    // Initialize runtime registry and provider manager for manifest deployment
+    log::info!("Initializing runtime registry and provider manager...");
+    if let Err(e) = workload_integration::initialize_workload_manager().await {
+        log::warn!(
+            "Failed to initialize runtime registry: {}. Will use legacy deployment only.",
+            e
+        );
+    } else {
+        log::info!("Runtime registry and provider manager initialized successfully");
+    }
 
     let mut handles = Vec::new();
 

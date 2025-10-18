@@ -1,6 +1,6 @@
 use base64::Engine;
 use libp2p::request_response;
-use log::{debug, warn};
+use log::{debug, error, warn};
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
@@ -18,11 +18,14 @@ pub fn scheduler_message(
             debug!("libp2p: received scheduler request from peer={}", peer);
             // First, attempt to verify request as an Envelope (JSON or FlatBuffer)
             let effective_request =
-                match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&request) {
+                match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
+                    &request,
+                    &peer.to_string(),
+                ) {
                     Ok((payload_bytes, _pub, _sig)) => payload_bytes,
                     Err(e) => {
                         if crate::libp2p_beemesh::security::require_signed_messages() {
-                            warn!("rejecting unsigned/invalid scheduler request: {:?}", e);
+                            error!("rejecting unsigned/invalid scheduler request: {:?}", e);
                             return;
                         }
                         request.clone()

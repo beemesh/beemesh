@@ -32,7 +32,9 @@ pub async fn handle_send_apply_request(
         // which may request key shares and will be able to find the capability in the keystore.
         // Note: process_self_apply_request expects raw flatbuffer bytes, not signed envelopes
         crate::libp2p_beemesh::behaviour::apply_message::process_self_apply_request(
-            &manifest, swarm,
+            &manifest,
+            swarm,
+            *swarm.local_peer_id(),
         );
 
         let _ = reply_tx.send(Ok(format!("Apply request handled locally for {}", peer_id)));
@@ -133,13 +135,9 @@ pub async fn handle_send_apply_request(
             if let Some(peer_kem_bytes) = map.get(&peer_id) {
                 match crypto::encrypt_payload_for_recipient(&peer_kem_bytes, &signed_envelope_fb) {
                     Ok(enc_blob) => {
-                        let enc_b64 = base64::engine::general_purpose::STANDARD.encode(&enc_blob);
-                        let keyshare_fb =
-                            protocol::machine::build_keyshare_request(&manifest_id, &enc_b64);
-                        let _ = swarm
-                            .behaviour_mut()
-                            .keyshare_rr
-                            .send_request(&peer_id, keyshare_fb);
+                        let _enc_b64 = base64::engine::general_purpose::STANDARD.encode(&enc_blob);
+                        // Keyshare functionality has been deprecated/removed
+                        log::warn!("keyshare functionality deprecated - skipping keyshare request");
                         sent_blob = true;
                     }
                     Err(e) => {
@@ -147,15 +145,6 @@ pub async fn handle_send_apply_request(
                     }
                 }
             }
-        }
-        if !sent_blob {
-            // Send the signed envelope bytes base64 in KeyShareRequest.capability
-            let signed_b64 = base64::engine::general_purpose::STANDARD.encode(&signed_envelope_fb);
-            let keyshare_fb = protocol::machine::build_keyshare_request(&manifest_id, &signed_b64);
-            let _ = swarm
-                .behaviour_mut()
-                .keyshare_rr
-                .send_request(&peer_id, keyshare_fb);
         }
         // Also store a local copy encrypted for keystore
         if let Ok((blob, cid)) = crypto::encrypt_share_for_keystore(&signed_envelope_fb) {

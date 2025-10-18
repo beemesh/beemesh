@@ -27,6 +27,7 @@ use tokio::sync::RwLock;
 use tokio::{sync::watch, time::Duration};
 
 pub mod envelope_handler;
+use crate::runtime::RuntimeEngine;
 use envelope_handler::{create_encrypted_response, get_peer_id_from_request, EnvelopeHandler};
 
 async fn get_nodes(
@@ -154,6 +155,12 @@ pub fn build_router(
         .route("/debug/dht/peers", get(debug_dht_peers))
         .route("/debug/peers", get(debug_peers))
         .route("/debug/tasks", get(debug_all_tasks))
+        .route("/debug/mock_engine_state", get(debug_mock_engine_state))
+        .route(
+            "/debug/workloads_by_peer/{peer_id}",
+            get(debug_workloads_by_peer),
+        )
+        .route("/debug/local_peer_id", get(debug_local_peer_id))
         .route(
             "/tenant/{tenant}/tasks/{task_id}/manifest_id",
             get(get_task_manifest_id),
@@ -1019,6 +1026,174 @@ async fn debug_active_announces(State(_state): State<RestState>) -> axum::Json<s
     // access the static ACTIVE_ANNOUNCES in control module
     let cids = crate::libp2p_beemesh::control::list_active_announces();
     axum::Json(serde_json::json!({"ok": true, "cids": cids}))
+}
+
+// Debug: get MockEngine state for testing
+async fn debug_mock_engine_state(State(_state): State<RestState>) -> axum::Json<serde_json::Value> {
+    // Try to access the global runtime registry to get MockEngine state
+    if let Some(registry_guard) = crate::workload_integration::get_global_runtime_registry().await {
+        if let Some(ref registry) = *registry_guard {
+            if let Some(mock_engine) = registry.get_engine("mock") {
+                // Try to downcast to MockEngine to get full workload data including manifest content
+                if let Some(mock_engine) = mock_engine
+                    .as_any()
+                    .downcast_ref::<crate::runtime::mock::MockEngine>()
+                {
+                    let all_workloads = mock_engine.get_all_workloads();
+                    let mut workloads_json = serde_json::Map::new();
+
+                    for workload in &all_workloads {
+                        let manifest_content = String::from_utf8_lossy(&workload.manifest_content);
+                        workloads_json.insert(
+                            workload.info.id.clone(),
+                            serde_json::json!({
+                                "manifest_id": workload.info.manifest_id,
+                                "status": format!("{:?}", workload.info.status),
+                                "ports": workload.info.ports,
+                                "created_at": workload.info.created_at.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default().as_secs(),
+                                "manifest_content": manifest_content,
+                            })
+                        );
+                    }
+
+                    return axum::Json(serde_json::json!({
+                        "ok": true,
+                        "engine_name": mock_engine.name(),
+                        "workload_count": all_workloads.len(),
+                        "workloads": workloads_json
+                    }));
+                } else {
+                    // Fallback to standard RuntimeEngine methods if downcast fails
+                    match mock_engine.list_workloads().await {
+                        Ok(workloads) => {
+                            let mut workloads_json = serde_json::Map::new();
+                            for workload in &workloads {
+                                workloads_json.insert(
+                                    workload.id.clone(),
+                                    serde_json::json!({
+                                        "manifest_id": workload.manifest_id,
+                                        "status": format!("{:?}", workload.status),
+                                        "ports": workload.ports,
+                                        "created_at": workload.created_at.duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default().as_secs(),
+                                    })
+                                );
+                            }
+
+                            return axum::Json(serde_json::json!({
+                                "ok": true,
+                                "engine_name": mock_engine.name(),
+                                "workload_count": workloads.len(),
+                                "workloads": workloads_json
+                            }));
+                        }
+                        Err(e) => {
+                            return axum::Json(serde_json::json!({
+                                "ok": false,
+                                "error": format!("Failed to list workloads: {}", e),
+                                "workload_count": 0,
+                                "workloads": {}
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    axum::Json(serde_json::json!({
+        "ok": false,
+        "error": "MockEngine not available",
+        "workloads": {}
+    }))
+}
+
+/// Debug endpoint to get local peer ID
+async fn debug_local_peer_id(State(state): State<RestState>) -> axum::Json<serde_json::Value> {
+    // Get the local peer ID from the control channel
+    use tokio::sync::mpsc;
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
+
+    let control_msg = crate::libp2p_beemesh::control::Libp2pControl::GetLocalPeerId { reply_tx };
+
+    if let Err(_) = state.control_tx.send(control_msg) {
+        return axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "Failed to send control message"
+        }));
+    }
+
+    // Wait for response with timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx.recv()).await {
+        Ok(Some(peer_id)) => axum::Json(serde_json::json!({
+            "ok": true,
+            "local_peer_id": peer_id.to_string()
+        })),
+        Ok(None) => axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "Control channel closed"
+        })),
+        Err(_) => axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "Timeout waiting for local peer ID"
+        })),
+    }
+}
+
+/// Debug endpoint to get workloads deployed by a specific peer ID
+async fn debug_workloads_by_peer(
+    Path(peer_id): Path<String>,
+    State(_state): State<RestState>,
+) -> axum::Json<serde_json::Value> {
+    // Try to access the global runtime registry to get MockEngine state
+    if let Some(registry_guard) = crate::workload_integration::get_global_runtime_registry().await {
+        if let Some(ref registry) = *registry_guard {
+            if let Some(mock_engine) = registry.get_engine("mock") {
+                // Try to downcast to MockEngine to get workloads by peer ID
+                if let Some(mock_engine) = mock_engine
+                    .as_any()
+                    .downcast_ref::<crate::runtime::mock::MockEngine>()
+                {
+                    let peer_workloads = mock_engine.get_workloads_by_peer(&peer_id);
+                    let mut workloads_json = serde_json::Map::new();
+
+                    for workload in &peer_workloads {
+                        let manifest_content = String::from_utf8_lossy(&workload.manifest_content);
+                        workloads_json.insert(
+                            workload.info.id.clone(),
+                            serde_json::json!({
+                                "manifest_id": workload.info.manifest_id,
+                                "status": format!("{:?}", workload.info.status),
+                                "metadata": workload.info.metadata,
+                                "manifest_content": manifest_content,
+                                "created_at": workload.info.created_at.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default().as_secs(),
+                                "updated_at": workload.info.updated_at.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default().as_secs(),
+                                "ports": workload.info.ports,
+                            })
+                        );
+                    }
+
+                    return axum::Json(serde_json::json!({
+                        "ok": true,
+                        "peer_id": peer_id,
+                        "workload_count": peer_workloads.len(),
+                        "workloads": workloads_json
+                    }));
+                }
+            }
+        }
+    }
+
+    axum::Json(serde_json::json!({
+        "ok": false,
+        "error": "MockEngine not available",
+        "peer_id": peer_id,
+        "workload_count": 0,
+        "workloads": {}
+    }))
 }
 
 // Debug: ask the libp2p control channel to get a manifest from the DHT

@@ -1,9 +1,0 @@
-namespace beemesh.machine;
-
-table KeyShareRequest {
-  manifest_id:string;
-  // optional capability token for future access control
-  capability:string;
-}
-
-root_type KeyShareRequest;

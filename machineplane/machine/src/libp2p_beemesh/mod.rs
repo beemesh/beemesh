@@ -107,15 +107,6 @@ pub fn setup_libp2p_node(
                 request_response::Config::default(),
             );
 
-            // Create the request-response behavior for key-share protocol
-            let keyshare_rr = request_response::Behaviour::new(
-                std::iter::once((
-                    "/beemesh/keyshare/1.0.0",
-                    request_response::ProtocolSupport::Full,
-                )),
-                request_response::Config::default(),
-            );
-
             // Create the request-response behavior for scheduler (capacity/proposals)
             let scheduler_rr = request_response::Behaviour::new(
                 std::iter::once((
@@ -166,7 +157,6 @@ pub fn setup_libp2p_node(
                 gossipsub,
                 apply_rr,
                 handshake_rr,
-                keyshare_rr,
                 scheduler_rr,
                 manifest_announcement_rr,
                 manifest_fetch_rr,
@@ -315,10 +305,7 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(event)) => {
                         behaviour::kademlia_event(event, None);
                     }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::KeyshareRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        let local_peer = *swarm.local_peer_id();
-                        behaviour::keyshare_message(message, peer, &mut swarm, local_peer);
-                    }
+
                     SwarmEvent::Behaviour(MyBehaviourEvent::SchedulerRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         let local_peer = *swarm.local_peer_id();
                         behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);

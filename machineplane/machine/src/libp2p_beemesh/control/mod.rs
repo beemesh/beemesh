@@ -15,12 +15,10 @@ use libp2p::kad::QueryId;
 
 mod query_capacity;
 mod send_apply_request;
-mod send_key_share;
 mod send_manifest;
 
 pub use query_capacity::handle_query_capacity_with_payload;
 pub use send_apply_request::handle_send_apply_request;
-pub use send_key_share::handle_send_key_share;
 pub use send_manifest::handle_send_manifest;
 
 /// Calculate a simple CID for manifest data
@@ -73,7 +71,9 @@ pub async fn handle_control_message(
             share_payload,
             reply_tx,
         } => {
-            handle_send_key_share(peer_id, share_payload, reply_tx, swarm).await;
+            // Key share functionality has been deprecated/removed
+            warn!("libp2p: SendKeyShare control message received but keyshare functionality is deprecated");
+            let _ = reply_tx.send(Err("keyshare functionality deprecated".to_string()));
         }
         Libp2pControl::SendManifest {
             peer_id,
@@ -344,22 +344,15 @@ pub async fn handle_control_message(
             });
         }
         Libp2pControl::FetchKeyshare {
-            peer_id,
-            request_fb,
+            peer_id: _,
+            request_fb: _,
             reply_tx,
         } => {
-            // register pending sender keyed by peer id string and send request via request-response
-            let peer_key = peer_id.to_string();
-            insert_pending_keyshare_for_peer(peer_key.clone(), reply_tx);
-            let req_id = swarm
-                .behaviour_mut()
-                .keyshare_rr
-                .send_request(&peer_id, request_fb);
-            info!(
-                "libp2p: sent keyshare fetch request to peer={} req_id={:?}",
-                peer_id, req_id
-            );
+            // Keyshare functionality has been deprecated/removed
+            warn!("libp2p: FetchKeyshare control message received but keyshare functionality is deprecated");
+            let _ = reply_tx.send(Err("keyshare functionality deprecated".to_string()));
         }
+
         Libp2pControl::BootstrapDht { reply_tx } => {
             // Bootstrap the Kademlia DHT
             let _ = swarm.behaviour_mut().kademlia.bootstrap();
@@ -375,7 +368,6 @@ pub async fn handle_control_message(
                 cid,
                 ttl_ms
             );
-
             // For local tests, announce multiple times with short intervals to improve discovery
             let mut announce_success = false;
             for attempt in 1..=3 {
@@ -459,6 +451,11 @@ pub async fn handle_control_message(
             // Get list of currently connected peers
             let connected_peers: Vec<libp2p::PeerId> = swarm.connected_peers().cloned().collect();
             let _ = reply_tx.send(connected_peers);
+        }
+        Libp2pControl::GetLocalPeerId { reply_tx } => {
+            // Get the local peer ID
+            let local_peer_id = *swarm.local_peer_id();
+            let _ = reply_tx.send(local_peer_id);
         }
     }
 }
@@ -845,5 +842,9 @@ pub enum Libp2pControl {
     /// Get list of currently connected peers
     GetConnectedPeers {
         reply_tx: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
+    },
+    /// Get the local peer ID
+    GetLocalPeerId {
+        reply_tx: mpsc::UnboundedSender<libp2p::PeerId>,
     },
 }

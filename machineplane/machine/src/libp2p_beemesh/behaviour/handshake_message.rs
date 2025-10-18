@@ -14,7 +14,10 @@ pub fn handshake_request<F>(
 
     // Handshakes should be wrapped in signed envelopes for consistency
     let effective_request =
-        match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&request) {
+        match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
+            &request,
+            &peer.to_string(),
+        ) {
             Ok((payload_bytes, _pub, _sig)) => payload_bytes,
             Err(e) => {
                 if crate::libp2p_beemesh::security::require_signed_messages() {
@@ -117,7 +120,10 @@ pub fn handshake_response(
 
     // Verify the signed envelope for handshake response
     let effective_response =
-        match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce(&response) {
+        match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
+            &response,
+            &peer.to_string(),
+        ) {
             Ok((payload_bytes, _pub, _sig)) => payload_bytes,
             Err(e) => {
                 log::error!("rejecting unsigned/invalid handshake response: {:?}", e);
