@@ -39,6 +39,16 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     };
     debug!("apply_file: manifest parsed successfully");
 
+    // Extract replicas count from manifest (check spec.replicas or top-level replicas, default to 1)
+    let replicas = manifest_json
+        .get("spec")
+        .and_then(|s| s.get("replicas"))
+        .and_then(|r| r.as_u64())
+        .or_else(|| manifest_json.get("replicas").and_then(|r| r.as_u64()))
+        .unwrap_or(1) as usize;
+
+    info!("Manifest requires {} replicas", replicas);
+
     // Ensure CLI keypair - use ephemeral in test mode to match machine nodes
     let (_pk_bytes, _sk_bytes) = if std::env::var("BEEMESH_MOCK_ONLY_RUNTIME").is_ok() {
         crypto::ensure_keypair_ephemeral()?
@@ -76,96 +86,147 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         anyhow::bail!("No candidate nodes available for scheduling");
     }
 
-    // 2) Parse peer ID and public key from candidates response
+    // Ensure we have enough peers for the requested replicas
+    if peers.len() < replicas {
+        anyhow::bail!(
+            "Not enough candidate nodes available: need {}, got {}",
+            replicas,
+            peers.len()
+        );
+    }
+
+    // 2) Parse peer IDs and public keys from candidates response for the required replicas
     // Expected format: "peer_id:pubkey_b64"
-    let (winning_node_id, winning_node_pubkey) = {
-        let first_peer = &peers[0];
-        if let Some(colon_pos) = first_peer.find(':') {
-            let peer_id = &first_peer[..colon_pos];
-            let pubkey_b64 = &first_peer[colon_pos + 1..];
-            (peer_id.to_string(), pubkey_b64.to_string())
+    let mut selected_nodes: Vec<(String, String)> = Vec::new();
+
+    for i in 0..replicas {
+        let peer = &peers[i];
+        if let Some(colon_pos) = peer.find(':') {
+            let peer_id = &peer[..colon_pos];
+            let pubkey_b64 = &peer[colon_pos + 1..];
+            selected_nodes.push((peer_id.to_string(), pubkey_b64.to_string()));
         } else {
             anyhow::bail!(
                 "Invalid candidate format: expected 'peer_id:pubkey_b64', got '{}'",
-                first_peer
+                peer
             );
         }
-    };
+    }
 
-    info!("Selected winning node: {}", winning_node_id);
-    debug!("Winning node public key: {}", winning_node_pubkey);
+    info!(
+        "Selected {} nodes for {} replicas: {:?}",
+        selected_nodes.len(),
+        replicas,
+        selected_nodes.iter().map(|(id, _)| id).collect::<Vec<_>>()
+    );
 
-    // 3) Encrypt manifest directly for the winning node using its public key
-    let manifest_json_str = serde_json::to_string(&manifest_json)?;
-    let winning_node_pubkey_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&winning_node_pubkey)
-        .map_err(|e| anyhow::anyhow!("Failed to decode winning node public key: {}", e))?;
-
-    let encrypted_blob =
-        encrypt_payload_for_recipient(&winning_node_pubkey_bytes, manifest_json_str.as_bytes())?;
-
-    // The encrypted_blob already contains the encrypted data, nonce, and KEM ciphertext
-    let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&encrypted_blob);
-
+    // 3) Create encrypted tasks for each node sequentially with same manifest_id
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    let encrypted_manifest_bytes = protocol::machine::build_encrypted_manifest(
-        "",           // No separate nonce needed - it's in the blob
-        &payload_b64, // The complete encrypted blob
-        "ml-kem-512", // Using ML-KEM for asymmetric encryption
-        1,            // Single recipient
-        1,            // Single recipient
-        Some("kubernetes"),
-        &[],
-        ts,
-        Some(&winning_node_id), // Include target node info
-    );
+    let mut created_task_ids = Vec::new();
 
-    // 4) Create task with encrypted manifest
-    debug!("Creating task with directly encrypted manifest...");
-    let create_resp = fb_client
-        .create_task(
-            tenant,
-            &encrypted_manifest_bytes,
-            Some(manifest_id.clone()),
-            None,
-        )
-        .await?;
-    debug!("Task created successfully: {:?}", create_resp);
+    // Create and assign tasks for each node sequentially to avoid store conflicts
+    for (node_id, node_pubkey) in &selected_nodes {
+        debug!("Creating encrypted task for node: {}", node_id);
 
-    // 5) Assign task to winning node
-    // For now, assign to the winning node (in the future, this could be multiple nodes for replicas)
-    let chosen_peers = vec![winning_node_id.clone()];
+        // Create a modified manifest with replicas=1 for this specific node
+        let mut node_manifest = manifest_json.clone();
+        if let Some(spec) = node_manifest.get_mut("spec") {
+            if let Some(spec_obj) = spec.as_object_mut() {
+                spec_obj.insert(
+                    "replicas".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(1)),
+                );
+            }
+        } else if manifest_json.get("replicas").is_some() {
+            // Handle top-level replicas field
+            if let Some(manifest_obj) = node_manifest.as_object_mut() {
+                manifest_obj.insert(
+                    "replicas".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(1)),
+                );
+            }
+        }
 
-    debug!(
-        "About to call assign_task with chosen_peers: {:?}",
-        chosen_peers
-    );
-    info!(
-        "Assigning task to winning node: tenant={}, manifest_id={}, node={}",
-        tenant, &manifest_id, winning_node_id
-    );
+        let node_manifest_str = serde_json::to_string(&node_manifest)?;
+        debug!("Node {} will receive manifest with replicas=1", node_id);
 
-    let assign_resp = fb_client
-        .assign_task(tenant, &manifest_id, chosen_peers)
-        .await?;
-    debug!("Assign task response: {:?}", assign_resp);
+        let node_pubkey_bytes = base64::engine::general_purpose::STANDARD
+            .decode(node_pubkey)
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to decode node public key for {}: {}", node_id, e)
+            })?;
 
-    let ok = assign_resp
-        .get("ok")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !ok {
-        anyhow::bail!("assign failed");
+        let encrypted_blob =
+            encrypt_payload_for_recipient(&node_pubkey_bytes, node_manifest_str.as_bytes())?;
+
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&encrypted_blob);
+
+        let encrypted_manifest_bytes = protocol::machine::build_encrypted_manifest(
+            "",
+            &payload_b64,
+            "ml-kem-512",
+            1,
+            1,
+            Some("kubernetes"),
+            &[],
+            ts,
+            Some(node_id),
+        );
+
+        // 4) Create task with base manifest_id so nodes announce the same ID to DHT
+        debug!(
+            "Creating task for node {} with base manifest_id {} for DHT consistency",
+            node_id, manifest_id
+        );
+        let create_resp = fb_client
+            .create_task(
+                tenant,
+                &encrypted_manifest_bytes,
+                Some(manifest_id.clone()),
+                None,
+            )
+            .await?;
+        debug!("Task created for node {}: {:?}", node_id, create_resp);
+
+        // 5) Assign this specific task to its intended recipient node only
+        let chosen_peers = vec![node_id.clone()];
+        debug!(
+            "Assigning task {} to specific node: {}",
+            manifest_id, node_id
+        );
+
+        let assign_resp = fb_client
+            .assign_task(tenant, &manifest_id, chosen_peers)
+            .await?;
+        debug!("Task assigned to node {}: {:?}", node_id, assign_resp);
+
+        let ok = assign_resp
+            .get("ok")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !ok {
+            anyhow::bail!("assign failed for node {}", node_id);
+        }
+
+        created_task_ids.push(manifest_id.clone());
+
+        // Add a small delay to avoid task store conflicts
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    debug!("apply_file completed successfully");
+    debug!(
+        "Successfully created and assigned tasks to {} nodes",
+        created_task_ids.len()
+    );
+
     info!(
-        "Apply completed successfully for manifest_id {} on winning node {}",
-        manifest_id, winning_node_id
+        "Apply completed for manifest_id {} distributed to {} nodes (all will announce same ID to DHT)",
+        manifest_id,
+        selected_nodes.len()
     );
 
     Ok(manifest_id)
