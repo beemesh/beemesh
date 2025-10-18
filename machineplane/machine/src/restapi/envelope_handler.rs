@@ -6,11 +6,18 @@ use axum::{
     response::Response,
 };
 use base64::Engine;
-use log::{debug, warn};
+use log::{debug, error, warn};
 use protocol::machine::{root_as_envelope, FbEnvelope};
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
+
+// Secure envelope metadata stored in request extensions
+#[derive(Clone)]
+pub struct EnvelopeMetadata {
+    pub signing_pubkey: Vec<u8>,
+    pub kem_pubkey: Vec<u8>,
+    pub peer_id: Option<String>,
+}
 
 /// Encrypted envelope handler for REST API communication
 pub struct EnvelopeHandler {
@@ -20,8 +27,6 @@ pub struct EnvelopeHandler {
     signing_private_key: Option<Vec<u8>>,
     /// Node's public (signing) key for responses (base64 string)
     public_key: String,
-    /// Cache of peer public keys for encryption
-    peer_pubkeys: Arc<RwLock<std::collections::HashMap<String, Vec<u8>>>>,
 }
 
 impl EnvelopeHandler {
@@ -84,7 +89,6 @@ impl EnvelopeHandler {
             kem_private_key,
             signing_private_key,
             public_key,
-            peer_pubkeys: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -93,28 +97,21 @@ impl EnvelopeHandler {
         &self.public_key
     }
 
-    /// Add a peer's public key to the cache (log length for diagnostics)
-    pub async fn add_peer_pubkey(&self, peer_id: &str, pubkey: Vec<u8>) {
-        let mut cache = self.peer_pubkeys.write().await;
-        // Log the length of the stored key to help diagnose KEM vs signing key mixups
-        debug!(
-            "Inserting peer pubkey for {} of length {} bytes",
-            peer_id,
-            pubkey.len()
-        );
-        cache.insert(peer_id.to_string(), pubkey);
-    }
-
     /// Decrypt an incoming envelope and extract the payload
     pub async fn decrypt_request_envelope(&self, envelope_bytes: &[u8]) -> Result<Vec<u8>> {
         // Parse the flatbuffer envelope
         let envelope = root_as_envelope(envelope_bytes)
             .map_err(|e| anyhow!("Failed to parse envelope: {}", e))?;
 
-        // Verify signature
+        // Verify signature using peer-aware verification if peer_id is present
         let nonce_window = std::time::Duration::from_secs(300);
-        crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(envelope_bytes, nonce_window)
-            .map_err(|e| anyhow!("Envelope verification failed: {}", e))?;
+        let peer_id = envelope.peer_id().unwrap_or("global");
+        crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope_for_peer(
+            envelope_bytes,
+            nonce_window,
+            peer_id,
+        )
+        .map_err(|e| anyhow!("Envelope verification failed: {}", e))?;
 
         // Extract encrypted payload
         let encrypted_payload = envelope
@@ -137,94 +134,87 @@ impl EnvelopeHandler {
     }
 
     /// Encrypt a response payload and wrap it in an envelope
-    pub async fn encrypt_response_envelope(
+    /// Build a response envelope for a specific peer using provided KEM public key
+    pub async fn encrypt_response_envelope_with_key(
         &self,
         payload: &[u8],
         payload_type: &str,
         recipient_peer_id: &str,
+        kem_pubkey: &[u8],
     ) -> Result<Vec<u8>> {
+        if kem_pubkey.is_empty() {
+            return Err(anyhow!(
+                "No KEM public key provided for peer: {}",
+                recipient_peer_id
+            ));
+        }
+
         debug!(
-            "Attempting to encrypt response for peer: {}, payload size: {}",
+            "Using provided KEM pubkey for peer {} of length {} bytes",
             recipient_peer_id,
-            payload.len()
+            kem_pubkey.len()
         );
 
-        // Get recipient's public key from cache and validate length (avoid using signing keys as KEM keys)
-        let recipient_pubkey =
-            {
-                let cache = self.peer_pubkeys.read().await;
-                debug!(
-                    "Looking up public key for peer: {}, cache contains {} entries",
+        // Try parsing provided pubkey bytes as an ml_kem_512 public key
+        let ml_kem_pubkey = match saorsa_pqc::api::kem::MlKemPublicKey::from_bytes(
+            saorsa_pqc::api::kem::MlKemVariant::MlKem512,
+            kem_pubkey,
+        ) {
+            Ok(pubkey) => pubkey,
+            Err(e) => {
+                return Err(anyhow!(
+                    "Failed to parse KEM public key for peer {}: {}",
                     recipient_peer_id,
-                    cache.len()
-                );
-
-                // Debug log all cached peer IDs
-                for peer_id in cache.keys() {
-                    debug!("Cached peer ID: {}", peer_id);
-                }
-
-                let pubkey = cache.get(recipient_peer_id).cloned().ok_or_else(|| {
-                    anyhow!("No public key found for peer: {}", recipient_peer_id)
-                })?;
-                // Expected ml_kem_512 public key length (bytes). If this doesn't match we likely
-                // have a signing public key stored (or some other non-KEM key) and should not
-                // attempt to use it for KEM-based encryption.
-                debug!(
-                    "Using stored pubkey for peer {} of length {} bytes",
-                    recipient_peer_id,
-                    pubkey.len()
-                );
-                // Try parsing stored pubkey bytes as an ml_kem_512 public key instead of relying on
-                // a simple length check. If parsing fails, remove the cached entry and return an error.
-                match saorsa_pqc::api::kem::MlKemPublicKey::from_bytes(
-                    saorsa_pqc::api::kem::MlKemVariant::MlKem512,
-                    &pubkey,
-                ) {
-                    Ok(_) => {
-                        debug!(
-                            "Stored pubkey for peer {} parsed successfully as ml_kem_512 key",
-                            recipient_peer_id
-                        );
-                    }
-                    Err(e) => {
-                        // remove invalid entry to avoid repeated failures
-                        let mut cache = self.peer_pubkeys.write().await;
-                        cache.remove(recipient_peer_id);
-                        return Err(anyhow!(
-                        "Stored public key for peer {} is not a valid ml_kem_512 public key: {:?}",
-                        recipient_peer_id, e
-                    ));
-                    }
-                }
-                pubkey
-            };
-
-        // Choose the appropriate signing private key to sign the envelope.
-        // Prefer an explicit signing private key if we were able to load one;
-        // otherwise fall back to the KEM private key (legacy behavior).
-        let sender_priv_bytes: Vec<u8> = if let Some(sk) = &self.signing_private_key {
-            sk.clone()
-        } else {
-            // fallback - use KEM private key bytes so behavior remains backward-compatible
-            self.kem_private_key.clone()
+                    e
+                ));
+            }
         };
 
-        // Build encrypted envelope using the selected signing key
-        let encrypted_envelope = protocol::machine::build_encrypted_envelope(
-            payload,
-            payload_type,
-            &recipient_pubkey,
-            &sender_priv_bytes,
-            &self.public_key,
-        )?;
+        // Encrypt payload using the provided KEM public key
+        let encrypted_blob = crypto::encrypt_payload_for_recipient(kem_pubkey, payload)?;
 
-        debug!(
-            "Successfully encrypted response envelope for peer: {}",
-            recipient_peer_id
+        // Build envelope with encrypted payload
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        // Create canonical bytes for signing
+        let canonical_bytes = protocol::machine::build_envelope_canonical(
+            &encrypted_blob,
+            payload_type,
+            &nonce,
+            ts,
+            "ml-dsa-65",
+            None,
         );
 
-        Ok(encrypted_envelope)
+        // Sign the canonical bytes
+        let signing_key = self.signing_private_key.as_ref().ok_or_else(|| {
+            anyhow!(
+                "No signing private key available for peer: {}",
+                recipient_peer_id
+            )
+        })?;
+        let public_key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.public_key)
+            .map_err(|e| anyhow!("Failed to decode public key: {}", e))?;
+        let (sig_b64, pub_b64) =
+            crypto::sign_envelope(signing_key, &public_key_bytes, &canonical_bytes)?;
+
+        // Build the final signed envelope
+        Ok(protocol::machine::build_envelope_signed(
+            &encrypted_blob,
+            payload_type,
+            &nonce,
+            ts,
+            "ml-dsa-65",
+            "ml-dsa-65",
+            &sig_b64,
+            &pub_b64,
+            None,
+        ))
     }
 
     /// Extract peer ID from request headers or envelope
@@ -238,96 +228,6 @@ impl EnvelopeHandler {
 
         // Fallback to peer ID from envelope
         envelope.peer_id().map(|s| s.to_string())
-    }
-
-    /// Store peer's public key from envelope for future responses
-    /// Also stores it in custom header for immediate use
-    pub async fn store_peer_pubkey_from_envelope(
-        &self,
-        envelope: &FbEnvelope<'_>,
-    ) -> Option<String> {
-        // Prefer KEM public key embedded in the envelope (if present). Fall back to the
-        // envelope.pubkey only if it looks like a KEM public key (length check).
-        if let Some(peer_id) = envelope.peer_id() {
-            debug!("Processing envelope for peer: {}", peer_id);
-
-            // Try kem_pub field first
-            if let Some(kem_b64) = envelope.kem_pubkey() {
-                debug!(
-                    "Found kem_pubkey field in envelope for peer: {}, length: {}",
-                    peer_id,
-                    kem_b64.len()
-                );
-                if kem_b64.is_empty() {
-                    debug!("KEM public key field is empty for peer: {}", peer_id);
-                } else {
-                    match base64::engine::general_purpose::STANDARD.decode(kem_b64) {
-                        Ok(kem_bytes) => {
-                            debug!("Successfully decoded KEM public key for peer: {}, bytes length: {}", peer_id, kem_bytes.len());
-                            self.add_peer_pubkey(peer_id, kem_bytes).await;
-                            debug!(
-                                "Stored KEM public key from envelope.kem_pubkey for peer: {}",
-                                peer_id
-                            );
-                            return Some(kem_b64.to_string());
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to decode envelope.kem_pubkey (base64) for peer {}: {}",
-                                peer_id, e
-                            );
-                        }
-                    }
-                }
-            } else {
-                debug!(
-                    "No kem_pubkey field found in envelope for peer: {}",
-                    peer_id
-                );
-            }
-
-            // If envelope.kem_pub not present, check envelope.pubkey (may be a KEM pubkey)
-            if let Some(pubkey_b64) = envelope.pubkey() {
-                debug!(
-                    "Found pubkey field in envelope for peer: {}, length: {}",
-                    peer_id,
-                    pubkey_b64.len()
-                );
-                match base64::engine::general_purpose::STANDARD.decode(pubkey_b64) {
-                    Ok(pubkey_bytes) => {
-                        const EXPECTED_KEM_PUBKEY_LEN: usize = 800;
-                        debug!("Decoded pubkey for peer: {}, bytes length: {} (expected KEM length: {})", peer_id, pubkey_bytes.len(), EXPECTED_KEM_PUBKEY_LEN);
-                        if pubkey_bytes.len() == EXPECTED_KEM_PUBKEY_LEN {
-                            self.add_peer_pubkey(peer_id, pubkey_bytes).await;
-                            debug!(
-                                "Stored KEM public key from envelope.pubkey for peer: {}",
-                                peer_id
-                            );
-                            return Some(pubkey_b64.to_string());
-                        } else {
-                            debug!("Envelope pubkey for peer {} has unexpected length {}, not storing as KEM pubkey", peer_id, pubkey_bytes.len());
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to decode envelope.pubkey (base64) for peer {}: {}",
-                            peer_id, e
-                        );
-                    }
-                }
-            } else {
-                debug!("No pubkey field found in envelope for peer: {}", peer_id);
-            }
-
-            debug!(
-                "No valid KEM public key found in envelope for peer: {}",
-                peer_id
-            );
-        } else {
-            debug!("No peer_id found in envelope");
-        }
-
-        None
     }
 }
 
@@ -357,18 +257,24 @@ pub async fn envelope_middleware(
             Ok(envelope) => {
                 debug!("Processing envelope from peer: {:?}", envelope.peer_id());
 
-                // Store peer's public key from envelope and get base64 encoded version
-                // This should work even if decryption fails later
-                if let Some(kem_pubkey_b64) = envelope_handler
-                    .store_peer_pubkey_from_envelope(&envelope)
-                    .await
-                {
-                    // Add KEM public key to headers for response encryption
-                    parts
-                        .headers
-                        .insert("x-peer-kem-pubkey", kem_pubkey_b64.parse().unwrap());
-                    debug!("Added peer KEM public key to request headers");
-                }
+                // Extract and store envelope metadata securely in request extensions
+                let signing_pubkey = envelope
+                    .pubkey()
+                    .and_then(|pk| base64::engine::general_purpose::STANDARD.decode(pk).ok())
+                    .unwrap_or_default();
+                let kem_pubkey = envelope
+                    .kem_pubkey()
+                    .and_then(|pk| base64::engine::general_purpose::STANDARD.decode(pk).ok())
+                    .unwrap_or_default();
+                let peer_id = envelope.peer_id().map(|s| s.to_string());
+
+                let metadata = EnvelopeMetadata {
+                    signing_pubkey,
+                    kem_pubkey,
+                    peer_id,
+                };
+                parts.extensions.insert(metadata);
+                debug!("Stored envelope metadata in request extensions");
 
                 // Decrypt the envelope
                 match envelope_handler.decrypt_request_envelope(&body_bytes).await {
@@ -382,21 +288,25 @@ pub async fn envelope_middleware(
                         return Ok(response);
                     }
                     Err(e) => {
-                        warn!(
-                            "Failed to decrypt envelope: {} - continuing with original body",
+                        error!(
+                            "Envelope verification failed: {} - rejecting request for security",
                             e
                         );
-                        // Continue with original body even if decryption fails
-                        // The KEM public key was already extracted for response encryption
-                        let new_body = axum::body::Body::from(body_bytes);
-                        let new_request = Request::from_parts(parts, new_body);
-                        let response = next.run(new_request).await;
-                        return Ok(response);
+                        // SECURITY: Reject requests with invalid envelopes to prevent bypass
+                        return Err(StatusCode::UNAUTHORIZED);
                     }
                 }
             }
             Err(_) => {
-                // Not an envelope, pass through as-is
+                // Not an envelope, pass through as-is but add empty metadata extension
+                let metadata = EnvelopeMetadata {
+                    signing_pubkey: Vec::new(),
+                    kem_pubkey: Vec::new(),
+                    peer_id: None,
+                };
+                parts.extensions.insert(metadata);
+                debug!("Added empty envelope metadata for non-envelope request");
+
                 let new_body = axum::body::Body::from(body_bytes);
                 let new_request = Request::from_parts(parts, new_body);
                 let response = next.run(new_request).await;
@@ -405,23 +315,34 @@ pub async fn envelope_middleware(
         }
     }
 
-    // For non-flatbuffer requests, pass through
-    let response = next.run(request).await;
+    // For non-flatbuffer requests, add empty metadata extension and pass through
+    let (mut parts, body) = request.into_parts();
+    let metadata = EnvelopeMetadata {
+        signing_pubkey: Vec::new(),
+        kem_pubkey: Vec::new(),
+        peer_id: None,
+    };
+    parts.extensions.insert(metadata);
+    debug!("Added empty envelope metadata for non-flatbuffer request");
+
+    let new_request = Request::from_parts(parts, body);
+    let response = next.run(new_request).await;
     Ok(response)
 }
 
-/// Helper to create encrypted flatbuffer responses
-pub async fn create_encrypted_response(
+/// Helper to create encrypted flatbuffer responses using provided KEM key
+pub async fn create_encrypted_response_with_key(
     envelope_handler: &Arc<EnvelopeHandler>,
     payload: &[u8],
     payload_type: &str,
     peer_id: Option<&str>,
+    kem_pubkey: &[u8],
 ) -> Result<axum::response::Response<axum::body::Body>, StatusCode> {
     match peer_id {
         Some(peer_id) => {
-            // Encrypt response for the specific peer
+            // Encrypt response for the specific peer using provided KEM key
             match envelope_handler
-                .encrypt_response_envelope(payload, payload_type, peer_id)
+                .encrypt_response_envelope_with_key(payload, payload_type, peer_id, kem_pubkey)
                 .await
             {
                 Ok(encrypted_envelope) => {
@@ -432,16 +353,13 @@ pub async fn create_encrypted_response(
                     Ok(response)
                 }
                 Err(e) => {
-                    // If encryption fails (e.g. missing peer pubkey or crypto error),
-                    // log the issue and fall back to sending the unencrypted flatbuffer payload.
-                    // This makes the debug/test endpoints more robust in environments where
-                    // encryption between processes may not be available.
+                    // If encryption fails, log the issue and fall back to unencrypted response
                     warn!(
                         "Failed to encrypt response for peer {}: {} - falling back to unencrypted response",
                         peer_id, e
                     );
 
-                    // Send unencrypted flatbuffer response as a fallback.
+                    // Send unencrypted flatbuffer response as a fallback
                     let response = axum::response::Response::builder()
                         .header("content-type", "application/octet-stream")
                         .body(axum::body::Body::from(payload.to_vec()))
@@ -451,7 +369,7 @@ pub async fn create_encrypted_response(
             }
         }
         None => {
-            // No peer ID, send unencrypted flatbuffer response
+            // No peer ID provided, send unencrypted response
             let response = axum::response::Response::builder()
                 .header("content-type", "application/octet-stream")
                 .body(axum::body::Body::from(payload.to_vec()))
@@ -459,6 +377,19 @@ pub async fn create_encrypted_response(
             Ok(response)
         }
     }
+}
+
+/// Helper to create responses that fall back to unencrypted when no envelope metadata is available
+pub async fn create_response_with_fallback(
+    payload: &[u8],
+) -> Result<axum::response::Response<axum::body::Body>, StatusCode> {
+    // Since we removed caching, we can only return unencrypted responses
+    // for endpoints that don't have envelope metadata
+    let response = axum::response::Response::builder()
+        .header("content-type", "application/octet-stream")
+        .body(axum::body::Body::from(payload.to_vec()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(response)
 }
 
 /// Extract peer ID from request state/headers

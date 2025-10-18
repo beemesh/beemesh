@@ -2,7 +2,6 @@ use libp2p::{PeerId, Swarm};
 use log::{debug, info};
 use tokio::sync::mpsc;
 
-use base64::Engine;
 use flatbuffers::FlatBufferBuilder;
 use protocol::machine::CaveatArgs;
 use std::collections::hash_map::DefaultHasher;
@@ -127,26 +126,9 @@ pub async fn handle_send_apply_request(
         }
     }
 
-    // If we have a signed flatbuffer envelope, attempt KEM-encapsulate it per-recipient; otherwise fall back to sending the capability token bytes base64
+    // KEM-encapsulation using cached keys has been removed - keys should come from envelopes
     if let Some(signed_envelope_fb) = signed_bytes_for_remote.as_ref() {
-        // Try to KEM-encapsulate the signed envelope per-recipient
-        let mut sent_blob = false;
-        if let Ok(map) = crate::libp2p_beemesh::PEER_KEM_PUBKEYS.read() {
-            if let Some(peer_kem_bytes) = map.get(&peer_id) {
-                match crypto::encrypt_payload_for_recipient(&peer_kem_bytes, &signed_envelope_fb) {
-                    Ok(enc_blob) => {
-                        let _enc_b64 = base64::engine::general_purpose::STANDARD.encode(&enc_blob);
-                        // Keyshare functionality has been deprecated/removed
-                        log::warn!("keyshare functionality deprecated - skipping keyshare request");
-                        sent_blob = true;
-                    }
-                    Err(e) => {
-                        log::warn!("failed to encrypt payload for recipient {}: {:?} - falling back to plain envelope", peer_id, e);
-                    }
-                }
-            }
-        }
-        // Also store a local copy encrypted for keystore
+        // Store a local copy encrypted for keystore
         if let Ok((blob, cid)) = crypto::encrypt_share_for_keystore(&signed_envelope_fb) {
             if let Ok(ks) = crate::libp2p_beemesh::open_keystore() {
                 let meta = format!("capability:{}", manifest_id);

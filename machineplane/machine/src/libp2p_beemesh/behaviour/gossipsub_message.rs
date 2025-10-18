@@ -146,18 +146,7 @@ pub fn gossipsub_message(
             request_part,
             peer_id
         );
-        // If the reply contains a kem_pubkey, decode and insert into behaviour cache
-        if let Some(kem_b64) = cap_reply.kem_pubkey() {
-            match base64::engine::general_purpose::STANDARD.decode(kem_b64) {
-                Ok(kem_bytes) => {
-                    let mut map = crate::libp2p_beemesh::PEER_KEM_PUBKEYS.write().unwrap();
-                    map.insert(peer_id.clone(), kem_bytes);
-                }
-                Err(e) => {
-                    log::warn!("failed to decode kem_pubkey from {}: {:?}", peer_id, e);
-                }
-            }
-        }
+        // KEM pubkey caching has been removed - keys are now extracted directly from envelopes
         if let Some(senders) = pending_queries.get_mut(&request_part) {
             for tx in senders.iter() {
                 let _ = tx.send(peer_id.to_string());

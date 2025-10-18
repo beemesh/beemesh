@@ -95,18 +95,7 @@ pub fn scheduler_message(
                     peer,
                     request_part
                 );
-                // If the reply contains a kem_pubkey, decode it and store in global cache
-                if let Some(kem_b64) = cap_reply.kem_pubkey() {
-                    match base64::engine::general_purpose::STANDARD.decode(kem_b64) {
-                        Ok(kem_bytes) => {
-                            let mut map = crate::libp2p_beemesh::PEER_KEM_PUBKEYS.write().unwrap();
-                            map.insert(peer.clone(), kem_bytes);
-                        }
-                        Err(e) => {
-                            warn!("failed to decode kem_pubkey from {}: {:?}", peer, e);
-                        }
-                    }
-                }
+                // KEM pubkey caching has been removed - keys are now extracted directly from envelopes
                 if let Some(senders) = pending_queries.get_mut(&request_part) {
                     // Extract public key from the capacity reply
                     let peer_pubkey = cap_reply.kem_pubkey().unwrap_or("").to_string();

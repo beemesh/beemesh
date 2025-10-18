@@ -53,68 +53,72 @@ pub async fn handle_query_capacity_with_payload(
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-                    let nonce = format!("capacity_query_{}", rand::random::<u32>());
+                    // Send the capacity request as a request-response to all known peers.
+                    // Use the scheduler request-response behaviour we wired as `/beemesh/scheduler-tasks/1.0.0`.
+                    let mut sent = 0usize;
+                    // Collect peers first to avoid simultaneous immutable + mutable borrows of swarm
+                    let peers: Vec<libp2p::PeerId> = swarm
+                        .behaviour()
+                        .gossipsub
+                        .all_peers()
+                        .map(|(p, _)| p.clone())
+                        .collect();
+                    for peer in peers.iter() {
+                        // Generate unique nonce for each peer to prevent replay detection
+                        let nonce = format!("capacity_query_{}_{}", peer, rand::random::<u32>());
 
-                    // Build canonical envelope bytes (include optional kem_pub arg)
-                    let canonical_bytes = protocol::machine::build_envelope_canonical(
-                        &finished,
-                        "capacity",
-                        &nonce,
-                        timestamp,
-                        "ml-dsa-65",
-                        None,
-                    );
+                        // Build canonical envelope bytes (include optional kem_pub arg)
+                        let canonical_bytes = protocol::machine::build_envelope_canonical(
+                            &finished,
+                            "capacity",
+                            &nonce,
+                            timestamp,
+                            "ml-dsa-65",
+                            None,
+                        );
 
-                    match crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
-                        Ok((sig_b64, pub_b64)) => {
-                            // Create signed envelope (include optional kem_pub arg)
-                            let signed_envelope = protocol::machine::build_envelope_signed(
-                                &finished,
-                                "capacity",
-                                &nonce,
-                                timestamp,
-                                "ml-dsa-65",
-                                "ml-dsa-65",
-                                &sig_b64,
-                                &pub_b64,
-                                None,
-                            );
+                        match crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
+                            Ok((sig_b64, pub_b64)) => {
+                                // Create signed envelope (include optional kem_pub arg)
+                                let signed_envelope = protocol::machine::build_envelope_signed(
+                                    &finished,
+                                    "capacity",
+                                    &nonce,
+                                    timestamp,
+                                    "ml-dsa-65",
+                                    "ml-dsa-65",
+                                    &sig_b64,
+                                    &pub_b64,
+                                    None,
+                                );
 
-                            // Send the capacity request as a request-response to all known peers.
-                            // Use the scheduler request-response behaviour we wired as `/beemesh/scheduler-tasks/1.0.0`.
-                            let mut sent = 0usize;
-                            // Collect peers first to avoid simultaneous immutable + mutable borrows of swarm
-                            let peers: Vec<libp2p::PeerId> = swarm
-                                .behaviour()
-                                .gossipsub
-                                .all_peers()
-                                .map(|(p, _)| p.clone())
-                                .collect();
-                            for peer in peers.iter() {
-                                let req_clone = signed_envelope.clone();
                                 let req_id = swarm
                                     .behaviour_mut()
                                     .scheduler_rr
-                                    .send_request(&peer, req_clone);
+                                    .send_request(&peer, signed_envelope);
                                 log::debug!(
-                                    "libp2p: sent scheduler request to peer={} request_id={:?}",
+                                    "libp2p: sent scheduler request to peer={} request_id={:?} nonce={}",
                                     peer,
-                                    req_id
+                                    req_id,
+                                    nonce
                                 );
                                 sent += 1;
                             }
-
-                            log::info!(
-                                "libp2p: broadcasted capreq request_id={} to {} peers",
-                                request_id,
-                                sent
-                            );
-                        }
-                        Err(e) => {
-                            log::error!("failed to sign capacity query envelope: {:?}", e);
-                            return;
+                            Err(e) => {
+                                log::error!(
+                                    "failed to sign capacity query envelope for peer {}: {:?}",
+                                    peer,
+                                    e
+                                );
+                            }
                         }
                     }
+
+                    log::info!(
+                        "libp2p: broadcasted capreq request_id={} to {} peers",
+                        request_id,
+                        sent
+                    );
                 }
                 Err(e) => {
                     log::error!("failed to load keypair for capacity query: {:?}", e);

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use base64::Engine;
 use protocol::machine::{self};
+use rand;
 use serde_json::Value as JsonValue;
 
 /// Convert JSON requests into flatbuffer payloads for direct communication with the machine
@@ -21,9 +22,9 @@ pub struct FlatbufferClient {
 
 impl FlatbufferClient {
     pub fn new(base_url: String) -> Result<Self> {
-        // Generate ephemeral signing keypair for CLI
+        // Use persistent keypairs from disk to match machine expectations
         crypto::ensure_pqc_init()?;
-        let (public_key_bytes, private_key) = crypto::ensure_keypair_ephemeral()?;
+        let (public_key_bytes, private_key) = crypto::ensure_keypair_on_disk()?;
         let public_key = base64::engine::general_purpose::STANDARD.encode(&public_key_bytes);
 
         // Obtain or generate a KEM keypair for the CLI so we can advertise our KEM public key
@@ -223,12 +224,9 @@ impl FlatbufferClient {
                 build_envelope_canonical_with_peer, build_envelope_signed_with_peer,
             };
 
-            // Generate nonce and timestamp
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            std::time::SystemTime::now().hash(&mut hasher);
-            let nonce = format!("{:x}", hasher.finish());
+            // Generate unique random nonce and timestamp
+            let nonce_bytes: [u8; 16] = rand::random();
+            let nonce = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()

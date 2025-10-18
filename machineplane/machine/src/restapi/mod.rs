@@ -1,7 +1,7 @@
 use crate::pod_communication;
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::HeaderMap,
     middleware,
     routing::{get, post},
@@ -28,7 +28,9 @@ use tokio::{sync::watch, time::Duration};
 
 pub mod envelope_handler;
 use crate::runtime::RuntimeEngine;
-use envelope_handler::{create_encrypted_response, get_peer_id_from_request, EnvelopeHandler};
+use envelope_handler::{
+    create_encrypted_response_with_key, create_response_with_fallback, EnvelopeHandler,
+};
 
 async fn get_nodes(
     State(state): State<RestState>,
@@ -36,15 +38,9 @@ async fn get_nodes(
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     let peers = state.peer_rx.borrow().clone();
     let response_data = protocol::machine::build_nodes_response(&peers);
-    let peer_id = get_peer_id_from_request(&headers);
 
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "nodes_response",
-        peer_id.as_deref(),
-    )
-    .await
+    // No envelope metadata available, return unencrypted response
+    create_response_with_fallback(&response_data).await
 }
 
 async fn get_kem_public_key(State(_state): State<RestState>) -> String {
@@ -312,14 +308,8 @@ pub async fn get_candidates(
     }
 
     let response_data = protocol::machine::build_candidates_response_with_keys(true, &candidates);
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "candidates_response",
-        peer_id.as_deref(),
-    )
-    .await
+    // No envelope metadata available, return unencrypted response
+    create_response_with_fallback(&response_data).await
 }
 
 #[derive(Debug, Clone)]
@@ -360,14 +350,7 @@ pub async fn apply_manifest(
                 &[],
                 &[("error".to_string(), "invalid request".to_string())],
             );
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "apply_manifest_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -398,14 +381,7 @@ pub async fn apply_manifest(
                             &[],
                             &[("error".to_string(), "invalid manifest payload".to_string())],
                         );
-                        let peer_id = get_peer_id_from_request(&headers);
-                        return create_encrypted_response(
-                            &state.envelope_handler,
-                            &error_response,
-                            "apply_manifest_response",
-                            peer_id.as_deref(),
-                        )
-                        .await;
+                        return create_response_with_fallback(&error_response).await;
                     }
                 }
                 Err(e) => {
@@ -423,14 +399,7 @@ pub async fn apply_manifest(
                             "signature verification failed".to_string(),
                         )],
                     );
-                    let peer_id = get_peer_id_from_request(&headers);
-                    return create_encrypted_response(
-                        &state.envelope_handler,
-                        &error_response,
-                        "apply_manifest_response",
-                        peer_id.as_deref(),
-                    )
-                    .await;
+                    return create_response_with_fallback(&error_response).await;
                 }
             }
         }
@@ -449,14 +418,7 @@ pub async fn apply_manifest(
                     "invalid manifest envelope encoding".to_string(),
                 )],
             );
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "apply_manifest_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -554,14 +516,7 @@ pub async fn apply_manifest(
             &assigned,
             &[],
         );
-        let peer_id = get_peer_id_from_request(&headers);
-        return create_encrypted_response(
-            &state.envelope_handler,
-            &error_response,
-            "apply_manifest_response",
-            peer_id.as_deref(),
-        )
-        .await;
+        return create_response_with_fallback(&error_response).await;
     }
     let mut per_peer_results: Vec<(String, String)> = Vec::new();
 
@@ -584,14 +539,8 @@ pub async fn apply_manifest(
         &assigned,
         &per_peer_results,
     );
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "apply_manifest_response",
-        peer_id.as_deref(),
-    )
-    .await
+    // No envelope metadata available, return unencrypted response
+    create_response_with_fallback(&response_data).await
 }
 
 pub async fn create_task(
@@ -599,105 +548,20 @@ pub async fn create_task(
     State(state): State<RestState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
+    Extension(envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    // validate manifest/envelope similar to apply_manifest
-    debug!("create_task: validating flatbuffer envelope");
+    debug!("create_task: parsing decrypted payload from envelope middleware");
 
-    // Parse flatbuffer envelope from body bytes
-    use protocol::machine::root_as_envelope;
-    let envelope = match root_as_envelope(&body) {
-        Ok(env) => env,
-        Err(e) => {
-            log::warn!("create_task: failed to parse flatbuffer envelope: {}", e);
-            let error_response = protocol::machine::build_task_create_response(false, "", "", 0);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "task_create_response",
-                peer_id.as_deref(),
-            )
-            .await;
-        }
-    };
-
-    // Store peer's public key for future responses
-    if let Some(_kem_pubkey_b64) = state
-        .envelope_handler
-        .store_peer_pubkey_from_envelope(&envelope)
-        .await
-    {
-        log::debug!("create_task: stored peer public key for future responses");
-    } else {
-        log::warn!("create_task: failed to extract peer public key from envelope");
-    }
-
-    // Extract payload from envelope (may be encrypted)
-    let payload_bytes = envelope
-        .payload()
-        .map(|v| v.iter().collect::<Vec<u8>>())
-        .unwrap_or_default();
+    // The envelope middleware has already decrypted the payload for us
+    // We receive the inner EncryptedManifest flatbuffer directly
+    let payload_bytes_for_parsing = body.to_vec();
 
     log::info!(
-        "create_task: extracted envelope payload len={}, first_20_bytes={:02x?}",
-        payload_bytes.len(),
-        &payload_bytes[..std::cmp::min(20, payload_bytes.len())]
+        "create_task: received payload len={}, first_20_bytes={:02x?}",
+        payload_bytes_for_parsing.len(),
+        &payload_bytes_for_parsing[..std::cmp::min(20, payload_bytes_for_parsing.len())]
     );
-
-    // Check if payload is encrypted (starts with 0x02)
-    let decrypted_payload = if !payload_bytes.is_empty() && payload_bytes[0] == 0x02 {
-        // Payload is encrypted, decrypt it using our KEM private key
-        match crypto::ensure_kem_keypair_on_disk() {
-            Ok((_pub_bytes, priv_bytes)) => {
-                match crypto::decrypt_payload_from_recipient_blob(&payload_bytes, &priv_bytes) {
-                    Ok(decrypted) => {
-                        log::debug!(
-                            "create_task: successfully decrypted payload ({} bytes)",
-                            decrypted.len()
-                        );
-                        decrypted
-                    }
-                    Err(e) => {
-                        log::warn!("create_task: failed to decrypt payload: {}", e);
-                        let error_response =
-                            protocol::machine::build_task_create_response(false, "", "", 0);
-                        let peer_id = get_peer_id_from_request(&headers);
-                        return create_encrypted_response(
-                            &state.envelope_handler,
-                            &error_response,
-                            "task_create_response",
-                            peer_id.as_deref(),
-                        )
-                        .await;
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!(
-                    "create_task: failed to get KEM keypair for decryption: {}",
-                    e
-                );
-                let error_response =
-                    protocol::machine::build_task_create_response(false, "", "", 0);
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "task_create_response",
-                    peer_id.as_deref(),
-                )
-                .await;
-            }
-        }
-    } else {
-        // Payload is not encrypted, use as-is
-        payload_bytes
-    };
-
-    // Keep the binary payload for flatbuffer parsing - don't convert to UTF-8
-    // as this corrupts binary flatbuffer data
-    let payload_bytes_for_parsing = decrypted_payload.clone();
 
     // Calculate manifest_id deterministically and get operation_id from query params
     let (manifest_id, operation_id) = if let Some(id) = params.get("manifest_id") {
@@ -743,11 +607,8 @@ pub async fn create_task(
     // Store the operation_id -> manifest_id mapping for later self-apply lookups
     store_operation_manifest_mapping(&operation_id, &manifest_id).await;
 
-    // Extract owner public key from envelope (if available)
-    let owner_pubkey = envelope
-        .pubkey()
-        .and_then(|pk| base64::engine::general_purpose::STANDARD.decode(pk).ok())
-        .unwrap_or_default();
+    // Extract owner public key from secure request extensions (set by envelope middleware)
+    let owner_pubkey = envelope_metadata.signing_pubkey.clone();
 
     // Generate content hash for versioning
     let content_hash =
@@ -937,14 +798,21 @@ pub async fn create_task(
         &manifest_id,
         FREE_CAPACITY_TIMEOUT_SECS as u64 * 1000,
     );
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "task_create_response",
-        peer_id.as_deref(),
-    )
-    .await
+
+    // Use KEM key directly from envelope metadata for secure response encryption
+    if !envelope_metadata.kem_pubkey.is_empty() {
+        create_encrypted_response_with_key(
+            &state.envelope_handler,
+            &response_data,
+            "task_create_response",
+            envelope_metadata.peer_id.as_deref(),
+            &envelope_metadata.kem_pubkey,
+        )
+        .await
+    } else {
+        // No KEM key in metadata, return unencrypted response
+        create_response_with_fallback(&response_data).await
+    }
 }
 
 // Debug: list keystore share CIDs for this node
@@ -1311,14 +1179,7 @@ async fn get_task_manifest_id(
         None => {
             let error_response =
                 protocol::machine::build_task_status_response("", "Error", &[], &[], None);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "task_status_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -1327,14 +1188,7 @@ async fn get_task_manifest_id(
         None => {
             let error_response =
                 protocol::machine::build_task_status_response("", "Error", &[], &[], None);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "task_status_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -1364,28 +1218,15 @@ async fn get_task_manifest_id(
                 );
                 let error_response =
                     protocol::machine::build_task_status_response("", "Error", &[], &[], None);
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "task_status_response",
-                    peer_id.as_deref(),
-                )
-                .await;
+                return create_response_with_fallback(&error_response).await;
             }
         }
     };
 
     let response_data = serde_json::json!({"ok": true, "manifest_id": &manifest_id});
     let response_str = serde_json::to_string(&response_data).unwrap_or_default();
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        response_str.as_bytes(),
-        "manifest_id_response",
-        peer_id.as_deref(),
-    )
-    .await
+    // No envelope metadata available, return unencrypted response
+    create_response_with_fallback(response_str.as_bytes()).await
 }
 
 pub async fn distribute_shares(
@@ -1403,14 +1244,7 @@ pub async fn distribute_shares(
                 e
             );
             let error_response = protocol::machine::build_distribute_shares_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "distribute_shares_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -1430,14 +1264,7 @@ pub async fn distribute_shares(
                         log::warn!("distribute_shares: failed to decrypt payload: {}", e);
                         let error_response =
                             protocol::machine::build_distribute_shares_response(false, &[]);
-                        let peer_id = get_peer_id_from_request(&headers);
-                        return create_encrypted_response(
-                            &state.envelope_handler,
-                            &error_response,
-                            "distribute_shares_response",
-                            peer_id.as_deref(),
-                        )
-                        .await;
+                        return create_response_with_fallback(&error_response).await;
                     }
                 }
             }
@@ -1448,14 +1275,7 @@ pub async fn distribute_shares(
                 );
                 let error_response =
                     protocol::machine::build_distribute_shares_response(false, &[]);
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "distribute_shares_response",
-                    peer_id.as_deref(),
-                )
-                .await;
+                return create_response_with_fallback(&error_response).await;
             }
         }
     } else {
@@ -1471,14 +1291,7 @@ pub async fn distribute_shares(
                 e
             );
             let error_response = protocol::machine::build_distribute_shares_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "distribute_shares_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -1488,14 +1301,7 @@ pub async fn distribute_shares(
         Some(record) => record,
         None => {
             let error_response = protocol::machine::build_distribute_shares_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "distribute_shares_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -1533,28 +1339,14 @@ pub async fn distribute_shares(
                     log::error!("distribute_shares: flatbuffer verification failed: {:?}", e);
                     let error_response =
                         protocol::machine::build_distribute_shares_response(false, &[]);
-                    let peer_id = get_peer_id_from_request(&headers);
-                    return create_encrypted_response(
-                        &state.envelope_handler,
-                        &error_response,
-                        "distribute_shares_response",
-                        peer_id.as_deref(),
-                    )
-                    .await;
+                    return create_response_with_fallback(&error_response).await;
                 }
             }
             Err(e) => {
                 log::warn!("distribute_shares: envelope base64 decode failed: {:?}", e);
                 let error_response =
                     protocol::machine::build_distribute_shares_response(false, &[]);
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "distribute_shares_response",
-                    peer_id.as_deref(),
-                )
-                .await;
+                return create_response_with_fallback(&error_response).await;
             }
         }
     }
@@ -1619,14 +1411,7 @@ pub async fn distribute_shares(
         }
     }
     let response_data = protocol::machine::build_distribute_shares_response(true, &results);
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "distribute_shares_response",
-        peer_id.as_deref(),
-    )
-    .await
+    create_response_with_fallback(&response_data).await
 }
 
 pub async fn distribute_manifests(
@@ -1635,73 +1420,11 @@ pub async fn distribute_manifests(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    // Parse flatbuffer envelope first, then extract inner DistributeManifestsRequest
-    let envelope = match root_as_envelope(&body) {
-        Ok(env) => env,
-        Err(e) => {
-            log::warn!(
-                "distribute_manifests: failed to parse flatbuffer envelope: {}",
-                e
-            );
-            let error_response = protocol::machine::build_distribute_manifests_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "distribute_manifests_response",
-                peer_id.as_deref(),
-            )
-            .await;
-        }
-    };
+    debug!("distribute_manifests: parsing decrypted payload from envelope middleware");
 
-    // Extract payload from envelope (may be encrypted)
-    let payload_bytes = envelope
-        .payload()
-        .map(|v| v.iter().collect::<Vec<u8>>())
-        .unwrap_or_default();
-
-    // Check if payload is encrypted and decrypt if necessary
-    let decrypted_payload = if !payload_bytes.is_empty() && payload_bytes[0] == 0x02 {
-        match crypto::ensure_kem_keypair_on_disk() {
-            Ok((_pub_bytes, priv_bytes)) => {
-                match crypto::decrypt_payload_from_recipient_blob(&payload_bytes, &priv_bytes) {
-                    Ok(decrypted) => decrypted,
-                    Err(e) => {
-                        log::warn!("distribute_manifests: failed to decrypt payload: {}", e);
-                        let error_response =
-                            protocol::machine::build_distribute_manifests_response(false, &[]);
-                        let peer_id = get_peer_id_from_request(&headers);
-                        return create_encrypted_response(
-                            &state.envelope_handler,
-                            &error_response,
-                            "distribute_manifests_response",
-                            peer_id.as_deref(),
-                        )
-                        .await;
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!(
-                    "distribute_manifests: failed to get KEM keypair for decryption: {}",
-                    e
-                );
-                let error_response =
-                    protocol::machine::build_distribute_manifests_response(false, &[]);
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "distribute_manifests_response",
-                    peer_id.as_deref(),
-                )
-                .await;
-            }
-        }
-    } else {
-        payload_bytes
-    };
+    // The envelope middleware has already decrypted the payload for us
+    // We receive the inner DistributeManifestsRequest flatbuffer directly
+    let decrypted_payload = body.to_vec();
 
     // Try to parse as DistributeManifestsRequest
     let distribute_request = match root_as_distribute_manifests_request(&decrypted_payload) {
@@ -1712,14 +1435,7 @@ pub async fn distribute_manifests(
                 e
             );
             let error_response = protocol::machine::build_distribute_manifests_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "distribute_manifests_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -1731,14 +1447,7 @@ pub async fn distribute_manifests(
             None => {
                 let error_response =
                     protocol::machine::build_distribute_manifests_response(false, &[]);
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "distribute_manifests_response",
-                    peer_id.as_deref(),
-                )
-                .await;
+                return create_response_with_fallback(&error_response).await;
             }
         }
     };
@@ -1872,14 +1581,7 @@ pub async fn distribute_manifests(
     }
 
     let response_data = protocol::machine::build_distribute_manifests_response(true, &results);
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "distribute_manifests_response",
-        peer_id.as_deref(),
-    )
-    .await
+    create_response_with_fallback(&response_data).await
 }
 
 pub async fn distribute_capabilities(
@@ -1898,14 +1600,7 @@ pub async fn distribute_capabilities(
             );
             let error_response =
                 protocol::machine::build_distribute_capabilities_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "distribute_capabilities_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -1925,14 +1620,7 @@ pub async fn distribute_capabilities(
                         log::warn!("distribute_capabilities: failed to decrypt payload: {}", e);
                         let error_response =
                             protocol::machine::build_distribute_capabilities_response(false, &[]);
-                        let peer_id = get_peer_id_from_request(&headers);
-                        return create_encrypted_response(
-                            &state.envelope_handler,
-                            &error_response,
-                            "distribute_capabilities_response",
-                            peer_id.as_deref(),
-                        )
-                        .await;
+                        return create_response_with_fallback(&error_response).await;
                     }
                 }
             }
@@ -1943,14 +1631,7 @@ pub async fn distribute_capabilities(
                 );
                 let error_response =
                     protocol::machine::build_distribute_capabilities_response(false, &[]);
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "distribute_capabilities_response",
-                    peer_id.as_deref(),
-                )
-                .await;
+                return create_response_with_fallback(&error_response).await;
             }
         }
     } else {
@@ -1967,14 +1648,7 @@ pub async fn distribute_capabilities(
             );
             let error_response =
                 protocol::machine::build_distribute_capabilities_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "distribute_capabilities_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -1985,14 +1659,7 @@ pub async fn distribute_capabilities(
         None => {
             let error_response =
                 protocol::machine::build_distribute_capabilities_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "distribute_capabilities_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -2072,14 +1739,7 @@ pub async fn distribute_capabilities(
         }
     }
     let response_data = protocol::machine::build_distribute_capabilities_response(true, &results);
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "distribute_capabilities_response",
-        peer_id.as_deref(),
-    )
-    .await
+    create_response_with_fallback(&response_data).await
 }
 
 pub async fn assign_task(
@@ -2088,71 +1748,11 @@ pub async fn assign_task(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    // Parse flatbuffer envelope first, then extract inner AssignRequest
-    let envelope = match root_as_envelope(&body) {
-        Ok(env) => env,
-        Err(e) => {
-            log::warn!("assign_task: failed to parse flatbuffer envelope: {}", e);
-            let error_response =
-                protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "assign_response",
-                peer_id.as_deref(),
-            )
-            .await;
-        }
-    };
+    debug!("assign_task: parsing decrypted payload from envelope middleware");
 
-    // Extract payload from envelope (may be encrypted)
-    let payload_bytes = envelope
-        .payload()
-        .map(|v| v.iter().collect::<Vec<u8>>())
-        .unwrap_or_default();
-
-    // Check if payload is encrypted and decrypt if necessary
-    let decrypted_payload = if !payload_bytes.is_empty() && payload_bytes[0] == 0x02 {
-        match crypto::ensure_kem_keypair_on_disk() {
-            Ok((_pub_bytes, priv_bytes)) => {
-                match crypto::decrypt_payload_from_recipient_blob(&payload_bytes, &priv_bytes) {
-                    Ok(decrypted) => decrypted,
-                    Err(e) => {
-                        log::warn!("assign_task: failed to decrypt payload: {}", e);
-                        let error_response =
-                            protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-                        let peer_id = get_peer_id_from_request(&headers);
-                        return create_encrypted_response(
-                            &state.envelope_handler,
-                            &error_response,
-                            "assign_response",
-                            peer_id.as_deref(),
-                        )
-                        .await;
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!(
-                    "assign_task: failed to get KEM keypair for decryption: {}",
-                    e
-                );
-                let error_response =
-                    protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-                let peer_id = get_peer_id_from_request(&headers);
-                return create_encrypted_response(
-                    &state.envelope_handler,
-                    &error_response,
-                    "assign_response",
-                    peer_id.as_deref(),
-                )
-                .await;
-            }
-        }
-    } else {
-        payload_bytes
-    };
+    // The envelope middleware has already decrypted the payload for us
+    // We receive the inner AssignRequest flatbuffer directly
+    let decrypted_payload = body.to_vec();
 
     // Try to parse as AssignRequest
     let assign_request = match root_as_assign_request(&decrypted_payload) {
@@ -2161,14 +1761,7 @@ pub async fn assign_task(
             log::warn!("assign_task: failed to parse AssignRequest: {:?}", e);
             let error_response =
                 protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "assign_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -2179,14 +1772,7 @@ pub async fn assign_task(
         None => {
             let error_response =
                 protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "assign_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -2257,14 +1843,7 @@ pub async fn assign_task(
     if assigned.is_empty() {
         log::warn!("assign_task: no peers assigned, returning error response");
         let error_response = protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-        let peer_id = get_peer_id_from_request(&headers);
-        return create_encrypted_response(
-            &state.envelope_handler,
-            &error_response,
-            "assign_response",
-            peer_id.as_deref(),
-        )
-        .await;
+        return create_response_with_fallback(&error_response).await;
     }
 
     let mut per_peer_results: Vec<(String, String)> = Vec::new();
@@ -2357,14 +1936,7 @@ pub async fn assign_task(
 
     let response_data =
         protocol::machine::build_assign_response(true, &task_id, &assigned, &per_peer_results);
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "assign_response",
-        peer_id.as_deref(),
-    )
-    .await
+    create_response_with_fallback(&response_data).await
 }
 
 pub async fn get_task_status(
@@ -2389,24 +1961,10 @@ pub async fn get_task_status(
             &distributed,
             r.manifest_cid.as_deref(),
         );
-        let peer_id = get_peer_id_from_request(&headers);
-        return create_encrypted_response(
-            &state.envelope_handler,
-            &response_data,
-            "task_status_response",
-            peer_id.as_deref(),
-        )
-        .await;
+        return create_response_with_fallback(&response_data).await;
     }
     let error_response = protocol::machine::build_task_status_response("", "Error", &[], &[], None);
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &error_response,
-        "task_status_response",
-        peer_id.as_deref(),
-    )
-    .await
+    create_response_with_fallback(&error_response).await
 }
 
 #[derive(serde::Deserialize)]
@@ -2431,14 +1989,7 @@ pub async fn apply_keyshares(
                 e
             );
             let error_response = protocol::machine::build_apply_keyshares_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "apply_keyshares_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -2452,14 +2003,7 @@ pub async fn apply_keyshares(
         Err(e) => {
             log::warn!("apply_keyshares: shares_envelope not decodable: {:?}", e);
             let error_response = protocol::machine::build_apply_keyshares_response(false, &[]);
-            let peer_id = get_peer_id_from_request(&headers);
-            return create_encrypted_response(
-                &state.envelope_handler,
-                &error_response,
-                "apply_keyshares_response",
-                peer_id.as_deref(),
-            )
-            .await;
+            return create_response_with_fallback(&error_response).await;
         }
     };
 
@@ -2472,14 +2016,7 @@ pub async fn apply_keyshares(
             e
         );
         let error_response = protocol::machine::build_apply_keyshares_response(false, &[]);
-        let peer_id = get_peer_id_from_request(&headers);
-        return create_encrypted_response(
-            &state.envelope_handler,
-            &error_response,
-            "apply_keyshares_response",
-            peer_id.as_deref(),
-        )
-        .await;
+        return create_response_with_fallback(&error_response).await;
     }
 
     // Parse targets from request
@@ -2509,25 +2046,11 @@ pub async fn apply_keyshares(
         }
     } else {
         let error_response = protocol::machine::build_apply_keyshares_response(false, &[]);
-        let peer_id = get_peer_id_from_request(&headers);
-        return create_encrypted_response(
-            &state.envelope_handler,
-            &error_response,
-            "apply_keyshares_response",
-            peer_id.as_deref(),
-        )
-        .await;
+        return create_response_with_fallback(&error_response).await;
     }
 
     let response_data = protocol::machine::build_apply_keyshares_response(true, &results);
-    let peer_id = get_peer_id_from_request(&headers);
-    create_encrypted_response(
-        &state.envelope_handler,
-        &response_data,
-        "apply_keyshares_response",
-        peer_id.as_deref(),
-    )
-    .await
+    create_response_with_fallback(&response_data).await
 }
 
 /// Get a specific version of a manifest with capability token authentication

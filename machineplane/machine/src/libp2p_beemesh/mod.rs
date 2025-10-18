@@ -7,7 +7,7 @@ use libp2p::{
 use log::{debug, info, warn};
 use once_cell::sync::OnceCell;
 use std::collections::HashMap as StdHashMap;
-use std::sync::RwLock;
+
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -189,12 +189,6 @@ pub fn setup_libp2p_node(
 pub static NODE_KEYPAIR: OnceCell<Option<(Vec<u8>, Vec<u8>)>> = OnceCell::new();
 // Global shared name for keystore set at startup by machine::main
 pub static KEYSTORE_SHARED_NAME: OnceCell<Option<String>> = OnceCell::new();
-
-// Global behaviour-level cache for peer KEM public keys populated from capacity replies
-use once_cell::sync::Lazy;
-
-pub static PEER_KEM_PUBKEYS: Lazy<RwLock<StdHashMap<libp2p::PeerId, Vec<u8>>>> =
-    Lazy::new(|| RwLock::new(StdHashMap::new()));
 
 pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
     let _ = NODE_KEYPAIR.set(pair);

@@ -96,14 +96,33 @@ pub fn verify_flatbuffer_envelope_for_peer(
     let ts = fb_env.ts();
     let alg = fb_env.alg().unwrap_or("");
 
-    let canonical = protocol::machine::build_envelope_canonical(
-        &payload_vec,
-        payload_type,
-        nonce,
-        ts,
-        alg,
-        None,
-    );
+    // Reconstruct canonical bytes using the same method as signing
+    // Check if envelope has peer_id and kem_pubkey fields to match signing format
+    let peer_id_opt = fb_env.peer_id();
+    let kem_pubkey_opt = fb_env.kem_pubkey();
+
+    let canonical = if peer_id_opt.is_some() {
+        // Use peer-aware canonical form reconstruction
+        protocol::machine::build_envelope_canonical_with_peer(
+            &payload_vec,
+            payload_type,
+            nonce,
+            ts,
+            alg,
+            peer_id_opt.unwrap_or(""),
+            kem_pubkey_opt,
+        )
+    } else {
+        // Use standard canonical form reconstruction
+        protocol::machine::build_envelope_canonical(
+            &payload_vec,
+            payload_type,
+            nonce,
+            ts,
+            alg,
+            kem_pubkey_opt,
+        )
+    };
 
     if !nonce.is_empty() {
         check_and_insert_nonce_for_peer(nonce, nonce_window, peer_id)?;

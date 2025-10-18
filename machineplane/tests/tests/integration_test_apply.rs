@@ -40,7 +40,7 @@ async fn test_apply_functionality() {
     // Start nodes in-process instead of as separate processes for better control
     let mut guard = start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await;
 
-    sleep(Duration::from_secs(10)).await;
+    sleep(Duration::from_secs(5)).await;
 
     let client = reqwest::Client::new();
     let ports = vec![3000u16, 3100u16, 3200u16];
@@ -65,7 +65,7 @@ async fn test_apply_functionality() {
         .await
         .expect("apply_file should succeed");
 
-    sleep(Duration::from_secs(15)).await;
+    sleep(Duration::from_secs(5)).await;
 
     // Check which nodes have the assigned task using debug endpoints first
     // (we still need this to verify the system is working before checking MockEngine)
