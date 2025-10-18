@@ -15,11 +15,9 @@ use libp2p::kad::QueryId;
 
 mod query_capacity;
 mod send_apply_request;
-mod send_manifest;
 
 pub use query_capacity::handle_query_capacity_with_payload;
 pub use send_apply_request::handle_send_apply_request;
-pub use send_manifest::handle_send_manifest;
 
 /// Calculate a simple CID for manifest data
 /// For now, use a basic hash - this should be replaced with proper CID calculation
@@ -74,14 +72,6 @@ pub async fn handle_control_message(
             // Key share functionality has been deprecated/removed
             warn!("libp2p: SendKeyShare control message received but keyshare functionality is deprecated");
             let _ = reply_tx.send(Err("keyshare functionality deprecated".to_string()));
-        }
-        Libp2pControl::SendManifest {
-            peer_id,
-            manifest_id,
-            manifest_payload,
-            reply_tx,
-        } => {
-            handle_send_manifest(peer_id, manifest_id, manifest_payload, reply_tx, swarm).await;
         }
         Libp2pControl::StoreAppliedManifest {
             manifest_data,
@@ -545,17 +535,6 @@ pub fn get_manifest_holder_store(
     &MANIFEST_HOLDER_STORE
 }
 
-/// Global local manifest store for libp2p event handlers
-static LOCAL_MANIFEST_STORE: Lazy<
-    Mutex<crate::libp2p_beemesh::manifest_store::LocalManifestStore>,
-> = Lazy::new(|| Mutex::new(crate::libp2p_beemesh::manifest_store::LocalManifestStore::new()));
-
-/// Get reference to the global local manifest store
-pub fn get_local_manifest_store(
-) -> &'static Mutex<crate::libp2p_beemesh::manifest_store::LocalManifestStore> {
-    &LOCAL_MANIFEST_STORE
-}
-
 /// Global store for tracking pending manifest distribution requests
 static PENDING_MANIFEST_REQUESTS: Lazy<
     Mutex<HashMap<libp2p::request_response::OutboundRequestId, (ManifestRequestSender, Instant)>>,
@@ -773,15 +752,6 @@ pub enum Libp2pControl {
         peer_id: PeerId,
         /// Payload bytes (flatbuffer envelope, flatbuffer KeyShareRequest, or recipient blob)
         share_payload: Vec<u8>,
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
-    /// Send an encrypted manifest to a specific peer
-    SendManifest {
-        peer_id: PeerId,
-        /// The manifest ID to use when storing
-        manifest_id: String,
-        /// Payload bytes (flatbuffer envelope containing manifest data)
-        manifest_payload: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
     /// Find peers that hold shares for a given manifest id using DHT providers

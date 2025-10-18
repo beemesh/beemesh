@@ -36,8 +36,6 @@ pub mod dht_manager;
 pub mod envelope;
 pub mod error_helpers;
 pub mod manifest_announcement;
-pub mod manifest_fetch;
-pub mod manifest_store;
 pub mod security;
 pub mod versioning;
 
@@ -306,10 +304,6 @@ pub async fn start_libp2p_node(
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::ManifestAnnouncementRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         behaviour::manifest_announcement_message(message, peer, &mut swarm);
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        // Delegate all manifest fetch requests to the fetch handler
-                        behaviour::manifest_fetch_message(message, peer, &mut swarm);
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::OutboundFailure { peer, request_id, error, connection_id: _ })) => {
                         warn!("libp2p: manifest fetch outbound failure for peer {}: {:?}", peer, error);

@@ -9,7 +9,6 @@ pub mod handshake_inbound_failure;
 pub mod handshake_message;
 pub mod handshake_outbound_failure;
 pub mod manifest_announcement_message;
-pub mod manifest_fetch_message;
 
 pub mod scheduler_message;
 
@@ -24,7 +23,6 @@ pub use handshake_message::handshake_message_event;
 pub use handshake_outbound_failure::handshake_outbound_failure;
 use libp2p::{gossipsub, kad, request_response, swarm::NetworkBehaviour};
 pub use manifest_announcement_message::manifest_announcement_message;
-pub use manifest_fetch_message::manifest_fetch_message;
 
 pub use scheduler_message::scheduler_message;
 

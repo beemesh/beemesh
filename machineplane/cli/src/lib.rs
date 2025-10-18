@@ -40,7 +40,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     debug!("apply_file: manifest parsed successfully");
 
     // Ensure CLI keypair - use ephemeral in test mode to match machine nodes
-    let (pk_bytes, sk_bytes) = if std::env::var("BEEMESH_MOCK_ONLY_RUNTIME").is_ok() {
+    let (_pk_bytes, _sk_bytes) = if std::env::var("BEEMESH_MOCK_ONLY_RUNTIME").is_ok() {
         crypto::ensure_keypair_ephemeral()?
     } else {
         ensure_keypair_on_disk()?
@@ -136,59 +136,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         .await?;
     debug!("Task created successfully: {:?}", create_resp);
 
-    // 5) Send manifest directly to winning node
-    debug!(
-        "Sending encrypted manifest directly to winning node: {}",
-        winning_node_id
-    );
-
-    // Create envelope for direct manifest delivery with consistent peer_id usage
-    let envelope_nonce: [u8; 16] = rand::random();
-    let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
-
-    // Build canonical envelope bytes (revert to original format)
-    let manifest_envelope_bytes = protocol::machine::build_envelope_canonical(
-        &encrypted_manifest_bytes,
-        "manifest",
-        &nonce_str,
-        ts,
-        "ml-dsa-65",
-        None,
-    );
-
-    // Sign the canonical envelope
-    let (sig_b64, pub_b64) = crypto::sign_envelope(&sk_bytes, &pk_bytes, &manifest_envelope_bytes)?;
-
-    // Create the final signed envelope (revert to original format)
-    let signed_manifest_envelope = protocol::machine::build_envelope_signed(
-        &encrypted_manifest_bytes,
-        "manifest",
-        &nonce_str,
-        ts,
-        "ml-dsa-65",
-        "ml-dsa-65",
-        &sig_b64,
-        &pub_b64,
-        None,
-    );
-    let manifest_envelope_b64 =
-        base64::engine::general_purpose::STANDARD.encode(&signed_manifest_envelope);
-
-    // Send manifest directly to winning node
-    let manifest_dist_resp = fb_client
-        .distribute_manifests(
-            tenant,
-            &manifest_id,
-            &manifest_envelope_b64,
-            &vec![winning_node_id.clone()],
-        )
-        .await?;
-    debug!(
-        "Direct manifest distribution response: {:?}",
-        manifest_dist_resp
-    );
-
-    // 6) Assign task to winning node
+    // 5) Assign task to winning node
     // For now, assign to the winning node (in the future, this could be multiple nodes for replicas)
     let chosen_peers = vec![winning_node_id.clone()];
 
