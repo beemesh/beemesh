@@ -94,41 +94,43 @@ pub fn gossipsub_message(
 
     // Only accept flatbuffer Envelope payloads now. Reject JSON envelopes.
     if let Ok(fb_env) = protocol::machine::root_as_envelope(&message.data) {
-        match fb_envelope_extract_sig_pub(&message.data) {
-            Ok((inner_bytes, sig_bytes, pub_bytes, _sig_field, _pub_field)) => {
-                // Verify signature via crypto helper
-                if let Err(e) = crypto::verify_envelope(&pub_bytes, &inner_bytes, &sig_bytes) {
-                    log::warn!(
-                        "gossipsub: envelope verification failed from {}: {:?}",
-                        peer_id,
-                        e
-                    );
-                    return;
-                }
-                // Check nonce replay protection
-                if let Some(nonce) = fb_env.nonce() {
-                    if let Err(e) = crate::libp2p_beemesh::envelope::check_and_insert_nonce(
-                        nonce,
-                        std::time::Duration::from_secs(300),
-                    ) {
-                        log::warn!(
-                            "gossipsub: envelope nonce rejected from {}: {:?}",
-                            peer_id,
-                            e
-                        );
-                        return;
-                    }
-                }
-                owned_payload = Some(inner_bytes);
-            }
-            Err(e) => {
+        if let Some((sig_bytes, pub_bytes)) = fb_envelope_extract_sig_pub(&message.data) {
+            // Extract payload from envelope
+            let inner_bytes: Vec<u8> = fb_env
+                .payload()
+                .map(|p| p.iter().collect())
+                .unwrap_or_default();
+
+            // Verify signature via crypto helper
+            if let Err(e) = crypto::verify_envelope(&pub_bytes, &inner_bytes, &sig_bytes) {
                 log::warn!(
-                    "gossipsub: flatbuffer envelope verification failed from {}: {:?}",
+                    "gossipsub: envelope verification failed from {}: {:?}",
                     peer_id,
                     e
                 );
                 return;
             }
+            // Check nonce replay protection
+            if let Some(nonce) = fb_env.nonce() {
+                if let Err(e) = crate::libp2p_beemesh::envelope::check_and_insert_nonce(
+                    nonce,
+                    std::time::Duration::from_secs(300),
+                ) {
+                    log::warn!(
+                        "gossipsub: envelope nonce rejected from {}: {:?}",
+                        peer_id,
+                        e
+                    );
+                    return;
+                }
+            }
+            owned_payload = Some(inner_bytes);
+        } else {
+            log::warn!(
+                "gossipsub: flatbuffer envelope signature extraction failed from {}",
+                peer_id
+            );
+            return;
         }
     }
 

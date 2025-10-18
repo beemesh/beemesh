@@ -1,4 +1,4 @@
-use protocol::machine::{build_applied_manifest, root_as_applied_manifest, SignatureScheme, OperationType};
+use protocol::machine::{build_applied_manifest, root_as_applied_manifest};
 
 #[test]
 fn test_applied_manifest_owner_fields_roundtrip() {
@@ -10,7 +10,7 @@ fn test_applied_manifest_owner_fields_roundtrip() {
     let signature = vec![9u8, 8u8, 7u8];
     let manifest_json = "{\"k\":\"v\"}";
     let manifest_kind = "Test";
-    let labels: Vec<(String,String)> = vec![];
+    let labels: Vec<(String, String)> = vec![];
     let timestamp = 123456789u64;
 
     let buf = build_applied_manifest(
@@ -19,13 +19,11 @@ fn test_applied_manifest_owner_fields_roundtrip() {
         operation_id,
         origin_peer,
         &owner_pub,
-        SignatureScheme::NONE,
         &signature,
         manifest_json,
         manifest_kind,
         labels,
         timestamp,
-        OperationType::APPLY,
         3600,
         "chash",
     );

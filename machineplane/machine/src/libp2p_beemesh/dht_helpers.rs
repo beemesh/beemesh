@@ -1,11 +1,11 @@
-use libp2p::PeerId;
-use protocol::machine::{build_applied_manifest, SignatureScheme, OperationType};
-use serde_json::Value;
 use base64::Engine;
+use libp2p::PeerId;
+use log::{info, warn};
+use protocol::machine::{build_applied_manifest, SignatureScheme};
+use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tokio::sync::mpsc;
-use log::{info, warn};
 
 use crate::libp2p_beemesh::control::Libp2pControl;
 
@@ -58,12 +58,12 @@ pub async fn store_manifest_in_dht(
         .unwrap_or_default();
 
     let owner_sig_str = manifest.get("sig").and_then(|v| v.as_str());
-    let owner_sig_bytes = crate::libp2p_beemesh::envelope::normalize_and_decode_signature(
-        owner_sig_str,
-    ).map_err(|e| format!("failed to decode signature: {:?}", e))?;
+    let owner_sig_bytes =
+        crate::libp2p_beemesh::envelope::normalize_and_decode_signature(owner_sig_str)
+            .map_err(|e| format!("failed to decode signature: {:?}", e))?;
     // owner_sig_bytes is now the decoded signature bytes
 
-    let signature_scheme = SignatureScheme::NONE; // CLI uses PQ scheme not represented in enum yet
+    let _signature_scheme = SignatureScheme::NONE; // CLI uses PQ scheme not represented in enum yet
 
     let manifest_data = build_applied_manifest(
         &manifest_id,
@@ -71,13 +71,11 @@ pub async fn store_manifest_in_dht(
         &operation_id,
         &local_peer_id.to_string(),
         &owner_pubkey_bytes,
-        signature_scheme,
         &owner_sig_bytes,
         &manifest_json,
         &manifest_kind,
         labels,
         timestamp,
-        OperationType::APPLY,
         3600, // 1 hour TTL
         &content_hash,
     );
@@ -89,7 +87,8 @@ pub async fn store_manifest_in_dht(
         reply_tx,
     };
 
-    control_tx.send(store_msg)
+    control_tx
+        .send(store_msg)
         .map_err(|e| format!("Failed to send DHT store request: {}", e))?;
 
     // Wait for the result
@@ -114,7 +113,8 @@ pub async fn get_manifest_from_dht(
         reply_tx,
     };
 
-    control_tx.send(get_msg)
+    control_tx
+        .send(get_msg)
         .map_err(|e| format!("Failed to send DHT get request: {}", e))?;
 
     // Wait for the result
@@ -139,7 +139,8 @@ pub async fn bootstrap_dht(
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
     let bootstrap_msg = Libp2pControl::BootstrapDht { reply_tx };
 
-    control_tx.send(bootstrap_msg)
+    control_tx
+        .send(bootstrap_msg)
         .map_err(|e| format!("Failed to send DHT bootstrap request: {}", e))?;
 
     // Wait for the result
@@ -192,9 +193,8 @@ mod tests {
             .unwrap_or_default();
 
         let owner_sig_str = manifest.get("sig").and_then(|v| v.as_str());
-        let owner_sig_bytes = crate::libp2p_beemesh::envelope::normalize_and_decode_signature(
-            owner_sig_str,
-        ).unwrap();
+        let owner_sig_bytes =
+            crate::libp2p_beemesh::envelope::normalize_and_decode_signature(owner_sig_str).unwrap();
         // owner_sig_bytes is now the decoded signature bytes
 
         let buf = build_applied_manifest(
@@ -203,13 +203,11 @@ mod tests {
             &operation_id,
             &local_peer_id.to_string(),
             &owner_pubkey_bytes,
-            SignatureScheme::NONE,
             &owner_sig_bytes,
             &manifest_json,
             "Test",
             labels,
             timestamp,
-            OperationType::APPLY,
             3600,
             &content_hash,
         );

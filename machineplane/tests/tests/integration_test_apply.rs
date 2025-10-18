@@ -180,7 +180,7 @@ async fn test_apply_functionality() {
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_test_nodes().await;
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(3)).await;
 
     // Resolve manifest path relative to this test crate's manifest dir so it's robust under cargo test
     let manifest_path = PathBuf::from(format!(
@@ -197,7 +197,7 @@ async fn test_apply_functionality() {
         .await
         .expect("apply_file should succeed");
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(3)).await;
 
     // Check which nodes have the assigned task using debug endpoints first
     let task_assignment_tasks = ports.iter().map(|&port| {
@@ -242,7 +242,7 @@ async fn test_apply_functionality() {
     );
 
     // Wait a bit longer for deployment to complete
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(3)).await;
 
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;
@@ -292,7 +292,7 @@ async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_test_nodes().await;
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(3)).await;
 
     // Resolve manifest path for nginx with replicas
     let manifest_path = PathBuf::from(format!(
@@ -354,7 +354,7 @@ async fn test_apply_nginx_with_replicas() {
     );
 
     // Wait a bit longer for deployment to complete
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_secs(3)).await;
 
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;

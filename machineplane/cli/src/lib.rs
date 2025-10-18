@@ -62,8 +62,8 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let tenant = "00000000-0000-0000-0000-000000000000";
 
     // Compute stable manifest_id from manifest content (like Kubernetes)
-    let manifest_id = protocol::machine::compute_manifest_id_from_content(&manifest_json, tenant)
-        .ok_or_else(|| anyhow::anyhow!("Failed to extract name from manifest"))?;
+    let manifest_bytes = serde_json::to_vec(&manifest_json)?;
+    let manifest_id = protocol::machine::compute_manifest_id_from_content(&manifest_bytes);
     debug!("Computed manifest_id: {}", manifest_id);
 
     // API base URL can be overridden with BEEMESH_API env var

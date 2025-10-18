@@ -67,63 +67,6 @@ fn test_distribute_shares_flatbuffer_handling() {
 }
 
 #[test]
-fn test_distribute_capabilities_flatbuffer_handling() {
-    // Test that distribute_capabilities correctly processes FlatBuffer capability envelopes
-    ensure_pqc_init().expect("PQC initialization failed");
-    let (pubb, privb) = ensure_keypair_ephemeral().expect("Failed to generate keypair");
-
-    // Create capability token data
-    let capability_data = b"capability_token_for_manifest_456";
-    let payload_type = "capability";
-    let nonce = format!(
-        "capability-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-    let alg = "ml-dsa-65";
-
-    // Create FlatBuffer envelope for capability
-    let canonical_bytes =
-        build_envelope_canonical(capability_data, payload_type, &nonce, timestamp, alg, None);
-
-    let (sig_b64, pub_b64) =
-        sign_envelope(&privb, &pubb, &canonical_bytes).expect("Failed to sign capability envelope");
-
-    let capability_envelope = build_envelope_signed(
-        capability_data,
-        payload_type,
-        &nonce,
-        timestamp,
-        alg,
-        "ml-dsa-65",
-        &sig_b64,
-        &pub_b64,
-        None,
-    );
-
-    // Verify the envelope is valid for capability distribution
-    let verification_result = machine::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
-        &capability_envelope,
-        Duration::from_secs(300),
-    );
-
-    assert!(
-        verification_result.is_ok(),
-        "Capability envelope should verify correctly: {:?}",
-        verification_result.err()
-    );
-
-    let (payload_bytes, _pub_bytes, _sig_bytes) = verification_result.unwrap();
-    assert_eq!(payload_bytes, capability_data);
-}
-
-#[test]
 fn test_apply_request_flatbuffer_envelope() {
     // Test that apply requests use FlatBuffer envelopes correctly
     ensure_pqc_init().expect("PQC initialization failed");

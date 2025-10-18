@@ -159,14 +159,7 @@ All inter-node communication uses **FlatBuffer** serialized messages wrapped in 
 - `region`: Node region/zone
 - `capabilities`: Node capabilities list
 
-**KeyShareRequest** - Request encrypted key share:
-- `manifest_id`: Manifest identifier
-- `capability`: Authorization capability token
 
-**KeyShareResponse** - Key share response:
-- `ok`: Success indicator
-- `operation_id`: Request identifier
-- `message`: Share data or error message
 
 **Envelope** - Authentication wrapper for all messages:
 - `payload`: FlatBuffer message bytes

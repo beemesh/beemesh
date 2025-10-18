@@ -516,17 +516,15 @@ fn store_applied_manifest_in_dht(
 
         let manifest_data = machine::build_applied_manifest(
             &manifest_id,
-            tenant,
-            operation_id,
+            &tenant,
+            &operation_id,
             &local_peer.to_string(),
             &empty_pubkey,
-            machine::SignatureScheme::NONE,
             &empty_signature,
-            manifest_json,
-            manifest_kind,
+            &manifest_json,
+            &manifest_kind,
             labels,
             timestamp,
-            machine::OperationType::APPLY,
             3600, // 1 hour TTL
             &content_hash,
         );

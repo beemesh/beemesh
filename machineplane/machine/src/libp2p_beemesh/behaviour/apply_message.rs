@@ -1,18 +1,8 @@
-use crate::libp2p_beemesh::error_helpers;
 use base64::prelude::*;
 use libp2p::request_response;
 use log::{debug, error, info, warn};
-use rand;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-
-/// Keyshare helper removed.
-/// The system now uses direct recipient-blob delivery only; keyshare helpers are deprecated/removed.
-#[allow(dead_code)]
-fn search_local_key_shares(_manifest_id: &str) -> Result<Vec<(String, Vec<u8>)>, anyhow::Error> {
-    // This helper is intentionally disabled in the direct-delivery-only design.
-    Ok(Vec::new())
-}
 
 /// Decrypt an encrypted manifest using a specific manifest ID and encrypted manifest
 /// This implementation supports direct delivery only: the EncryptedManifest.payload MUST
@@ -118,17 +108,15 @@ fn store_applied_manifest_in_dht(
 
         let manifest_data = protocol::machine::build_applied_manifest(
             &manifest_id,
-            tenant,
-            operation_id,
+            &tenant,
+            &operation_id,
             &local_peer.to_string(),
             &empty_pubkey,
-            protocol::machine::SignatureScheme::NONE,
             &empty_signature,
-            manifest_json,
-            manifest_kind,
+            &manifest_json,
+            &manifest_kind,
             labels,
             timestamp,
-            protocol::machine::OperationType::APPLY,
             3600, // 1 hour TTL
             &content_hash,
         );
@@ -796,195 +784,4 @@ fn create_deployment_config_from_manifest(
 #[allow(dead_code)]
 async fn get_connected_peers() -> Vec<libp2p::PeerId> {
     Vec::new()
-}
-
-/// Fetch a keyshare from a specific peer using FlatBuffer request/response
-#[allow(dead_code)]
-async fn fetch_keyshare_from_peer(
-    peer_id: &libp2p::PeerId,
-    request_fb: Vec<u8>,
-) -> Result<Vec<u8>, anyhow::Error> {
-    use tokio::sync::mpsc;
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-
-    // Send control message to fetch keyshare
-    let control_msg = crate::libp2p_beemesh::control::Libp2pControl::FetchKeyshare {
-        peer_id: *peer_id,
-        request_fb,
-        reply_tx: tx,
-    };
-
-    // Get the control sender from the global context
-    if let Some(control_tx) = crate::libp2p_beemesh::get_control_sender() {
-        if let Err(e) = control_tx.send(control_msg) {
-            return Err(anyhow::anyhow!(
-                "failed to send FetchKeyshare control message: {}",
-                e
-            ));
-        }
-    } else {
-        return Err(error_helpers::control_sender_unavailable());
-    }
-
-    // Wait for response with timeout
-    match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
-        Ok(Some(Ok(response_bytes))) => {
-            log::debug!("libp2p: fetch_keyshare_from_peer successfully received response from peer={} (len={})", peer_id, response_bytes.len());
-            Ok(response_bytes)
-        }
-        Ok(Some(Err(e))) => {
-            log::warn!(
-                "libp2p: fetch_keyshare_from_peer error from peer={}: {}",
-                peer_id,
-                e
-            );
-            Err(anyhow::anyhow!("keyshare fetch error: {}", e))
-        }
-        Ok(None) => {
-            log::warn!(
-                "libp2p: fetch_keyshare_from_peer channel closed for peer={}",
-                peer_id
-            );
-            Err(anyhow::anyhow!("keyshare fetch channel closed"))
-        }
-        Err(_) => {
-            log::warn!(
-                "libp2p: fetch_keyshare_from_peer timeout for peer={}",
-                peer_id
-            );
-            Err(anyhow::anyhow!("keyshare fetch timeout"))
-        }
-    }
-}
-
-/// Add holder signature to capability token
-/// Extracts token from envelope, adds holder signature, and returns new envelope
-#[allow(dead_code)]
-fn add_holder_signature_to_capability(
-    envelope_bytes: &[u8],
-    manifest_id: &str,
-    local_peer_id: &libp2p::PeerId,
-) -> anyhow::Result<Vec<u8>> {
-    // Verify the envelope and extract the capability token (skip nonce check for re-signing)
-    let (token_bytes, _pub, _sig) =
-        crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope_skip_nonce_check(
-            envelope_bytes,
-        )?;
-
-    // Parse the capability token
-    let capability_token = protocol::machine::root_as_capability_token(&token_bytes)
-        .map_err(|e| anyhow::anyhow!("Failed to parse capability token: {}", e))?;
-
-    // Get our keypair for signing
-    let (pub_bytes, priv_bytes) = crypto::ensure_keypair_on_disk()?;
-
-    // Use the provided local peer ID
-
-    // Create presentation context with unique nonce including peer ID and random component
-    let presentation_nonce = format!(
-        "holder_sig_{}_{}_{:x}",
-        local_peer_id,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-        rand::random::<u64>()
-    );
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    let presentation_context = crypto::create_capability_presentation_context(
-        &token_bytes,
-        &presentation_nonce,
-        timestamp,
-        manifest_id,
-        "KeyShareRequest",
-    );
-
-    // Sign the presentation context
-    let (holder_sig_b64, holder_pub_b64) =
-        crypto::sign_capability_presentation(&priv_bytes, &pub_bytes, &presentation_context)?;
-
-    let holder_sig_bytes = base64::engine::general_purpose::STANDARD.decode(holder_sig_b64)?;
-    let holder_pub_bytes = base64::engine::general_purpose::STANDARD.decode(holder_pub_b64)?;
-
-    // Extract original token data
-    let root_cap = capability_token
-        .root_capability()
-        .ok_or_else(|| anyhow::anyhow!("Missing root capability"))?;
-
-    let issuer_peer_id = root_cap.issuer_peer_id().unwrap_or("");
-    let issued_at = root_cap.issued_at();
-    let expires_at = root_cap.expires_at();
-
-    // Get authorized peer from caveats
-    let authorized_peer = if let Some(caveats) = capability_token.caveats() {
-        if caveats.len() > 0 {
-            let caveat = caveats.get(0);
-            if caveat.condition_type().unwrap_or("") == "authorized_peer" {
-                if let Some(value) = caveat.value() {
-                    let value_bytes: Vec<u8> = value.iter().collect();
-                    std::str::from_utf8(&value_bytes).unwrap_or("").to_string()
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
-
-    // Build new capability token with holder signature
-    let signed_token_bytes = protocol::machine::build_capability_token_with_holder_signature(
-        manifest_id,
-        issuer_peer_id,
-        &authorized_peer,
-        issued_at,
-        expires_at,
-        &local_peer_id.to_string(),
-        &holder_pub_bytes,
-        &holder_sig_bytes,
-        &presentation_nonce,
-        timestamp,
-    );
-
-    // Create new envelope with the signed token
-    let envelope_nonce: [u8; 16] = rand::random();
-    let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
-    let ts = timestamp;
-
-    // Build canonical envelope
-    let canonical = protocol::machine::build_envelope_canonical(
-        &signed_token_bytes,
-        "capability",
-        &nonce_str,
-        ts,
-        "ml-dsa-65",
-        None,
-    );
-
-    // Sign the envelope
-    let (sig_b64, pub_b64) = crypto::sign_envelope(&priv_bytes, &pub_bytes, &canonical)?;
-
-    // Build final signed envelope
-    let signed_envelope = protocol::machine::build_envelope_signed(
-        &signed_token_bytes,
-        "capability",
-        &nonce_str,
-        ts,
-        "ml-dsa-65",
-        "ml-dsa-65",
-        &sig_b64,
-        &pub_b64,
-        None,
-    );
-
-    Ok(signed_envelope)
 }

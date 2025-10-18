@@ -159,18 +159,6 @@ impl EnvelopeValidator {
             }
         }
     }
-
-    /// Validate capability token (special case for capabilities)
-    pub fn validate_capability_token(
-        _capability_bytes: &[u8],
-        _timeout: std::time::Duration,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), EnvelopeError> {
-        // This function needs to be imported from the machine crate
-        // For now, return an error indicating this needs to be implemented
-        Err(EnvelopeError::VerificationFailed(
-            "Capability token verification not yet implemented in crypto crate".to_string(),
-        ))
-    }
 }
 
 /// Helper function to verify envelope and check nonce (wrapper for backwards compatibility)

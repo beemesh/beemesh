@@ -178,23 +178,6 @@ impl KeystoreHelper {
         }
     }
 
-    /// Store capability token in keystore
-    pub fn store_capability_token(
-        capability_data: &[u8],
-        token_id: &str,
-    ) -> KeystoreResult<String> {
-        Self::store_encrypted_share(
-            capability_data,
-            &format!("capability_{}", token_id),
-            Some("type=capability"),
-        )
-    }
-
-    /// Retrieve capability token from keystore
-    pub fn retrieve_capability_token(cid: &str) -> KeystoreResult<Vec<u8>> {
-        Self::retrieve_and_decrypt_share(cid)
-    }
-
     /// Store manifest with encryption
     pub fn store_encrypted_manifest(
         manifest_data: &[u8],

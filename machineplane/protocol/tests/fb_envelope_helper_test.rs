@@ -1,5 +1,5 @@
 use crypto::{ensure_keypair_ephemeral, ensure_pqc_init, sign_envelope};
-use protocol::machine::{build_envelope_signed, fb_envelope_extract_sig_pub};
+use protocol::machine::build_envelope_signed;
 
 #[test]
 fn fb_helper_roundtrip() {
@@ -32,7 +32,7 @@ fn fb_helper_roundtrip() {
 
     // Use helper to extract and verify fields
     let (canon2, sig_bytes, pub_bytes, sig_field, pub_field) =
-        fb_envelope_extract_sig_pub(&fb).expect("extract");
+        protocol::machine::fb_envelope_extract_sig_pub_legacy(&fb).expect("extract");
 
     // canonical bytes should match
     assert_eq!(canonical, canon2);

@@ -1,10 +1,7 @@
 #![allow(dead_code)]
 use libp2p::{kad, Swarm};
 use log::info;
-use protocol::machine::{
-    build_applied_manifest, root_as_applied_manifest, AppliedManifest, OperationType,
-    SignatureScheme,
-};
+use protocol::machine::{build_applied_manifest, root_as_applied_manifest, AppliedManifest};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -149,20 +146,18 @@ impl DhtManager {
             let content_hash = manifest.content_hash().unwrap_or("");
 
             build_applied_manifest(
-                id,
-                tenant,
-                operation_id,
-                origin_peer,
+                &manifest_id,
+                &tenant,
+                &operation_id,
+                &origin_peer,
                 &owner_pubkey,
-                signature_scheme,
                 &signature,
-                manifest_json,
-                manifest_kind,
+                &manifest_json,
+                &manifest_kind,
                 labels,
                 timestamp,
-                operation,
                 ttl_secs,
-                content_hash,
+                &content_hash,
             )
         };
 
@@ -323,13 +318,11 @@ pub fn create_applied_manifest_for_deployment(
         &operation_id,
         &origin_peer,
         &empty_pubkey,
-        SignatureScheme::NONE,
         &empty_signature,
         &manifest_json,
         &manifest_kind,
         labels,
         timestamp,
-        OperationType::APPLY,
         3600, // 1 hour TTL
         &content_hash,
     )

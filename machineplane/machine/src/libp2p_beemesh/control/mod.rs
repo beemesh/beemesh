@@ -64,15 +64,7 @@ pub async fn handle_control_message(
         } => {
             handle_send_apply_request(peer_id, manifest, reply_tx, swarm).await;
         }
-        Libp2pControl::SendKeyShare {
-            peer_id: _peer_id,
-            share_payload: _share_payload,
-            reply_tx,
-        } => {
-            // Key share functionality has been deprecated/removed
-            warn!("libp2p: SendKeyShare control message received but keyshare functionality is deprecated");
-            let _ = reply_tx.send(Err("keyshare functionality deprecated".to_string()));
-        }
+
         Libp2pControl::StoreAppliedManifest {
             manifest_data,
             reply_tx,
@@ -333,15 +325,6 @@ pub async fn handle_control_message(
                 cleanup_expired_manifest_queries();
             });
         }
-        Libp2pControl::FetchKeyshare {
-            peer_id: _,
-            request_fb: _,
-            reply_tx,
-        } => {
-            // Keyshare functionality has been deprecated/removed
-            warn!("libp2p: FetchKeyshare control message received but keyshare functionality is deprecated");
-            let _ = reply_tx.send(Err("keyshare functionality deprecated".to_string()));
-        }
 
         Libp2pControl::BootstrapDht { reply_tx } => {
             // Bootstrap the Kademlia DHT
@@ -585,12 +568,6 @@ static PENDING_MANIFEST_QUERIES: Lazy<
     >,
 > = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
-/// Pending KeyShare request responses: request_id string -> reply sender
-/// Pending KeyShare request responses keyed by peer id string
-static PENDING_KEYSHARE_BY_PEER: Lazy<
-    Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Result<Vec<u8>, String>>>>,
-> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
-
 /// Insert a pending manifest holder query
 pub fn insert_pending_manifest_query(
     query_key: String,
@@ -634,23 +611,6 @@ pub fn cleanup_expired_manifest_queries() {
     let mut map = PENDING_MANIFEST_QUERIES.lock().unwrap();
     // For now, just clear all - in production we'd track timestamps
     map.clear();
-}
-
-/// Insert a pending keyshare request sender for a given peer id string
-pub fn insert_pending_keyshare_for_peer(
-    peer_key: String,
-    sender: mpsc::UnboundedSender<Result<Vec<u8>, String>>,
-) {
-    let mut map = PENDING_KEYSHARE_BY_PEER.lock().unwrap();
-    map.insert(peer_key, sender);
-}
-
-/// Take and remove a pending keyshare request sender by peer id string
-pub fn take_pending_keyshare_for_peer(
-    peer_key: &str,
-) -> Option<mpsc::UnboundedSender<Result<Vec<u8>, String>>> {
-    let mut map = PENDING_KEYSHARE_BY_PEER.lock().unwrap();
-    map.remove(peer_key)
 }
 
 /// Insert a pending kad query sender for the given QueryId
@@ -747,13 +707,7 @@ pub enum Libp2pControl {
         manifest: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<String, String>>,
     },
-    /// Send an encrypted key share to a specific peer
-    SendKeyShare {
-        peer_id: PeerId,
-        /// Payload bytes (flatbuffer envelope, flatbuffer KeyShareRequest, or recipient blob)
-        share_payload: Vec<u8>,
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
+
     /// Find peers that hold shares for a given manifest id using DHT providers
     FindManifestHolders {
         manifest_id: String,
@@ -773,13 +727,7 @@ pub enum Libp2pControl {
             Vec<crate::libp2p_beemesh::manifest_announcement::ManifestHolderInfo>,
         >,
     },
-    /// Fetch a keyshare from a specific peer by sending a FlatBuffer request and awaiting their response
-    FetchKeyshare {
-        peer_id: PeerId,
-        /// FlatBuffer KeyShareRequest bytes
-        request_fb: Vec<u8>,
-        reply_tx: mpsc::UnboundedSender<Result<Vec<u8>, String>>,
-    },
+
     /// Store an applied manifest in the DHT after successful deployment
     StoreAppliedManifest {
         manifest_data: Vec<u8>,
@@ -794,7 +742,7 @@ pub enum Libp2pControl {
     BootstrapDht {
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
-    /// Announce that this node holds a keyshare for the given CID (provider-style record)
+    /// Announce that this node holds data for the given CID (provider-style record)
     AnnounceProvider {
         cid: String,
         ttl_ms: u64,
