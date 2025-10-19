@@ -462,6 +462,41 @@ impl WorkloadManager {
         Ok(logs)
     }
 
+    /// Export/generate a manifest from a running workload
+    /// This is useful for debugging and testing to see what the actual runtime state looks like
+    /// as a Kubernetes/Docker Compose manifest.
+    pub async fn export_workload_manifest(
+        &self,
+        workload_id: &str,
+    ) -> WorkloadManagerResult<Vec<u8>> {
+        info!("Exporting manifest for workload: {}", workload_id);
+
+        let deployment_status = {
+            let deployments = self.deployments.read().unwrap();
+            deployments
+                .get(workload_id)
+                .cloned()
+                .ok_or_else(|| WorkloadManagerError::WorkloadNotFound(workload_id.to_string()))?
+        };
+
+        let manifest_bytes = {
+            let registry = self.runtime_registry.read().unwrap();
+            let engine = registry
+                .get_engine(&deployment_status.runtime_engine)
+                .ok_or(WorkloadManagerError::NoRuntimeEngineAvailable)?;
+            engine.export_manifest(workload_id).await?
+        };
+
+        info!(
+            "Successfully exported manifest for workload {} using engine '{}' ({} bytes)",
+            workload_id,
+            deployment_status.runtime_engine,
+            manifest_bytes.len()
+        );
+
+        Ok(manifest_bytes)
+    }
+
     /// Discover providers for a manifest
     pub async fn discover_providers(
         &self,

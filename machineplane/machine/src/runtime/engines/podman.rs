@@ -626,6 +626,99 @@ impl RuntimeEngine for PodmanEngine {
             }
         }
     }
+
+    async fn export_manifest(&self, workload_id: &str) -> RuntimeResult<Vec<u8>> {
+        info!("Exporting manifest for workload: {}", workload_id);
+
+        // Podman creates pods with different naming patterns:
+        // 1. For our workload_id "beemesh-manifest-123", it might create:
+        //    - "beemesh-manifest-123-pod" (most common)
+        //    - "beemesh-manifest-123" (exact match)
+        //    - Other variations based on the original manifest
+
+        let pod_name_variations = vec![
+            format!("{}-pod", workload_id),  // Most common pattern
+            workload_id.to_string(),         // Exact match
+        ];
+
+        let mut last_error = None;
+
+        for pod_name in &pod_name_variations {
+            debug!("Trying to export manifest for pod: {}", pod_name);
+
+            match self
+                .execute_command(&["generate", "kube", pod_name])
+                .await
+            {
+                Ok(manifest_yaml) => {
+                    info!(
+                        "Successfully exported manifest for workload {} (pod: {})",
+                        workload_id, pod_name
+                    );
+                    debug!(
+                        "Exported manifest ({} bytes): {}",
+                        manifest_yaml.len(),
+                        manifest_yaml.trim()
+                    );
+                    return Ok(manifest_yaml.into_bytes());
+                }
+                Err(e) => {
+                    debug!("Failed to export manifest for pod {}: {}", pod_name, e);
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        // If all variations failed, try to find the actual pod name by listing
+        debug!("All direct attempts failed, trying to find pod by listing");
+
+        match self
+            .execute_command(&[
+                "pod", "ls", "--format", "{{.Name}}", "--filter", 
+                &format!("name={}", workload_id)
+            ])
+            .await
+        {
+            Ok(output) => {
+                for line in output.lines() {
+                    let actual_pod_name = line.trim();
+                    if !actual_pod_name.is_empty() && actual_pod_name.contains(workload_id) {
+                        debug!("Found actual pod name: {}", actual_pod_name);
+                        
+                        match self
+                            .execute_command(&["generate", "kube", actual_pod_name])
+                            .await
+                        {
+                            Ok(manifest_yaml) => {
+                                info!(
+                                    "Successfully exported manifest for workload {} (actual pod: {})",
+                                    workload_id, actual_pod_name
+                                );
+                                return Ok(manifest_yaml.into_bytes());
+                            }
+                            Err(e) => {
+                                debug!("Failed to export manifest for actual pod {}: {}", actual_pod_name, e);
+                                last_error = Some(e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Failed to list pods: {}", e);
+                last_error = Some(e);
+            }
+        }
+
+        // All attempts failed
+        let error_msg = match last_error {
+            Some(e) => format!("Failed to export manifest for workload {}: {}", workload_id, e),
+            None => format!("No running pod found for workload {}", workload_id),
+        };
+
+        error!("{}", error_msg);
+        Err(RuntimeError::WorkloadNotFound(error_msg))
+    }
 }
 
 #[cfg(test)]

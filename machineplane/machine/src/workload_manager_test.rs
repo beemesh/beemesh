@@ -511,13 +511,14 @@ async fn test_mock_engine_verification() {
     assert!(!workload_info.ports.is_empty());
 
     // Use mock engine's verification methods
-    let stored_manifest = engine.get_workload_manifest(&workload_info.id);
-    assert!(stored_manifest.is_some());
-    assert_eq!(stored_manifest.unwrap(), manifest_content);
-
     let stored_config = engine.get_workload_config(&workload_info.id);
     assert!(stored_config.is_some());
     assert_eq!(stored_config.unwrap().replicas, config.replicas);
+
+    // Verify workload can be listed
+    let workloads = engine.list_workloads().await.unwrap();
+    assert!(!workloads.is_empty());
+    assert!(workloads.iter().any(|w| w.id == workload_info.id));
 
     // Verify workload count
     assert_eq!(engine.workload_count(), 1);

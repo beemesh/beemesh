@@ -999,12 +999,14 @@ pub mod machine {
         let mut fbb = FlatBufferBuilder::with_capacity(256);
         let task_id_off = fbb.create_string(task_id);
         let manifest_id_off = fbb.create_string(manifest_id);
+        let message_off = fbb.create_string("task created");
 
         let task_response = crate::generated::generated_task_create_response::beemesh::machine::TaskCreateResponse::create(&mut fbb, &crate::generated::generated_task_create_response::beemesh::machine::TaskCreateResponseArgs {
             ok,
             task_id: Some(task_id_off),
-            manifest_id: Some(manifest_id_off),
+            manifest_ref: Some(manifest_id_off),
             selection_window_ms,
+            message: Some(message_off),
         });
         fbb.finish(task_response, None);
         fbb.finished_data().to_vec()

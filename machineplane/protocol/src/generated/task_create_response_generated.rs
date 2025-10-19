@@ -37,15 +37,16 @@ impl<'a> flatbuffers::Follow<'a> for TaskCreateResponse<'a> {
   type Inner = TaskCreateResponse<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
   }
 }
 
 impl<'a> TaskCreateResponse<'a> {
   pub const VT_OK: flatbuffers::VOffsetT = 4;
   pub const VT_TASK_ID: flatbuffers::VOffsetT = 6;
-  pub const VT_MANIFEST_ID: flatbuffers::VOffsetT = 8;
+  pub const VT_MANIFEST_REF: flatbuffers::VOffsetT = 8;
   pub const VT_SELECTION_WINDOW_MS: flatbuffers::VOffsetT = 10;
+  pub const VT_MESSAGE: flatbuffers::VOffsetT = 12;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -58,7 +59,8 @@ impl<'a> TaskCreateResponse<'a> {
   ) -> flatbuffers::WIPOffset<TaskCreateResponse<'bldr>> {
     let mut builder = TaskCreateResponseBuilder::new(_fbb);
     builder.add_selection_window_ms(args.selection_window_ms);
-    if let Some(x) = args.manifest_id { builder.add_manifest_id(x); }
+    if let Some(x) = args.message { builder.add_message(x); }
+    if let Some(x) = args.manifest_ref { builder.add_manifest_ref(x); }
     if let Some(x) = args.task_id { builder.add_task_id(x); }
     builder.add_ok(args.ok);
     builder.finish()
@@ -80,11 +82,11 @@ impl<'a> TaskCreateResponse<'a> {
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(TaskCreateResponse::VT_TASK_ID, None)}
   }
   #[inline]
-  pub fn manifest_id(&self) -> Option<&'a str> {
+  pub fn manifest_ref(&self) -> Option<&'a str> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(TaskCreateResponse::VT_MANIFEST_ID, None)}
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(TaskCreateResponse::VT_MANIFEST_REF, None)}
   }
   #[inline]
   pub fn selection_window_ms(&self) -> u64 {
@@ -92,6 +94,13 @@ impl<'a> TaskCreateResponse<'a> {
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u64>(TaskCreateResponse::VT_SELECTION_WINDOW_MS, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn message(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(TaskCreateResponse::VT_MESSAGE, None)}
   }
 }
 
@@ -104,8 +113,9 @@ impl flatbuffers::Verifiable for TaskCreateResponse<'_> {
     v.visit_table(pos)?
      .visit_field::<bool>("ok", Self::VT_OK, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("task_id", Self::VT_TASK_ID, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_id", Self::VT_MANIFEST_ID, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_ref", Self::VT_MANIFEST_REF, false)?
      .visit_field::<u64>("selection_window_ms", Self::VT_SELECTION_WINDOW_MS, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("message", Self::VT_MESSAGE, false)?
      .finish();
     Ok(())
   }
@@ -113,8 +123,9 @@ impl flatbuffers::Verifiable for TaskCreateResponse<'_> {
 pub struct TaskCreateResponseArgs<'a> {
     pub ok: bool,
     pub task_id: Option<flatbuffers::WIPOffset<&'a str>>,
-    pub manifest_id: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub manifest_ref: Option<flatbuffers::WIPOffset<&'a str>>,
     pub selection_window_ms: u64,
+    pub message: Option<flatbuffers::WIPOffset<&'a str>>,
 }
 impl<'a> Default for TaskCreateResponseArgs<'a> {
   #[inline]
@@ -122,8 +133,9 @@ impl<'a> Default for TaskCreateResponseArgs<'a> {
     TaskCreateResponseArgs {
       ok: false,
       task_id: None,
-      manifest_id: None,
+      manifest_ref: None,
       selection_window_ms: 0,
+      message: None,
     }
   }
 }
@@ -142,12 +154,16 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> TaskCreateResponseBuilder<'a, '
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(TaskCreateResponse::VT_TASK_ID, task_id);
   }
   #[inline]
-  pub fn add_manifest_id(&mut self, manifest_id: flatbuffers::WIPOffset<&'b  str>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(TaskCreateResponse::VT_MANIFEST_ID, manifest_id);
+  pub fn add_manifest_ref(&mut self, manifest_ref: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(TaskCreateResponse::VT_MANIFEST_REF, manifest_ref);
   }
   #[inline]
   pub fn add_selection_window_ms(&mut self, selection_window_ms: u64) {
     self.fbb_.push_slot::<u64>(TaskCreateResponse::VT_SELECTION_WINDOW_MS, selection_window_ms, 0);
+  }
+  #[inline]
+  pub fn add_message(&mut self, message: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(TaskCreateResponse::VT_MESSAGE, message);
   }
   #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> TaskCreateResponseBuilder<'a, 'b, A> {
@@ -169,8 +185,9 @@ impl core::fmt::Debug for TaskCreateResponse<'_> {
     let mut ds = f.debug_struct("TaskCreateResponse");
       ds.field("ok", &self.ok());
       ds.field("task_id", &self.task_id());
-      ds.field("manifest_id", &self.manifest_id());
+      ds.field("manifest_ref", &self.manifest_ref());
       ds.field("selection_window_ms", &self.selection_window_ms());
+      ds.field("message", &self.message());
       ds.finish()
   }
 }
@@ -225,14 +242,14 @@ pub fn size_prefixed_root_as_task_create_response_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `TaskCreateResponse`.
 pub unsafe fn root_as_task_create_response_unchecked(buf: &[u8]) -> TaskCreateResponse {
-  unsafe { flatbuffers::root_unchecked::<TaskCreateResponse>(buf) }
+  flatbuffers::root_unchecked::<TaskCreateResponse>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed TaskCreateResponse and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `TaskCreateResponse`.
 pub unsafe fn size_prefixed_root_as_task_create_response_unchecked(buf: &[u8]) -> TaskCreateResponse {
-  unsafe { flatbuffers::size_prefixed_root_unchecked::<TaskCreateResponse>(buf) }
+  flatbuffers::size_prefixed_root_unchecked::<TaskCreateResponse>(buf)
 }
 #[inline]
 pub fn finish_task_create_response_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

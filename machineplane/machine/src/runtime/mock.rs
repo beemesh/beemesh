@@ -19,7 +19,6 @@ use std::time::SystemTime;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MockWorkload {
     pub info: WorkloadInfo,
-    pub manifest_content: Vec<u8>,
     pub config: DeploymentConfig,
 }
 
@@ -109,14 +108,7 @@ impl MockEngine {
         self.workloads.lock().unwrap().clear();
     }
 
-    /// Get the manifest content for a workload (for testing verification)
-    pub fn get_workload_manifest(&self, workload_id: &str) -> Option<Vec<u8>> {
-        self.workloads
-            .lock()
-            .unwrap()
-            .get(workload_id)
-            .map(|w| w.manifest_content.clone())
-    }
+
 
     /// Get the deployment config for a workload (for testing verification)
     pub fn get_workload_config(&self, workload_id: &str) -> Option<DeploymentConfig> {
@@ -278,7 +270,6 @@ impl RuntimeEngine for MockEngine {
         // Store the workload
         let mock_workload = MockWorkload {
             info: workload_info.clone(),
-            manifest_content: manifest_content.to_vec(),
             config: config.clone(),
         };
 
@@ -337,7 +328,6 @@ impl RuntimeEngine for MockEngine {
         // Store the workload
         let mock_workload = MockWorkload {
             info: workload_info.clone(),
-            manifest_content: manifest_content.to_vec(),
             config: config.clone(),
         };
 
@@ -444,9 +434,111 @@ impl RuntimeEngine for MockEngine {
                 );
 
                 Ok(format!(
-                    "{}\n2024-01-01T00:00:06Z [INFO] Mock logs for workload {} (manifest: {})",
+                    "{}\n2024-01-01T00:00:06Z [INFO] Mock logs for workload {} (manifest_id: {})",
                     log_content, workload_id, workload.info.manifest_id
                 ))
+            }
+            None => Err(RuntimeError::WorkloadNotFound(workload_id.to_string())),
+        }
+    }
+
+    async fn export_manifest(&self, workload_id: &str) -> RuntimeResult<Vec<u8>> {
+        debug!("Mock engine: exporting manifest for workload: {}", workload_id);
+
+        let workloads = self.workloads.lock().unwrap();
+        match workloads.get(workload_id) {
+            Some(workload) => {
+                // Generate a mock Kubernetes manifest based on stored metadata
+                let metadata = &workload.info.metadata;
+                let name = metadata.get("name").unwrap_or(&workload.info.id);
+                let kind = metadata.get("kind").map(|s| s.as_str()).unwrap_or("Deployment");
+                let api_version = metadata.get("apiVersion").map(|s| s.as_str()).unwrap_or("apps/v1");
+                let namespace = metadata.get("namespace").map(|s| s.as_str()).unwrap_or("default");
+
+                // Create a reconstructed manifest based on the workload info
+                let mock_manifest = format!(
+                    r#"apiVersion: {}
+kind: {}
+metadata:
+  name: {}
+  namespace: {}
+  labels:
+    beemesh.io/workload-id: {}
+    beemesh.io/manifest-id: {}
+    beemesh.io/generated: "true"
+spec:
+  replicas: {}
+  selector:
+    matchLabels:
+      app: {}
+  template:
+    metadata:
+      labels:
+        app: {}
+        beemesh.io/workload-id: {}
+    spec:
+      containers:
+      - name: mock-container
+        image: mock:latest
+        ports:"#,
+                    api_version,
+                    kind,
+                    name,
+                    namespace,
+                    workload.info.id,
+                    workload.info.manifest_id,
+                    workload.config.replicas,
+                    name,
+                    name,
+                    workload.info.id
+                );
+
+                // Add port mappings if available
+                let mut manifest_with_ports = mock_manifest;
+                if !workload.info.ports.is_empty() {
+                    for port in &workload.info.ports {
+                        manifest_with_ports.push_str(&format!(
+                            "\n        - containerPort: {}\n          protocol: {}",
+                            port.container_port, port.protocol
+                        ));
+                    }
+                } else {
+                    manifest_with_ports.push_str("\n        - containerPort: 80\n          protocol: TCP");
+                }
+
+                // Add environment variables if available
+                if !workload.config.env.is_empty() {
+                    manifest_with_ports.push_str("\n        env:");
+                    for (key, value) in &workload.config.env {
+                        manifest_with_ports.push_str(&format!(
+                            "\n        - name: {}\n          value: \"{}\"",
+                            key, value
+                        ));
+                    }
+                }
+
+                // Add resource limits if available
+                let resources = &workload.config.resources;
+                if resources.cpu.is_some() || resources.memory.is_some() {
+                    manifest_with_ports.push_str("\n        resources:");
+                    if resources.cpu.is_some() || resources.memory.is_some() {
+                        manifest_with_ports.push_str("\n          limits:");
+                        if let Some(cpu) = resources.cpu {
+                            manifest_with_ports.push_str(&format!("\n            cpu: \"{}\"", cpu));
+                        }
+                        if let Some(memory) = resources.memory {
+                            manifest_with_ports.push_str(&format!("\n            memory: \"{}\"", memory));
+                        }
+                    }
+                }
+
+                info!(
+                    "Mock engine: generated manifest for workload {} ({} bytes)",
+                    workload_id,
+                    manifest_with_ports.len()
+                );
+
+                Ok(manifest_with_ports.into_bytes())
             }
             None => Err(RuntimeError::WorkloadNotFound(workload_id.to_string())),
         }
@@ -523,10 +615,10 @@ spec:
         assert_eq!(workload_info.status, WorkloadStatus::Running);
         assert_eq!(engine.workload_count(), 1);
 
-        // Verify we can retrieve the manifest content
-        let stored_manifest = engine.get_workload_manifest(&workload_info.id);
-        assert!(stored_manifest.is_some());
-        assert_eq!(stored_manifest.unwrap(), manifest.to_vec());
+        // Verify workload is running
+        let status = engine.get_workload_status(&workload_info.id).await;
+        assert!(status.is_ok());
+        assert_eq!(status.unwrap().status, WorkloadStatus::Running);
     }
 
     #[tokio::test]

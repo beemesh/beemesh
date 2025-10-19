@@ -76,7 +76,9 @@ static DECRYPTED_MANIFESTS: Lazy<tokio::sync::RwLock<HashMap<String, serde_json:
 static OPERATION_MANIFEST_MAPPING: Lazy<tokio::sync::RwLock<HashMap<String, String>>> =
     Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
-/// Store a decrypted manifest (async). Called by libp2p background tasks after successful decryption.
+/// Store a decrypted manifest (async). FOR DEBUG/TEST USE ONLY.
+/// This function should NOT be called during normal operation as the machine plane
+/// should be stateless and not persist manifest content. Only use for debugging endpoints.
 pub async fn store_decrypted_manifest(manifest_id: &str, value: serde_json::Value) {
     let mut map = DECRYPTED_MANIFESTS.write().await;
     map.insert(manifest_id.to_string(), value.clone());
@@ -734,16 +736,30 @@ async fn debug_mock_engine_state(State(_state): State<RestState>) -> axum::Json<
                     let mut workloads_json = serde_json::Map::new();
 
                     for workload in &all_workloads {
-                        let manifest_content = String::from_utf8_lossy(&workload.manifest_content);
+                        // Try to export the manifest for debugging
+                        let exported_manifest = match mock_engine.export_manifest(&workload.info.id).await {
+                            Ok(manifest_bytes) => {
+                                match String::from_utf8(manifest_bytes) {
+                                    Ok(manifest_str) => Some(manifest_str),
+                                    Err(_) => Some("(binary data)".to_string()),
+                                }
+                            }
+                            Err(e) => {
+                                log::debug!("Failed to export manifest for {}: {}", workload.info.id, e);
+                                None
+                            }
+                        };
+
                         workloads_json.insert(
                             workload.info.id.clone(),
                             serde_json::json!({
                                 "manifest_id": workload.info.manifest_id,
                                 "status": format!("{:?}", workload.info.status),
                                 "ports": workload.info.ports,
+                                "metadata": workload.info.metadata,
                                 "created_at": workload.info.created_at.duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default().as_secs(),
-                                "manifest_content": manifest_content,
+                                "exported_manifest": exported_manifest,
                             })
                         );
                     }
@@ -760,14 +776,30 @@ async fn debug_mock_engine_state(State(_state): State<RestState>) -> axum::Json<
                         Ok(workloads) => {
                             let mut workloads_json = serde_json::Map::new();
                             for workload in &workloads {
+                                // Try to export the manifest for debugging
+                                let exported_manifest = match mock_engine.export_manifest(&workload.id).await {
+                                    Ok(manifest_bytes) => {
+                                        match String::from_utf8(manifest_bytes) {
+                                            Ok(manifest_str) => Some(manifest_str),
+                                            Err(_) => Some("(binary data)".to_string()),
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::debug!("Failed to export manifest for {}: {}", workload.id, e);
+                                        None
+                                    }
+                                };
+
                                 workloads_json.insert(
                                     workload.id.clone(),
                                     serde_json::json!({
                                         "manifest_id": workload.manifest_id,
                                         "status": format!("{:?}", workload.status),
                                         "ports": workload.ports,
+                                        "metadata": workload.metadata,
                                         "created_at": workload.created_at.duration_since(std::time::UNIX_EPOCH)
                                             .unwrap_or_default().as_secs(),
+                                        "exported_manifest": exported_manifest,
                                     })
                                 );
                             }
@@ -850,14 +882,12 @@ async fn debug_workloads_by_peer(
                     let mut workloads_json = serde_json::Map::new();
 
                     for workload in &peer_workloads {
-                        let manifest_content = String::from_utf8_lossy(&workload.manifest_content);
                         workloads_json.insert(
                             workload.info.id.clone(),
                             serde_json::json!({
                                 "manifest_id": workload.info.manifest_id,
                                 "status": format!("{:?}", workload.info.status),
                                 "metadata": workload.info.metadata,
-                                "manifest_content": manifest_content,
                                 "created_at": workload.info.created_at.duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default().as_secs(),
                                 "updated_at": workload.info.updated_at.duration_since(std::time::UNIX_EPOCH)

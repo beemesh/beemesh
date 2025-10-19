@@ -401,7 +401,7 @@ impl FlatbufferClient {
         Ok(serde_json::json!({
             "ok": task_response.ok(),
             "task_id": task_response.task_id().unwrap_or(""),
-            "manifest_id": task_response.manifest_id().unwrap_or(""),
+            "manifest_id": task_response.manifest_ref().unwrap_or(""),
             "selection_window_ms": task_response.selection_window_ms()
         }))
     }

@@ -168,6 +168,17 @@ pub trait RuntimeEngine: Send + Sync {
     /// Validate a manifest before deployment
     async fn validate_manifest(&self, manifest_content: &[u8]) -> RuntimeResult<()>;
 
+    /// Export/generate a Kubernetes manifest from a running workload
+    /// This is useful for debugging and testing to see the actual runtime state
+    /// as a Kubernetes manifest.
+    ///
+    /// # Arguments
+    /// * `workload_id` - The unique identifier of the running workload
+    ///
+    /// # Returns
+    /// * The generated Kubernetes manifest as YAML bytes
+    async fn export_manifest(&self, workload_id: &str) -> RuntimeResult<Vec<u8>>;
+
     /// Deploy a workload with local peer ID tracking
     async fn deploy_workload_with_peer(
         &self,

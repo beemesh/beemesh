@@ -257,9 +257,6 @@ async fn process_manifest_deployment(
         }
     }
 
-    // Store applied manifest in DHT for backward compatibility
-    store_applied_manifest_in_dht(swarm, apply_req, *swarm.local_peer_id());
-
     Ok(workload_info.id)
 }
 
@@ -475,77 +472,7 @@ spec:
     ))
 }
 
-/// Store applied manifest in DHT (backward compatibility)
-fn store_applied_manifest_in_dht(
-    swarm: &mut Swarm<MyBehaviour>,
-    apply_req: &machine::ApplyRequest,
-    local_peer: libp2p::PeerId,
-) {
-    debug!("Storing applied manifest in DHT for backward compatibility");
 
-    let mut hasher = DefaultHasher::new();
-    if let (Some(tenant), Some(operation_id), Some(manifest_json)) = (
-        apply_req.tenant(),
-        apply_req.operation_id(),
-        apply_req.manifest_json(),
-    ) {
-        tenant.hash(&mut hasher);
-        operation_id.hash(&mut hasher);
-        manifest_json.hash(&mut hasher);
-
-        let manifest_id = format!("{:x}", hasher.finish());
-        let content_hash = format!("{:x}", DefaultHasher::new().finish());
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        let manifest_kind = "Pod"; // Simplified
-        let labels = vec![
-            (
-                "deployed-by".to_string(),
-                "beemesh-workload-manager".to_string(),
-            ),
-            ("kind".to_string(), manifest_kind.to_string()),
-            ("tenant".to_string(), tenant.to_string()),
-            ("replicas".to_string(), apply_req.replicas().to_string()),
-        ];
-
-        let empty_pubkey = vec![];
-        let empty_signature = vec![];
-
-        let manifest_data = machine::build_applied_manifest(
-            &manifest_id,
-            &tenant,
-            &operation_id,
-            &local_peer.to_string(),
-            &empty_pubkey,
-            &empty_signature,
-            &manifest_json,
-            &manifest_kind,
-            labels,
-            timestamp,
-            3600, // 1 hour TTL
-            &content_hash,
-        );
-
-        let record_key = libp2p::kad::RecordKey::new(&format!("manifest:{}", manifest_id));
-        let record = libp2p::kad::Record {
-            key: record_key,
-            value: manifest_data,
-            publisher: None,
-            expires: None,
-        };
-
-        if let Ok(query_id) = swarm
-            .behaviour_mut()
-            .kademlia
-            .put_record(record, libp2p::kad::Quorum::One)
-        {
-            debug!("Stored applied manifest in DHT (query_id: {:?})", query_id);
-        }
-    }
-}
 
 /// Enhanced self-apply processing with workload manager
 pub async fn process_enhanced_self_apply_request(manifest: &[u8], swarm: &mut Swarm<MyBehaviour>) {

@@ -535,6 +535,89 @@ impl RuntimeEngine for DockerEngine {
             }
         }
     }
+
+    async fn export_manifest(&self, workload_id: &str) -> RuntimeResult<Vec<u8>> {
+        info!("Exporting manifest for Docker workload: {}", workload_id);
+
+        // For Docker, we can try to generate a Docker Compose manifest from running containers
+        // First, try to get the compose config that was used
+        match self
+            .execute_command(&["compose", "-p", workload_id, "config"])
+            .await
+        {
+            Ok(compose_config) => {
+                info!(
+                    "Successfully exported Docker Compose config for workload {}",
+                    workload_id
+                );
+                return Ok(compose_config.into_bytes());
+            }
+            Err(e) => {
+                debug!("Failed to get compose config for {}: {}", workload_id, e);
+            }
+        }
+
+        // Fallback: inspect containers and generate a basic Docker Compose manifest
+        match self
+            .execute_command(&["ps", "-a", "--filter", &format!("name={}", workload_id), "--format", "json"])
+            .await
+        {
+            Ok(containers_output) => {
+                if containers_output.trim().is_empty() {
+                    return Err(RuntimeError::WorkloadNotFound(format!(
+                        "No containers found for workload {}",
+                        workload_id
+                    )));
+                }
+
+                // Parse container information and generate a basic compose file
+                let mut compose_manifest = format!(
+                    "# Generated Docker Compose manifest for workload: {}\nversion: '3.8'\nservices:\n",
+                    workload_id
+                );
+
+                for line in containers_output.lines() {
+                    if let Ok(container_info) = serde_json::from_str::<Value>(line) {
+                        if let (Some(names), Some(image)) = (
+                            container_info.get("Names").and_then(|n| n.as_str()),
+                            container_info.get("Image").and_then(|i| i.as_str())
+                        ) {
+                            // Extract service name from container name
+                            let service_name = names.split('/').last().unwrap_or(names);
+                            compose_manifest.push_str(&format!(
+                                "  {}:\n    image: {}\n    container_name: {}\n",
+                                service_name, image, names
+                            ));
+
+                            // Add basic restart policy
+                            compose_manifest.push_str("    restart: unless-stopped\n");
+
+                            // Could add more details by inspecting each container
+                            // This is a simplified version
+                        }
+                    }
+                }
+
+                info!(
+                    "Generated basic Docker Compose manifest for workload {} ({} bytes)",
+                    workload_id,
+                    compose_manifest.len()
+                );
+
+                Ok(compose_manifest.into_bytes())
+            }
+            Err(e) => {
+                error!(
+                    "Failed to export manifest for Docker workload {}: {}",
+                    workload_id, e
+                );
+                Err(RuntimeError::WorkloadNotFound(format!(
+                    "Failed to export manifest for workload {}: {}",
+                    workload_id, e
+                )))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
