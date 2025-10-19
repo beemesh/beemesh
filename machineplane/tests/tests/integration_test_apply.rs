@@ -288,6 +288,96 @@ async fn test_apply_functionality() {
 
 #[serial]
 #[tokio::test]
+async fn test_apply_with_real_podman() {
+    // Skip test if Podman is not available
+    if !is_podman_available().await {
+        log::warn!("Skipping Podman integration test - Podman not available");
+        return;
+    }
+
+    let (client, ports) = setup_test_environment_for_podman().await;
+    let mut guard = start_test_nodes_for_podman().await;
+
+    sleep(Duration::from_secs(3)).await;
+
+    // Resolve manifest path relative to this test crate's manifest dir
+    let manifest_path = PathBuf::from(format!(
+        "{}/sample_manifests/nginx.yml",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+
+    // Read the original manifest content for verification
+    let original_content = tokio::fs::read_to_string(manifest_path.clone())
+        .await
+        .expect("Failed to read original manifest file for verification");
+
+    let task_id = cli::apply_file(manifest_path.clone())
+        .await
+        .expect("apply_file should succeed with real Podman");
+
+    sleep(Duration::from_secs(5)).await;
+
+    // Check which nodes have the assigned task using debug endpoints first
+    let task_assignment_tasks = ports.iter().map(|&port| {
+        let client = client.clone();
+        let task_id = task_id.clone();
+        async move {
+            let base = format!("http://127.0.0.1:{}", port);
+            let mut has_task = false;
+
+            // Check if this node has the task assigned
+            let resp = client.get(format!("{}/debug/tasks", base)).send().await;
+            if let Ok(r) = resp {
+                if let Ok(j) = r.json::<serde_json::Value>().await {
+                    if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                        if let Some(tasks) = j.get("tasks").and_then(|v| v.as_object()) {
+                            if tasks.contains_key(&task_id) {
+                                has_task = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            (port, has_task)
+        }
+    });
+
+    let assignment_results = join_all(task_assignment_tasks).await;
+    let mut nodes_with_assigned_tasks: Vec<u16> = Vec::new();
+
+    for (port, has_task) in assignment_results {
+        if has_task {
+            nodes_with_assigned_tasks.push(port);
+        }
+    }
+
+    // Verify at least one node got the task assignment
+    assert!(
+        !nodes_with_assigned_tasks.is_empty(),
+        "No nodes have the assigned task - direct delivery failed"
+    );
+
+    // Wait for Podman deployment to complete (longer timeout for real containers)
+    sleep(Duration::from_secs(10)).await;
+
+    // Verify actual Podman deployment
+    let podman_verification_successful = verify_podman_deployment(&task_id, &original_content).await;
+    
+    assert!(
+        podman_verification_successful,
+        "Podman deployment verification failed - no matching pods found"
+    );
+
+    // Clean up Podman resources before test cleanup
+    cleanup_podman_resources(&task_id).await;
+
+    // Clean up nodes
+    guard.cleanup().await;
+}
+
+#[serial]
+#[tokio::test]
 async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_test_nodes().await;
@@ -407,4 +497,195 @@ async fn test_apply_nginx_with_replicas() {
 
     // Clean up environment
     std::env::remove_var("BEEMESH_MOCK_ONLY_RUNTIME");
+}
+
+async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
+    // Setup cleanup hook and initialize logger
+    setup_cleanup_hook();
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+
+    // DO NOT set BEEMESH_MOCK_ONLY_RUNTIME - we want real Podman
+    let client = reqwest::Client::new();
+    let ports = vec![3000u16, 3100u16, 3200u16];
+
+    (client, ports)
+}
+
+async fn start_test_nodes_for_podman() -> test_utils::NodeGuard {
+    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0);
+    let cli2 = make_test_cli(
+        3100,
+        false,
+        true,
+        None,
+        vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+        4002,
+        0,
+    );
+
+    let bootstrap_peers = vec![
+        "/ip4/127.0.0.1/tcp/4001".to_string(),
+        "/ip4/127.0.0.1/tcp/4002".to_string(),
+    ];
+
+    let cli3 = make_test_cli(3200, false, true, None, bootstrap_peers.clone(), 0, 0);
+
+    // Start nodes in-process for better control
+    start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await
+}
+
+async fn is_podman_available() -> bool {
+    match tokio::process::Command::new("podman")
+        .args(&["--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+    {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> bool {
+    // The pod name should now be in the format "beemesh-{manifest_id}-pod"
+    // Podman adds "-pod" suffix when creating pods from Kubernetes Deployment manifests
+    let expected_pod_name = format!("beemesh-{}-pod", task_id);
+
+    // Check if the pod was created by Podman
+    let output = tokio::process::Command::new("podman")
+        .args(&["pod", "ls", "--format", "json"])
+        .output()
+        .await;
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            
+            // Parse JSON output to find our pod
+            if let Ok(pods) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                if let Some(pods_array) = pods.as_array() {
+                    for pod in pods_array {
+                        if let Some(name) = pod.get("Name").and_then(|n| n.as_str()) {
+                            // Check if this pod name matches our expected pattern
+                            if name == expected_pod_name {
+                                log::info!("Found matching Podman pod: {}", name);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Also try to list containers if pod listing didn't work
+            let container_output = tokio::process::Command::new("podman")
+                .args(&["ps", "-a", "--format", "json"])
+                .output()
+                .await;
+
+            if let Ok(container_output) = container_output {
+                if container_output.status.success() {
+                    let container_stdout = String::from_utf8_lossy(&container_output.stdout);
+                    if let Ok(containers) = serde_json::from_str::<serde_json::Value>(&container_stdout) {
+                        if let Some(containers_array) = containers.as_array() {
+                            for container in containers_array {
+                                if let Some(names) = container.get("Names").and_then(|n| n.as_array()) {
+                                    for name in names {
+                                        if let Some(name_str) = name.as_str() {
+                                            if name_str.contains(&format!("beemesh-{}", task_id)) {
+                                                log::info!("Found matching Podman container: {}", name_str);
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            false
+        }
+        _ => {
+            log::warn!("Failed to execute 'podman pod ls' command");
+            false
+        }
+    }
+}
+
+async fn cleanup_podman_resources(task_id: &str) {
+    log::info!("Cleaning up Podman resources for task: {}", task_id);
+
+    // Try to remove the specific pod by the expected name (with -pod suffix)
+    let expected_pod_name = format!("beemesh-{}-pod", task_id);
+    let _ = tokio::process::Command::new("podman")
+        .args(&["pod", "rm", "-f", &expected_pod_name])
+        .output()
+        .await;
+    log::info!("Attempted to clean up Podman pod: {}", expected_pod_name);
+
+    // Also try the name without -pod suffix (fallback)
+    let expected_pod_name_alt = format!("beemesh-{}", task_id);
+    let _ = tokio::process::Command::new("podman")
+        .args(&["pod", "rm", "-f", &expected_pod_name_alt])
+        .output()
+        .await;
+    log::info!("Attempted to clean up Podman pod: {}", expected_pod_name_alt);
+
+    // Also try to remove pods by name pattern (fallback)
+    let output = tokio::process::Command::new("podman")
+        .args(&["pod", "ls", "-q", "--filter", &format!("name=beemesh")])
+        .output()
+        .await;
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let pod_id = line.trim();
+                if !pod_id.is_empty() {
+                    let _ = tokio::process::Command::new("podman")
+                        .args(&["pod", "rm", "-f", pod_id])
+                        .output()
+                        .await;
+                    log::info!("Cleaned up Podman pod: {}", pod_id);
+                }
+            }
+        }
+    }
+
+    // Also clean up any containers that might be running
+    let container_output = tokio::process::Command::new("podman")
+        .args(&["ps", "-aq", "--filter", "name=beemesh"])
+        .output()
+        .await;
+
+    if let Ok(container_output) = container_output {
+        if container_output.status.success() {
+            let stdout = String::from_utf8_lossy(&container_output.stdout);
+            for line in stdout.lines() {
+                let container_id = line.trim();
+                if !container_id.is_empty() {
+                    let _ = tokio::process::Command::new("podman")
+                        .args(&["rm", "-f", container_id])
+                        .output()
+                        .await;
+                    log::info!("Cleaned up Podman container: {}", container_id);
+                }
+            }
+        }
+    }
+}
+
+fn extract_manifest_name(manifest_content: &str) -> String {
+    // Parse YAML to extract the metadata.name field
+    if let Ok(doc) = serde_yaml::from_str::<serde_json::Value>(manifest_content) {
+        if let Some(metadata) = doc.get("metadata") {
+            if let Some(name) = metadata.get("name").and_then(|n| n.as_str()) {
+                return name.to_string();
+            }
+        }
+    }
+    "unnamed".to_string()
 }

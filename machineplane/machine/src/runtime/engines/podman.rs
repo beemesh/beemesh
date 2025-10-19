@@ -91,52 +91,109 @@ impl PodmanEngine {
 
     /// Extract port mappings from podman pod inspect output
     async fn extract_port_mappings(&self, pod_name: &str) -> RuntimeResult<Vec<PortMapping>> {
-        let _output = self
+        // Try the pod name with -pod suffix first (most common)
+        let pod_name_with_suffix = format!("{}-pod", pod_name);
+        
+        match self
+            .execute_command(&["pod", "inspect", &pod_name_with_suffix, "--format", "json"])
+            .await
+        {
+            Ok(_output) => {
+                // Parse JSON output to extract port mappings
+                // This is a simplified implementation - in practice you'd parse the full JSON
+                let ports = Vec::new();
+                debug!(
+                    "Extracted {} port mappings for pod {}",
+                    ports.len(),
+                    pod_name_with_suffix
+                );
+                return Ok(ports);
+            }
+            Err(_) => {
+                debug!("Failed to inspect pod with suffix: {}", pod_name_with_suffix);
+            }
+        }
+
+        // Try without suffix as fallback
+        match self
             .execute_command(&["pod", "inspect", pod_name, "--format", "json"])
-            .await?;
-
-        // Parse JSON output to extract port mappings
-        // This is a simplified implementation - in practice you'd parse the full JSON
-        let ports = Vec::new();
-
-        // For now, return empty ports - full implementation would parse the JSON
-        // to extract actual port mappings from the pod inspection
-        debug!(
-            "Extracted {} port mappings for pod {}",
-            ports.len(),
-            pod_name
-        );
-
-        Ok(ports)
+            .await
+        {
+            Ok(_output) => {
+                let ports = Vec::new();
+                debug!(
+                    "Extracted {} port mappings for pod {}",
+                    ports.len(),
+                    pod_name
+                );
+                Ok(ports)
+            }
+            Err(e) => {
+                debug!("Failed to inspect pod {}: {}", pod_name, e);
+                // Return empty ports if inspection fails - this is not a critical error
+                Ok(Vec::new())
+            }
+        }
     }
 
-    /// Generate a unique workload ID based on manifest name and ID
-    fn generate_workload_id(&self, manifest_id: &str, manifest_content: &[u8]) -> String {
-        let metadata = self
-            .parse_manifest_metadata(manifest_content)
-            .unwrap_or_default();
-        let manifest_name = metadata
-            .get("name")
-            .map(|n| n.as_str())
-            .unwrap_or("unnamed");
-        format!("beemesh-{}-{}", manifest_name, manifest_id)
+    /// Generate a unique workload ID based on manifest ID only
+    fn generate_workload_id(&self, manifest_id: &str, _manifest_content: &[u8]) -> String {
+        // Use consistent naming with pod name - just manifest_id based
+        format!("beemesh-{}", manifest_id)
     }
 
-    /// Create a temporary file with the manifest content
+    /// Create a temporary file with the manifest content, modifying pod name to use manifest_id
     async fn create_temp_manifest_file(
         &self,
         manifest_content: &[u8],
+        manifest_id: &str,
     ) -> RuntimeResult<std::path::PathBuf> {
         use tokio::io::AsyncWriteExt;
 
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join(format!("beemesh-manifest-{}.yaml", uuid::Uuid::new_v4()));
 
+        // Parse the manifest and modify the pod name
+        let manifest_str = String::from_utf8_lossy(manifest_content);
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(&manifest_str)
+            .map_err(|e| RuntimeError::InvalidManifest(format!("YAML parse error: {}", e)))?;
+
+        // Generate pod name based on manifest_id
+        let pod_name = format!("beemesh-{}", manifest_id);
+
+        // Update metadata name to use our generated pod name
+        if let Some(metadata) = doc.get_mut("metadata") {
+            if let Some(metadata_map) = metadata.as_mapping_mut() {
+                metadata_map.insert(
+                    serde_yaml::Value::String("name".to_string()),
+                    serde_yaml::Value::String(pod_name.clone()),
+                );
+            }
+        }
+
+        // For Deployments, also update the pod template metadata name if it exists
+        if let Some(spec) = doc.get_mut("spec") {
+            if let Some(template) = spec.get_mut("template") {
+                if let Some(template_metadata) = template.get_mut("metadata") {
+                    if let Some(template_metadata_map) = template_metadata.as_mapping_mut() {
+                        template_metadata_map.insert(
+                            serde_yaml::Value::String("name".to_string()),
+                            serde_yaml::Value::String(format!("{}-pod", pod_name)),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Serialize back to YAML
+        let modified_manifest = serde_yaml::to_string(&doc)
+            .map_err(|e| RuntimeError::InvalidManifest(format!("YAML serialize error: {}", e)))?;
+
         let mut file = tokio::fs::File::create(&temp_file).await?;
-        file.write_all(manifest_content).await?;
+        file.write_all(modified_manifest.as_bytes()).await?;
         file.flush().await?;
 
-        debug!("Created temporary manifest file: {:?}", temp_file);
+        debug!("Created temporary manifest file: {:?} with pod name: {}", temp_file, pod_name);
         Ok(temp_file)
     }
 
@@ -224,11 +281,14 @@ impl RuntimeEngine for PodmanEngine {
         // Generate unique workload ID
         let workload_id = self.generate_workload_id(manifest_id, manifest_content);
 
-        // Create temporary manifest file
-        let temp_file = self.create_temp_manifest_file(manifest_content).await?;
+        // Create temporary manifest file with modified pod name
+        let temp_file = self.create_temp_manifest_file(manifest_content, manifest_id).await?;
 
         // Build podman kube play command
         let mut args = vec!["kube", "play"];
+
+        // Add --replace flag to overwrite existing pods
+        args.push("--replace");
 
         // Add replicas if specified and > 1
         let replicas_str;
@@ -291,11 +351,8 @@ impl RuntimeEngine for PodmanEngine {
                     .parse_manifest_metadata(manifest_content)
                     .unwrap_or_default();
 
-                // Extract pod name from metadata or use workload_id
-                let pod_name = metadata
-                    .get("name")
-                    .cloned()
-                    .unwrap_or_else(|| workload_id.clone());
+                // Use the manifest_id-based pod name (consistent with our modified manifest)
+                let pod_name = format!("beemesh-{}", manifest_id);
 
                 // Get port mappings
                 let ports = self
@@ -345,11 +402,14 @@ impl RuntimeEngine for PodmanEngine {
         // Generate unique workload ID
         let workload_id = self.generate_workload_id(manifest_id, manifest_content);
 
-        // Create temporary manifest file
-        let temp_file = self.create_temp_manifest_file(manifest_content).await?;
+        // Create temporary manifest file with modified pod name
+        let temp_file = self.create_temp_manifest_file(manifest_content, manifest_id).await?;
 
         // Prepare podman command
         let mut args = vec!["kube", "play"];
+
+        // Add --replace flag to overwrite existing pods
+        args.push("--replace");
 
         // Add environment variables
         let mut env_strings = Vec::new();
@@ -386,11 +446,8 @@ impl RuntimeEngine for PodmanEngine {
                 // Add local peer ID to metadata
                 metadata.insert("local_peer_id".to_string(), local_peer_id.to_string());
 
-                // Extract pod name from metadata or use workload_id
-                let pod_name = metadata
-                    .get("name")
-                    .cloned()
-                    .unwrap_or_else(|| workload_id.clone());
+                // Use the manifest_id-based pod name (consistent with our modified manifest)
+                let pod_name = format!("beemesh-{}", manifest_id);
 
                 // Get port mappings
                 let ports = self
@@ -469,7 +526,29 @@ impl RuntimeEngine for PodmanEngine {
     async fn remove_workload(&self, workload_id: &str) -> RuntimeResult<()> {
         info!("Removing workload: {}", workload_id);
 
-        // Try to remove by pod name (assuming workload_id maps to pod name)
+        // For our naming convention, the workload_id is "beemesh-{manifest_id}"
+        // But Podman creates pods with "-pod" suffix, so we need to try both forms
+        let pod_name_with_suffix = format!("{}-pod", workload_id);
+
+        // Try to remove by pod name with suffix first (most likely to succeed)
+        match self
+            .execute_command(&["pod", "rm", "-f", &pod_name_with_suffix])
+            .await
+        {
+            Ok(output) => {
+                info!(
+                    "Successfully removed pod {}: {}",
+                    pod_name_with_suffix,
+                    output.trim()
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                debug!("Failed to remove pod with suffix {}: {}", pod_name_with_suffix, e);
+            }
+        }
+
+        // Try to remove by exact workload_id
         match self
             .execute_command(&["pod", "rm", "-f", workload_id])
             .await
@@ -480,37 +559,39 @@ impl RuntimeEngine for PodmanEngine {
                     workload_id,
                     output.trim()
                 );
-                Ok(())
+                return Ok(());
             }
             Err(e) => {
-                // If removal by exact name fails, try to find and remove by pattern
-                warn!("Direct removal failed, trying pattern match: {}", e);
-
-                // List pods and find ones that match our naming pattern
-                let output = self
-                    .execute_command(&[
-                        "pod",
-                        "ls",
-                        "-q",
-                        "--filter",
-                        &format!("name={}", workload_id),
-                    ])
-                    .await?;
-
-                for line in output.lines() {
-                    let pod_id = line.trim();
-                    if !pod_id.is_empty() {
-                        if let Err(e) = self.execute_command(&["pod", "rm", "-f", pod_id]).await {
-                            warn!("Failed to remove pod {}: {}", pod_id, e);
-                        } else {
-                            info!("Successfully removed pod: {}", pod_id);
-                        }
-                    }
-                }
-
-                Ok(())
+                debug!("Direct removal failed: {}", e);
             }
         }
+
+        // If both specific removals fail, try to find and remove by pattern
+        warn!("Specific removals failed, trying pattern match for: {}", workload_id);
+
+        // List pods and find ones that match our naming pattern
+        let output = self
+            .execute_command(&[
+                "pod",
+                "ls",
+                "-q",
+                "--filter",
+                &format!("name={}", workload_id),
+            ])
+            .await?;
+
+        for line in output.lines() {
+            let pod_id = line.trim();
+            if !pod_id.is_empty() {
+                if let Err(e) = self.execute_command(&["pod", "rm", "-f", pod_id]).await {
+                    warn!("Failed to remove pod {}: {}", pod_id, e);
+                } else {
+                    info!("Successfully removed pod: {}", pod_id);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn get_workload_logs(
@@ -627,13 +708,13 @@ spec:
 
         // IDs should be identical for the same manifest and ID
         assert_eq!(id1, id2);
-        assert_eq!(id1, "beemesh-test-pod-manifest-123");
+        assert_eq!(id1, "beemesh-manifest-123");
 
-        // Different manifest names should produce different workload IDs
+        // Different manifest IDs should produce different workload IDs
         assert_ne!(id1, id3);
-        assert_eq!(id3, "beemesh-different-pod-manifest-456");
+        assert_eq!(id3, "beemesh-manifest-456");
 
-        // Manifest without name should use "unnamed"
-        assert_eq!(id4, "beemesh-unnamed-manifest-789");
+        // Manifest without name should still use manifest_id only
+        assert_eq!(id4, "beemesh-manifest-789");
     }
 }
