@@ -1020,6 +1020,7 @@ pub async fn assign_task(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
     _headers: HeaderMap,
+    Extension(envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     debug!("assign_task: parsing decrypted payload from envelope middleware");
@@ -1035,7 +1036,18 @@ pub async fn assign_task(
             log::warn!("assign_task: failed to parse AssignRequest: {:?}", e);
             let error_response =
                 protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-            return create_response_with_fallback(&error_response).await;
+            return if !envelope_metadata.kem_pubkey.is_empty() {
+                create_encrypted_response_with_key(
+                    &state.envelope_handler,
+                    &error_response,
+                    "assign_response",
+                    envelope_metadata.peer_id.as_deref(),
+                    &envelope_metadata.kem_pubkey,
+                )
+                .await
+            } else {
+                create_response_with_fallback(&error_response).await
+            };
         }
     };
 
@@ -1046,7 +1058,18 @@ pub async fn assign_task(
         None => {
             let error_response =
                 protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-            return create_response_with_fallback(&error_response).await;
+            return if !envelope_metadata.kem_pubkey.is_empty() {
+                create_encrypted_response_with_key(
+                    &state.envelope_handler,
+                    &error_response,
+                    "assign_response",
+                    envelope_metadata.peer_id.as_deref(),
+                    &envelope_metadata.kem_pubkey,
+                )
+                .await
+            } else {
+                create_response_with_fallback(&error_response).await
+            };
         }
     };
 
@@ -1117,7 +1140,18 @@ pub async fn assign_task(
     if assigned.is_empty() {
         log::warn!("assign_task: no peers assigned, returning error response");
         let error_response = protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-        return create_response_with_fallback(&error_response).await;
+        return if !envelope_metadata.kem_pubkey.is_empty() {
+            create_encrypted_response_with_key(
+                &state.envelope_handler,
+                &error_response,
+                "assign_response",
+                envelope_metadata.peer_id.as_deref(),
+                &envelope_metadata.kem_pubkey,
+            )
+            .await
+        } else {
+            create_response_with_fallback(&error_response).await
+        };
     }
 
     let mut per_peer_results: Vec<(String, String)> = Vec::new();
@@ -1210,7 +1244,21 @@ pub async fn assign_task(
 
     let response_data =
         protocol::machine::build_assign_response(true, &task_id, &assigned, &per_peer_results);
-    create_response_with_fallback(&response_data).await
+    
+    // Use KEM key directly from envelope metadata for secure response encryption
+    if !envelope_metadata.kem_pubkey.is_empty() {
+        create_encrypted_response_with_key(
+            &state.envelope_handler,
+            &response_data,
+            "assign_response",
+            envelope_metadata.peer_id.as_deref(),
+            &envelope_metadata.kem_pubkey,
+        )
+        .await
+    } else {
+        // No KEM key in metadata, return unencrypted response
+        create_response_with_fallback(&response_data).await
+    }
 }
 
 pub async fn get_task_status(
