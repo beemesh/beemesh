@@ -378,31 +378,6 @@ pub async fn apply_manifest(
         }
     };
 
-    // Handle optional shares envelope - must be base64-encoded flatbuffer envelope
-    if let Some(shares_envelope_json) = apply_request.shares_envelope_json() {
-        match base64::engine::general_purpose::STANDARD.decode(shares_envelope_json) {
-            Ok(envelope_bytes) => {
-                match crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
-                    &envelope_bytes,
-                    std::time::Duration::from_secs(300),
-                ) {
-                    Ok((_payload_bytes, _pub, _sig)) => {
-                        debug!("apply_manifest: received verified shares_envelope");
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "apply_manifest: shares_envelope verification failed: {:?}",
-                            e
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("apply_manifest: shares_envelope not decodable: {:?}", e);
-            }
-        }
-    }
-
     // determine desired replica count from manifest; check top-level `replicas` or `spec.replicas`
     let replicas = manifest
         .get(REPLICAS_FIELD)

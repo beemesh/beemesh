@@ -43,7 +43,6 @@ impl<'a> flatbuffers::Follow<'a> for ApplyManifestRequest<'a> {
 
 impl<'a> ApplyManifestRequest<'a> {
   pub const VT_MANIFEST_ENVELOPE_JSON: flatbuffers::VOffsetT = 4;
-  pub const VT_SHARES_ENVELOPE_JSON: flatbuffers::VOffsetT = 6;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -55,7 +54,6 @@ impl<'a> ApplyManifestRequest<'a> {
     args: &'args ApplyManifestRequestArgs<'args>
   ) -> flatbuffers::WIPOffset<ApplyManifestRequest<'bldr>> {
     let mut builder = ApplyManifestRequestBuilder::new(_fbb);
-    if let Some(x) = args.shares_envelope_json { builder.add_shares_envelope_json(x); }
     if let Some(x) = args.manifest_envelope_json { builder.add_manifest_envelope_json(x); }
     builder.finish()
   }
@@ -68,13 +66,6 @@ impl<'a> ApplyManifestRequest<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(ApplyManifestRequest::VT_MANIFEST_ENVELOPE_JSON, None)}
   }
-  #[inline]
-  pub fn shares_envelope_json(&self) -> Option<&'a str> {
-    // Safety:
-    // Created from valid Table for this object
-    // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(ApplyManifestRequest::VT_SHARES_ENVELOPE_JSON, None)}
-  }
 }
 
 impl flatbuffers::Verifiable for ApplyManifestRequest<'_> {
@@ -85,21 +76,18 @@ impl flatbuffers::Verifiable for ApplyManifestRequest<'_> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_envelope_json", Self::VT_MANIFEST_ENVELOPE_JSON, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("shares_envelope_json", Self::VT_SHARES_ENVELOPE_JSON, false)?
      .finish();
     Ok(())
   }
 }
 pub struct ApplyManifestRequestArgs<'a> {
     pub manifest_envelope_json: Option<flatbuffers::WIPOffset<&'a str>>,
-    pub shares_envelope_json: Option<flatbuffers::WIPOffset<&'a str>>,
 }
 impl<'a> Default for ApplyManifestRequestArgs<'a> {
   #[inline]
   fn default() -> Self {
     ApplyManifestRequestArgs {
       manifest_envelope_json: None,
-      shares_envelope_json: None,
     }
   }
 }
@@ -112,10 +100,6 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> ApplyManifestRequestBuilder<'a,
   #[inline]
   pub fn add_manifest_envelope_json(&mut self, manifest_envelope_json: flatbuffers::WIPOffset<&'b  str>) {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(ApplyManifestRequest::VT_MANIFEST_ENVELOPE_JSON, manifest_envelope_json);
-  }
-  #[inline]
-  pub fn add_shares_envelope_json(&mut self, shares_envelope_json: flatbuffers::WIPOffset<&'b  str>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(ApplyManifestRequest::VT_SHARES_ENVELOPE_JSON, shares_envelope_json);
   }
   #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> ApplyManifestRequestBuilder<'a, 'b, A> {
@@ -136,7 +120,6 @@ impl core::fmt::Debug for ApplyManifestRequest<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("ApplyManifestRequest");
       ds.field("manifest_envelope_json", &self.manifest_envelope_json());
-      ds.field("shares_envelope_json", &self.shares_envelope_json());
       ds.finish()
   }
 }

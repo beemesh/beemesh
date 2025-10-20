@@ -121,20 +121,6 @@ pub struct TaskCreateResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DistributeSharesRequest {
-    #[serde(default)]
-    pub shares_envelope: Option<serde_json::Value>,
-    // per-target payloads (peer id + optional payload)
-    pub targets: Vec<ShareTarget>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DistributeSharesResponse {
-    pub ok: bool,
-    pub results: serde_json::Value,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AssignRequest {
     #[serde(default)]
     pub chosen_peers: Option<Vec<String>>,
@@ -154,13 +140,6 @@ pub struct TaskStatusResponse {
     pub state: String,
     pub assigned_peers: Vec<String>,
     pub shares_distributed: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ShareTarget {
-    pub peer_id: String,
-    /// Arbitrary JSON payload (the CLI should have encrypted the share for the recipient)
-    pub payload: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -1101,15 +1101,12 @@ pub mod machine {
 
     pub fn build_apply_manifest_request(
         manifest_envelope_json: &str,
-        shares_envelope_json: Option<&str>,
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(1024);
         let manifest_off = fbb.create_string(manifest_envelope_json);
-        let shares_off = shares_envelope_json.map(|s| fbb.create_string(s));
 
         let request = crate::generated::generated_apply_manifest_request::beemesh::machine::ApplyManifestRequest::create(&mut fbb, &crate::generated::generated_apply_manifest_request::beemesh::machine::ApplyManifestRequestArgs {
             manifest_envelope_json: Some(manifest_off),
-            shares_envelope_json: shares_off,
         });
         fbb.finish(request, None);
         fbb.finished_data().to_vec()
