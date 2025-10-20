@@ -57,6 +57,24 @@ pub fn ensure_pqc_init() -> anyhow::Result<()> {
 }
 
 pub fn ensure_keypair_on_disk() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    // Support ephemeral signing keypair mode for tests to avoid writing to $HOME and race conditions.
+    // If BEEMESH_SIGNING_EPHEMERAL is set, generate a transient signing keypair once and reuse it
+    // for the life of the process so CLI and machine nodes use the same keys.
+    static EPHEMERAL_SIGNING: OnceCell<(Vec<u8>, Vec<u8>)> = OnceCell::new();
+    if std::env::var("BEEMESH_SIGNING_EPHEMERAL").is_ok() {
+        if let Some(k) = EPHEMERAL_SIGNING.get() {
+            return Ok((k.0.clone(), k.1.clone()));
+        }
+        ensure_pqc_init()?;
+        let dsa = ml_dsa_65();
+        let (pubk, privk) = dsa.generate_keypair()?;
+        let pubb = pubk.to_bytes();
+        let privb = privk.to_bytes();
+        log::warn!("ensure_keypair_on_disk: BEEMESH_SIGNING_EPHEMERAL set - using ephemeral signing keypair (no disk writes)");
+        let _ = EPHEMERAL_SIGNING.set((pubb.clone(), privb.clone()));
+        return Ok((pubb, privb));
+    }
+
     let home = home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
     let key_dir = home.join(KEY_DIR);
     if !key_dir.exists() {
@@ -78,6 +96,7 @@ pub fn ensure_keypair_on_disk() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     }
 
     // generate and persist
+    ensure_pqc_init()?;
     let dsa = ml_dsa_65();
     let (pubk, privk) = dsa.generate_keypair()?;
     let pubb = pubk.to_bytes();
@@ -326,6 +345,17 @@ pub fn ensure_keypair_ephemeral() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     let dsa = ml_dsa_65();
     let (pubk, privk) = dsa.generate_keypair()?;
     Ok((pubk.to_bytes(), privk.to_bytes()))
+}
+
+/// Get cached ephemeral keypair (same instance across calls) - useful for tests
+pub fn ensure_keypair_ephemeral_cached() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    keypair_manager::KeypairManager::get_ephemeral_signing_keypair()
+        .map_err(|e| anyhow::anyhow!("ephemeral cached keypair: {}", e))
+}
+
+/// Clear cached ephemeral keypairs - useful for test isolation
+pub fn clear_ephemeral_keypair_cache() {
+    keypair_manager::KeypairManager::clear_ephemeral_caches();
 }
 
 pub fn encrypt_manifest(

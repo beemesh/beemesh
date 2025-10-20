@@ -134,58 +134,24 @@ async fn check_workload_deployment(
 
             // Get the peer ID for this port
             if let Some(peer_id) = port_to_peer_id.get(&port) {
-                // First, try to check the mock engine state which includes exported manifests
-                let mock_engine_resp = client
-                    .get(format!("{}/debug/mock_engine_state", base))
-                    .send()
-                    .await;
-                
-                if let Ok(r) = mock_engine_resp {
-                    if let Ok(j) = r.json::<serde_json::Value>().await {
-                        if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                            if let Some(workloads) = j.get("workloads").and_then(|v| v.as_object()) {
-                                for (_workload_id, workload_info) in workloads {
-                                    if let Some(metadata) = workload_info.get("metadata").and_then(|v| v.as_object()) {
-                                        if let Some(name) = metadata.get("name").and_then(|v| v.as_str()) {
-                                            if name == "my-nginx" {
-                                                // Check if the exported manifest is available and similar to original
-                                                let exported_manifest_matches = if let Some(exported_manifest) = workload_info.get("exported_manifest").and_then(|v| v.as_str()) {
-                                                    let contains_nginx = exported_manifest.contains("my-nginx");
-                                                    let contains_deployment_or_pod = exported_manifest.contains("Deployment") || exported_manifest.contains("Pod");
-                                                    let contains_api_version = exported_manifest.contains("apiVersion");
-                                                    
-                                                    log::info!("Exported manifest verification - nginx: {}, deployment/pod: {}, apiVersion: {}", 
-                                                               contains_nginx, contains_deployment_or_pod, contains_api_version);
-                                                    
-                                                    if exported_manifest.len() > 100 {
-                                                        log::info!("Exported manifest preview: {}", 
-                                                                   &exported_manifest[..std::cmp::min(200, exported_manifest.len())]);
-                                                    }
-                                                    
-                                                    contains_nginx && contains_deployment_or_pod && contains_api_version
-                                                } else {
-                                                    log::warn!("No exported manifest found in mock engine state");
-                                                    false
-                                                };
-                                                
-                                                return (port, true, exported_manifest_matches);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Fallback: Query workloads specifically for this peer ID
-                let resp = client
+                // First, try peer-specific endpoint to check workloads for this specific peer
+                let peer_workloads_resp = client
                     .get(format!("{}/debug/workloads_by_peer/{}", base, peer_id))
                     .send()
                     .await;
-                if let Ok(r) = resp {
+                
+                if let Ok(r) = peer_workloads_resp {
                     if let Ok(j) = r.json::<serde_json::Value>().await {
+                        log::info!("Peer-specific endpoint response for peer {} on port {}: {}", peer_id, port, j);
                         if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                            let workload_count = j.get("workload_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                            log::info!("Peer-specific endpoint workload_count for peer {} on port {}: {}", peer_id, port, workload_count);
+                            
+                            if workload_count == 0 {
+                                log::info!("No workloads for peer {} on port {} - returning early", peer_id, port);
+                                return (port, false, false);
+                            }
+                            
                             if let Some(workloads) = j.get("workloads").and_then(|v| v.as_object())
                             {
                                 // Check if any workload matches our expected metadata
@@ -228,6 +194,50 @@ async fn check_workload_deployment(
                                         if status == "Running" {
                                             // We have a running workload, assume it's correct for now
                                             return (port, true, true);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Fallback: try to check the mock engine state which includes exported manifests
+                let mock_engine_resp = client
+                    .get(format!("{}/debug/mock_engine_state", base))
+                    .send()
+                    .await;
+                
+                if let Ok(r) = mock_engine_resp {
+                    if let Ok(j) = r.json::<serde_json::Value>().await {
+                        if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                            if let Some(workloads) = j.get("workloads").and_then(|v| v.as_object()) {
+                                for (_workload_id, workload_info) in workloads {
+                                    if let Some(metadata) = workload_info.get("metadata").and_then(|v| v.as_object()) {
+                                        if let Some(name) = metadata.get("name").and_then(|v| v.as_str()) {
+                                            if name == "my-nginx" {
+                                                // Check if the exported manifest is available and similar to original
+                                                let exported_manifest_matches = if let Some(exported_manifest) = workload_info.get("exported_manifest").and_then(|v| v.as_str()) {
+                                                    let contains_nginx = exported_manifest.contains("my-nginx");
+                                                    let contains_deployment_or_pod = exported_manifest.contains("Deployment") || exported_manifest.contains("Pod");
+                                                    let contains_api_version = exported_manifest.contains("apiVersion");
+                                                    
+                                                    log::info!("Exported manifest verification - nginx: {}, deployment/pod: {}, apiVersion: {}", 
+                                                               contains_nginx, contains_deployment_or_pod, contains_api_version);
+                                                    
+                                                    if exported_manifest.len() > 100 {
+                                                        log::info!("Exported manifest preview: {}", 
+                                                                   &exported_manifest[..std::cmp::min(200, exported_manifest.len())]);
+                                                    }
+                                                    
+                                                    contains_nginx && contains_deployment_or_pod && contains_api_version
+                                                } else {
+                                                    log::warn!("No exported manifest found in mock engine state");
+                                                    false
+                                                };
+                                                
+                                                return (port, true, exported_manifest_matches);
+                                            }
                                         }
                                     }
                                 }

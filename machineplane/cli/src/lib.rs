@@ -17,6 +17,17 @@ use flatbuffers::FlatbufferClient;
 
 mod flatbuffer_envelope;
 
+// Helper function to extract manifest name from JSON
+fn extract_manifest_name_from_json(manifest_json: &serde_json::Value) -> Option<String> {
+    manifest_json
+        .get("metadata")?
+        .get("name")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+
+
 pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     debug!("apply_file called for path: {:?}", path);
 
@@ -52,20 +63,33 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
     info!("Manifest requires {} replicas", replicas);
 
-    // Ensure CLI keypair - use ephemeral in test mode to match machine nodes
-    let (_pk_bytes, _sk_bytes) = if std::env::var("BEEMESH_MOCK_ONLY_RUNTIME").is_ok() {
-        crypto::ensure_keypair_ephemeral()?
-    } else {
-        ensure_keypair_on_disk()?
-    };
+    // Ensure CLI keypair - always use persistent keypairs for consistency
+    let (pk_bytes, _sk_bytes) = ensure_keypair_on_disk()?;
 
     // Hardcoded tenant for now
     let tenant = "00000000-0000-0000-0000-000000000000";
 
-    // Compute stable manifest_id from manifest content (like Kubernetes)
-    let manifest_bytes = serde_json::to_vec(&manifest_json)?;
-    let manifest_id = protocol::machine::compute_manifest_id_from_content(&manifest_bytes);
-    debug!("Computed manifest_id: {}", manifest_id);
+    // Compute stable manifest_id from owning public key and manifest name only
+    // This allows manifest content to be updated while keeping the same ID for overwriting
+    let manifest_id = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        
+        // Hash owning public key for security
+        pk_bytes.hash(&mut hasher);
+        
+        // Extract and hash manifest name - this is the stable identifier
+        if let Some(name) = extract_manifest_name_from_json(&manifest_json) {
+            debug!("CLI: Using manifest name '{}' for manifest_id", name);
+            name.hash(&mut hasher);
+        } else {
+            return Err(anyhow::anyhow!("Manifest must have a name field in metadata for deployment"));
+        }
+        
+        format!("{:016x}", hasher.finish())[..16].to_string()
+    };
+    debug!("CLI: Computed manifest_id: {} with pubkey: {:02x?}", manifest_id, &pk_bytes[..8]);
 
     // API base URL can be overridden with BEEMESH_API env var
     let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
@@ -242,6 +266,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
             &operation_id,
             &manifest_json_b64,
             "", // origin_peer (CLI doesn't have peer ID)
+            &manifest_id,
         );
         
         // Send via the apply_direct endpoint which forwards to the peer

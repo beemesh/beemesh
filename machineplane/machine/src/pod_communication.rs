@@ -3,6 +3,7 @@ use libp2p::PeerId;
 use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
 use serde_json;
 use tokio::sync::mpsc;
+use std::hash::{Hash, Hasher};
 
 /// Send the manifest to a peer using libp2p request-response protocol.
 /// This function sends an apply request FlatBuffer to the specified peer and waits for a response.
@@ -26,12 +27,25 @@ pub async fn send_apply_to_peer(
     let operation_id = uuid::Uuid::new_v4().to_string();
     let manifest_json = manifest.to_string();
     let local_peer = "".to_string();
+    
+    // Calculate manifest_id for stable identification
+    let manifest_name = protocol::machine::extract_manifest_name(manifest_json.as_bytes())
+        .unwrap_or_else(|| format!("pod-{}", operation_id));
+    
+    // Generate stable manifest_id
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    "default".hash(&mut hasher); // tenant
+    manifest_name.hash(&mut hasher);
+    let hash = hasher.finish();
+    let manifest_id = format!("{:016x}", hash)[..16].to_string();
+    
     let apply_fb = protocol::machine::build_apply_request(
         1, // replicas (best-effort)
         "default",
         &operation_id,
         &manifest_json,
         &local_peer,
+        &manifest_id,
     );
 
     // Create a channel to receive the response

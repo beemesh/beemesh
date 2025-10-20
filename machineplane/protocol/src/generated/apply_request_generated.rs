@@ -47,6 +47,7 @@ impl<'a> ApplyRequest<'a> {
   pub const VT_OPERATION_ID: flatbuffers::VOffsetT = 8;
   pub const VT_MANIFEST_JSON: flatbuffers::VOffsetT = 10;
   pub const VT_ORIGIN_PEER: flatbuffers::VOffsetT = 12;
+  pub const VT_MANIFEST_ID: flatbuffers::VOffsetT = 14;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -58,6 +59,7 @@ impl<'a> ApplyRequest<'a> {
     args: &'args ApplyRequestArgs<'args>
   ) -> flatbuffers::WIPOffset<ApplyRequest<'bldr>> {
     let mut builder = ApplyRequestBuilder::new(_fbb);
+    if let Some(x) = args.manifest_id { builder.add_manifest_id(x); }
     if let Some(x) = args.origin_peer { builder.add_origin_peer(x); }
     if let Some(x) = args.manifest_json { builder.add_manifest_json(x); }
     if let Some(x) = args.operation_id { builder.add_operation_id(x); }
@@ -102,6 +104,13 @@ impl<'a> ApplyRequest<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(ApplyRequest::VT_ORIGIN_PEER, None)}
   }
+  #[inline]
+  pub fn manifest_id(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(ApplyRequest::VT_MANIFEST_ID, None)}
+  }
 }
 
 impl flatbuffers::Verifiable for ApplyRequest<'_> {
@@ -116,6 +125,7 @@ impl flatbuffers::Verifiable for ApplyRequest<'_> {
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("operation_id", Self::VT_OPERATION_ID, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_json", Self::VT_MANIFEST_JSON, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("origin_peer", Self::VT_ORIGIN_PEER, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_id", Self::VT_MANIFEST_ID, false)?
      .finish();
     Ok(())
   }
@@ -126,6 +136,7 @@ pub struct ApplyRequestArgs<'a> {
     pub operation_id: Option<flatbuffers::WIPOffset<&'a str>>,
     pub manifest_json: Option<flatbuffers::WIPOffset<&'a str>>,
     pub origin_peer: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub manifest_id: Option<flatbuffers::WIPOffset<&'a str>>,
 }
 impl<'a> Default for ApplyRequestArgs<'a> {
   #[inline]
@@ -136,6 +147,7 @@ impl<'a> Default for ApplyRequestArgs<'a> {
       operation_id: None,
       manifest_json: None,
       origin_peer: None,
+      manifest_id: None,
     }
   }
 }
@@ -166,6 +178,10 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> ApplyRequestBuilder<'a, 'b, A> 
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(ApplyRequest::VT_ORIGIN_PEER, origin_peer);
   }
   #[inline]
+  pub fn add_manifest_id(&mut self, manifest_id: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(ApplyRequest::VT_MANIFEST_ID, manifest_id);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> ApplyRequestBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     ApplyRequestBuilder {
@@ -188,6 +204,7 @@ impl core::fmt::Debug for ApplyRequest<'_> {
       ds.field("operation_id", &self.operation_id());
       ds.field("manifest_json", &self.manifest_json());
       ds.field("origin_peer", &self.origin_peer());
+      ds.field("manifest_id", &self.manifest_id());
       ds.finish()
   }
 }

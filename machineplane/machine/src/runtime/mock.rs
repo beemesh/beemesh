@@ -146,25 +146,73 @@ impl MockEngine {
         format!("mock-{}-{}", manifest_name, manifest_id)
     }
 
+    /// Generate a unique workload ID with peer ID for uniqueness
+    fn generate_workload_id_with_peer(
+        &self,
+        manifest_id: &str,
+        manifest_content: &[u8],
+        peer_id: libp2p::PeerId,
+    ) -> String {
+        let metadata = self.parse_manifest_metadata(manifest_content);
+        let manifest_name = metadata
+            .get("name")
+            .map(|n| n.as_str())
+            .unwrap_or("unnamed");
+        // Use last 12 chars of peer ID for better uniqueness (avoids common 12D3KooW prefix)
+        let peer_str = peer_id.to_string();
+        let peer_short = if peer_str.len() > 12 {
+            peer_str[peer_str.len() - 12..].to_string()
+        } else {
+            peer_str
+        };
+        format!("mock-{}-{}-{}", manifest_name, manifest_id, peer_short)
+    }
+
     /// Parse manifest content to extract metadata (simplified YAML parsing)
     fn parse_manifest_metadata(&self, manifest_content: &[u8]) -> HashMap<String, String> {
         let manifest_str = String::from_utf8_lossy(manifest_content);
         let mut metadata = HashMap::new();
 
-        // Simple parsing - look for common Kubernetes fields
-        for line in manifest_str.lines() {
-            let line = line.trim();
-            if line.starts_with("kind:") {
-                if let Some(value) = line.strip_prefix("kind:").map(|s| s.trim()) {
-                    metadata.insert("kind".to_string(), value.to_string());
+        // Try to parse as JSON first (this is what we're getting from the CLI)
+        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&manifest_str) {
+            // Extract top-level fields
+            if let Some(kind) = json_val.get("kind").and_then(|v| v.as_str()) {
+                metadata.insert("kind".to_string(), kind.to_string());
+            }
+            
+            if let Some(api_version) = json_val.get("apiVersion").and_then(|v| v.as_str()) {
+                metadata.insert("apiVersion".to_string(), api_version.to_string());
+            }
+            
+            // Extract name from metadata object
+            if let Some(meta_obj) = json_val.get("metadata").and_then(|v| v.as_object()) {
+                if let Some(name) = meta_obj.get("name").and_then(|v| v.as_str()) {
+                    metadata.insert("name".to_string(), name.to_string());
                 }
-            } else if line.starts_with("apiVersion:") {
-                if let Some(value) = line.strip_prefix("apiVersion:").map(|s| s.trim()) {
-                    metadata.insert("apiVersion".to_string(), value.to_string());
+                
+                if let Some(namespace) = meta_obj.get("namespace").and_then(|v| v.as_str()) {
+                    metadata.insert("namespace".to_string(), namespace.to_string());
                 }
-            } else if line.starts_with("name:") {
-                if let Some(value) = line.strip_prefix("name:").map(|s| s.trim()) {
-                    metadata.insert("name".to_string(), value.to_string());
+            }
+        } else {
+            // Fallback to YAML parsing for older content
+            for line in manifest_str.lines() {
+                let line = line.trim();
+                if line.starts_with("kind:") {
+                    if let Some(value) = line.strip_prefix("kind:").map(|s| s.trim()) {
+                        metadata.insert("kind".to_string(), value.to_string());
+                    }
+                } else if line.starts_with("apiVersion:") {
+                    if let Some(value) = line.strip_prefix("apiVersion:").map(|s| s.trim()) {
+                        metadata.insert("apiVersion".to_string(), value.to_string());
+                    }
+                } else if line.contains("name:") {
+                    if let Some(name_part) = line.split("name:").nth(1) {
+                        let value = name_part.trim();
+                        if !value.is_empty() {
+                            metadata.insert("name".to_string(), value.to_string());
+                        }
+                    }
                 }
             }
         }
@@ -301,8 +349,8 @@ impl RuntimeEngine for MockEngine {
             ));
         }
 
-        // Generate unique workload ID
-        let workload_id = self.generate_workload_id(manifest_id, manifest_content);
+        // Generate unique workload ID with peer ID for uniqueness
+        let workload_id = self.generate_workload_id_with_peer(manifest_id, manifest_content, local_peer_id);
 
         // Parse manifest metadata
         let mut metadata = self.parse_manifest_metadata(manifest_content);

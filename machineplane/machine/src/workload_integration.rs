@@ -195,16 +195,20 @@ async fn process_manifest_deployment(
     apply_req: &machine::ApplyRequest<'_>,
     manifest_json: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    // Generate manifest ID
-    let manifest_id = generate_manifest_id(apply_req, manifest_json);
-
     info!(
-        "Processing manifest deployment for manifest_id: {}",
-        manifest_id
+        "Processing manifest deployment with encrypted envelope"
     );
 
-    // Decrypt the manifest content
-    let manifest_content = decrypt_manifest_content(manifest_json, &manifest_id).await?;
+    // Decrypt the manifest content first
+    let manifest_content = decrypt_manifest_content(manifest_json, "temp").await?;
+    
+    // Now generate manifest ID from the decrypted content
+    let manifest_id = generate_manifest_id_from_decrypted(apply_req, &manifest_content);
+
+    info!(
+        "Processing manifest deployment for manifest_id: {} (calculated from decrypted content)",
+        manifest_id
+    );
 
     // Create deployment configuration
     let deployment_config = create_deployment_config(apply_req);
@@ -315,19 +319,24 @@ async fn select_runtime_engine(
     Err("No suitable runtime engine available".into())
 }
 
-/// Generate a stable manifest ID from the apply request
-fn generate_manifest_id(apply_req: &machine::ApplyRequest<'_>, manifest_json: &str) -> String {
+/// Generate a stable manifest ID from the apply request using stable identifiers
+fn generate_manifest_id_from_decrypted(apply_req: &machine::ApplyRequest<'_>, manifest_content: &[u8]) -> String {
     let mut hasher = DefaultHasher::new();
 
     if let Some(tenant) = apply_req.tenant() {
         tenant.hash(&mut hasher);
     }
-    if let Some(operation_id) = apply_req.operation_id() {
-        operation_id.hash(&mut hasher);
+    
+    // Extract manifest name from the decrypted content for stability
+    if let Some(name) = protocol::machine::extract_manifest_name(manifest_content) {
+        debug!("generate_manifest_id_from_decrypted: found manifest name: {}", name);
+        name.hash(&mut hasher);
+    } else {
+        debug!("generate_manifest_id_from_decrypted: no manifest name found, using content hash");
+        manifest_content.hash(&mut hasher);
     }
-    manifest_json.hash(&mut hasher);
 
-    format!("{:x}", hasher.finish())
+    format!("{:x}", hasher.finish())[..16].to_string()
 }
 
 /// Decrypt manifest content from the encrypted envelope

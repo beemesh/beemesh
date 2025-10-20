@@ -333,18 +333,21 @@ pub mod machine {
         operation_id: &str,
         manifest_json: &str,
         origin_peer: &str,
+        manifest_id: &str,
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(256);
         let tenant_off = fbb.create_string(tenant);
         let op_off = fbb.create_string(operation_id);
         let manifest_off = fbb.create_string(manifest_json);
         let origin_off = fbb.create_string(origin_peer);
+        let manifest_id_off = fbb.create_string(manifest_id);
         let mut args: crate::generated::generated_apply_request::beemesh::machine::ApplyRequestArgs = Default::default();
         args.replicas = replicas;
         args.tenant = Some(tenant_off);
         args.operation_id = Some(op_off);
         args.manifest_json = Some(manifest_off);
         args.origin_peer = Some(origin_off);
+        args.manifest_id = Some(manifest_id_off);
         let off = crate::generated::generated_apply_request::beemesh::machine::ApplyRequest::create(
             &mut fbb, &args,
         );
@@ -941,10 +944,11 @@ pub mod machine {
     // Extract manifest name from manifest data
     pub fn extract_manifest_name(manifest_data: &[u8]) -> Option<String> {
         let manifest_str = std::str::from_utf8(manifest_data).ok()?;
-        // Simple YAML parsing - look for name field
+        // YAML parsing - look for name field (can be indented)
         for line in manifest_str.lines() {
-            if line.trim().starts_with("name:") {
-                return line.split(':').nth(1).map(|s| s.trim().to_string());
+            let trimmed = line.trim();
+            if trimmed.starts_with("name:") {
+                return trimmed.split(':').nth(1).map(|s| s.trim().to_string());
             }
         }
         None

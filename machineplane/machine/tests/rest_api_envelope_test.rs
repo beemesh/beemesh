@@ -27,6 +27,7 @@ fn test_apply_request_flatbuffer_envelope() {
         "apply-op-123",              // operation_id
         "apiVersion: v1\nkind: Pod", // manifest_json (YAML as string)
         "origin-peer-id",            // origin_peer
+        "test-manifest-id",          // manifest_id
     );
 
     let payload_type = "apply_request";

@@ -330,9 +330,15 @@ pub async fn create_task(
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         tenant.hash(&mut hasher);
-        operation_id.hash(&mut hasher);
-        payload_bytes_for_parsing.hash(&mut hasher);
-        let manifest_id = format!("{:x}", hasher.finish());
+        
+        // Use stable manifest name instead of operation_id for consistent hashing
+        if let Some(name) = protocol::machine::extract_manifest_name(&payload_bytes_for_parsing) {
+            name.hash(&mut hasher);
+        } else {
+            // Fallback to content hash if no name found
+            payload_bytes_for_parsing.hash(&mut hasher);
+        }
+        let manifest_id = format!("{:x}", hasher.finish())[..16].to_string();
         (manifest_id, operation_id.clone())
     } else {
         // Fallback: use a UUID for task_id but also generate manifest_id from content
@@ -341,9 +347,15 @@ pub async fn create_task(
         let operation_id = uuid::Uuid::new_v4().to_string();
         let mut hasher = DefaultHasher::new();
         tenant.hash(&mut hasher);
-        operation_id.hash(&mut hasher);
-        payload_bytes_for_parsing.hash(&mut hasher);
-        let manifest_id = format!("{:x}", hasher.finish());
+        
+        // Use stable manifest name instead of operation_id for consistent hashing
+        if let Some(name) = protocol::machine::extract_manifest_name(&payload_bytes_for_parsing) {
+            name.hash(&mut hasher);
+        } else {
+            // Fallback to content hash if no name found
+            payload_bytes_for_parsing.hash(&mut hasher);
+        }
+        let manifest_id = format!("{:x}", hasher.finish())[..16].to_string();
         (manifest_id, operation_id)
     };
 
@@ -661,6 +673,23 @@ async fn debug_workloads_by_peer(
                     let mut workloads_json = serde_json::Map::new();
 
                     for workload in &peer_workloads {
+                        let exported_manifest = match mock_engine.export_manifest(&workload.info.id).await {
+                            Ok(manifest_bytes) => {
+                                // Convert bytes to string for consistency with other endpoints
+                                match String::from_utf8(manifest_bytes) {
+                                    Ok(manifest_str) => Some(manifest_str),
+                                    Err(e) => {
+                                        log::warn!("Failed to convert manifest bytes to string for workload {}: {}", workload.info.id, e);
+                                        None
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                log::warn!("Failed to export manifest for workload {}: {}", workload.info.id, e);
+                                None
+                            }
+                        };
+
                         workloads_json.insert(
                             workload.info.id.clone(),
                             serde_json::json!({
@@ -672,6 +701,7 @@ async fn debug_workloads_by_peer(
                                 "updated_at": workload.info.updated_at.duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default().as_secs(),
                                 "ports": workload.info.ports,
+                                "exported_manifest": exported_manifest,
                             })
                         );
                     }

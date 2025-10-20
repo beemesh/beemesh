@@ -6,6 +6,7 @@ table ApplyRequest {
   operation_id:string;
   manifest_json:string;
   origin_peer:string;
+  manifest_id:string;
 }
 
 root_type ApplyRequest;
