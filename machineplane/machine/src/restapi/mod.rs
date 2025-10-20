@@ -9,11 +9,9 @@ use axum::{
 use base64::Engine;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
-use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
 use protocol::libp2p_constants::{
     FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS,
 };
-use protocol::machine::root_as_assign_request;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -151,12 +149,12 @@ pub fn build_router(
             get(get_task_manifest_id),
         )
         .route("/tenant/{tenant}/tasks", post(create_task))
-        .route("/tenant/{tenant}/tasks/{task_id}/assign", post(assign_task))
         .route("/tenant/{tenant}/tasks/{task_id}", get(get_task_status))
         .route(
             "/tenant/{tenant}/tasks/{task_id}/candidates",
             post(get_candidates),
         )
+        .route("/tenant/{tenant}/apply_direct/{peer_id}", post(apply_direct))
         .route("/tenant/{tenant}/nodes", get(get_nodes))
         // Add envelope middleware to decrypt incoming requests and extract peer keys
         .layer(middleware::from_fn_with_state(
@@ -170,6 +168,7 @@ pub fn build_router(
 pub async fn get_candidates(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
+    Extension(envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
     _headers: HeaderMap,
     _body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
@@ -225,7 +224,7 @@ pub async fn get_candidates(
                 break;
             }
             Err(_) => {
-                log::warn!("get_candidates: timeout waiting for responses");
+                log::info!("get_candidates: reached timeout waiting for responses, got {} responders", responders.len());
                 break;
             }
         }
@@ -263,8 +262,21 @@ pub async fn get_candidates(
     }
 
     let response_data = protocol::machine::build_candidates_response_with_keys(true, &candidates);
-    // No envelope metadata available, return unencrypted response
-    create_response_with_fallback(&response_data).await
+    
+    // Use KEM key from envelope metadata for secure response encryption if available
+    if !envelope_metadata.kem_pubkey.is_empty() {
+        create_encrypted_response_with_key(
+            &state.envelope_handler,
+            &response_data,
+            "candidates_response",
+            envelope_metadata.peer_id.as_deref(),
+            &envelope_metadata.kem_pubkey,
+        )
+        .await
+    } else {
+        // No KEM key in metadata, return unencrypted response
+        create_response_with_fallback(&response_data).await
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -813,242 +825,6 @@ async fn get_task_manifest_id(
     create_response_with_fallback(response_str.as_bytes()).await
 }
 
-pub async fn assign_task(
-    Path((_tenant, task_id)): Path<(String, String)>,
-    State(state): State<RestState>,
-    _headers: HeaderMap,
-    Extension(envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
-    body: Bytes,
-) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    debug!("assign_task: parsing decrypted payload from envelope middleware");
-
-    // The envelope middleware has already decrypted the payload for us
-    // We receive the inner AssignRequest flatbuffer directly
-    let decrypted_payload = body.to_vec();
-
-    // Try to parse as AssignRequest
-    let assign_request = match root_as_assign_request(&decrypted_payload) {
-        Ok(req) => req,
-        Err(e) => {
-            log::warn!("assign_task: failed to parse AssignRequest: {:?}", e);
-            let error_response =
-                protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-            return if !envelope_metadata.kem_pubkey.is_empty() {
-                create_encrypted_response_with_key(
-                    &state.envelope_handler,
-                    &error_response,
-                    "assign_response",
-                    envelope_metadata.peer_id.as_deref(),
-                    &envelope_metadata.kem_pubkey,
-                )
-                .await
-            } else {
-                create_response_with_fallback(&error_response).await
-            };
-        }
-    };
-
-    // lookup task
-    let maybe = { state.task_store.read().await.get(&task_id).cloned() };
-    let task = match maybe {
-        Some(t) => t,
-        None => {
-            let error_response =
-                protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-            return if !envelope_metadata.kem_pubkey.is_empty() {
-                create_encrypted_response_with_key(
-                    &state.envelope_handler,
-                    &error_response,
-                    "assign_response",
-                    envelope_metadata.peer_id.as_deref(),
-                    &envelope_metadata.kem_pubkey,
-                )
-                .await
-            } else {
-                create_response_with_fallback(&error_response).await
-            };
-        }
-    };
-
-    // Build capacity request and collect responders (reuse existing logic from apply_manifest)
-    // For now, default to 1 replica for all manifests
-    // TODO: Parse actual replicas from decrypted manifest if needed
-    let replicas = 1usize;
-
-    let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
-    let capacity_fb = protocol::machine::build_capacity_request(
-        500u32,
-        512u64 * 1024 * 1024,
-        10u64 * 1024 * 1024 * 1024,
-        replicas as u32,
-    );
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
-    let _ = state.control_tx.send(
-        crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
-            request_id: request_id.clone(),
-            reply_tx: reply_tx.clone(),
-            payload: capacity_fb,
-        },
-    );
-
-    let mut responders: Vec<String> = Vec::new();
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS) {
-        let remaining =
-            Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS).saturating_sub(start.elapsed());
-        match tokio::time::timeout(remaining, reply_rx.recv()).await {
-            Ok(Some(peer)) => {
-                if !responders.contains(&peer) {
-                    responders.push(peer);
-                }
-                if responders.len() >= replicas {
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-
-    let assigned: Vec<String> = if let Some(chosen_peers) = assign_request.chosen_peers() {
-        let peers = chosen_peers
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
-        log::info!(
-            "assign_task: using {} chosen_peers from client",
-            peers.len()
-        );
-        peers
-    } else {
-        log::info!(
-            "assign_task: using {} responders from capacity query",
-            responders.len()
-        );
-        responders.into_iter().take(replicas).collect()
-    };
-    if assigned.is_empty() {
-        log::warn!("assign_task: no peers assigned, returning error response");
-        let error_response = protocol::machine::build_assign_response(false, &task_id, &[], &[]);
-        return if !envelope_metadata.kem_pubkey.is_empty() {
-            create_encrypted_response_with_key(
-                &state.envelope_handler,
-                &error_response,
-                "assign_response",
-                envelope_metadata.peer_id.as_deref(),
-                &envelope_metadata.kem_pubkey,
-            )
-            .await
-        } else {
-            create_response_with_fallback(&error_response).await
-        };
-    }
-
-    let mut per_peer_results: Vec<(String, String)> = Vec::new();
-    // dispatch manifest to each assigned peer by creating a FlatBuffer ApplyRequest and
-    // sending it via Libp2pControl::SendApplyRequest (bytes)
-    for peer in &assigned {
-        match peer.parse::<libp2p::PeerId>() {
-            Ok(peer_id) => {
-                // build apply_request flatbuffer bytes
-                let operation_id = uuid::Uuid::new_v4().to_string();
-                // record operation id on the task for manifest id computation
-                {
-                    let mut store = state.task_store.write().await;
-                    if let Some(r) = store.get_mut(&task_id) {
-                        r.last_operation_id = Some(operation_id.clone());
-                        // Store the mapping of operation_id -> manifest_cid for consistent apply processing
-                        if let Some(manifest_cid) = &r.manifest_cid {
-                            store_operation_manifest_mapping(&operation_id, manifest_cid).await;
-                            log::info!(
-                                "assign_task: stored operation_id={} -> manifest_cid={}",
-                                operation_id,
-                                manifest_cid
-                            );
-                        } else {
-                            log::warn!(
-                                "assign_task: no manifest_cid available for task {}",
-                                task_id
-                            );
-                        }
-                    }
-                }
-                // The task.manifest_bytes contains the envelope bytes (already properly formatted)
-                // We need to base64-encode them for the ApplyRequest flatbuffer
-                let manifest_json =
-                    base64::engine::general_purpose::STANDARD.encode(&task.manifest_bytes);
-                let local_peer = state
-                    .peer_rx
-                    .borrow()
-                    .get(0)
-                    .cloned()
-                    .unwrap_or_else(|| "".to_string());
-                let apply_fb = protocol::machine::build_apply_request(
-                    replicas as u32,
-                    &_tenant,
-                    &operation_id,
-                    &manifest_json,
-                    &local_peer,
-                );
-
-                let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
-                let _ = state.control_tx.send(
-                    crate::libp2p_beemesh::control::Libp2pControl::SendApplyRequest {
-                        peer_id,
-                        manifest: apply_fb,
-                        reply_tx,
-                    },
-                );
-
-                // wait for response
-                match tokio::time::timeout(
-                    Duration::from_secs(REQUEST_RESPONSE_TIMEOUT_SECS),
-                    reply_rx.recv(),
-                )
-                .await
-                {
-                    Ok(Some(Ok(_msg))) => {
-                        per_peer_results.push((peer.clone(), "ok".to_string()));
-                    }
-                    Ok(Some(Err(e))) => {
-                        per_peer_results.push((peer.clone(), format!("error: {}", e)));
-                    }
-                    _ => {
-                        per_peer_results.push((peer.clone(), "timeout".to_string()));
-                    }
-                }
-            }
-            Err(e) => {
-                per_peer_results.push((peer.clone(), format!("invalid peer id: {}", e)));
-            }
-        }
-    }
-
-    // update task record
-    {
-        let mut store = state.task_store.write().await;
-        if let Some(r) = store.get_mut(&task_id) {
-            r.assigned_peers = Some(assigned.clone());
-        }
-    }
-
-    let response_data =
-        protocol::machine::build_assign_response(true, &task_id, &assigned, &per_peer_results);
-    
-    // Use KEM key directly from envelope metadata for secure response encryption
-    if !envelope_metadata.kem_pubkey.is_empty() {
-        create_encrypted_response_with_key(
-            &state.envelope_handler,
-            &response_data,
-            "assign_response",
-            envelope_metadata.peer_id.as_deref(),
-            &envelope_metadata.kem_pubkey,
-        )
-        .await
-    } else {
-        // No KEM key in metadata, return unencrypted response
-        create_response_with_fallback(&response_data).await
-    }
-}
 
 pub async fn get_task_status(
     Path((_tenant, task_id)): Path<(String, String)>,
@@ -1076,4 +852,70 @@ pub async fn get_task_status(
     }
     let error_response = protocol::machine::build_task_status_response("", "Error", &[], &[], None);
     create_response_with_fallback(&error_response).await
+}
+
+/// Forward an ApplyRequest directly to a specific peer via libp2p
+/// This bypasses centralized task storage and forwards the request directly
+pub async fn apply_direct(
+    Path((_tenant, peer_id)): Path<(String, String)>,
+    State(state): State<RestState>,
+    _headers: HeaderMap,
+    Extension(_envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
+    body: Bytes,
+) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
+    debug!("apply_direct: forwarding ApplyRequest to peer {}", peer_id);
+
+    // The envelope middleware has already decrypted the payload for us
+    let apply_request_bytes = body.to_vec();
+
+    // Parse the peer string into a PeerId
+    let target_peer_id: libp2p::PeerId = match peer_id.parse() {
+        Ok(id) => id,
+        Err(e) => {
+            log::warn!("apply_direct: invalid peer ID '{}': {}", peer_id, e);
+            let error_response = protocol::machine::build_apply_response(
+                false,
+                "unknown",
+                &format!("Invalid peer ID: {}", e),
+            );
+            return create_response_with_fallback(&error_response).await;
+        }
+    };
+
+    // Forward the ApplyRequest directly to the peer via libp2p
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
+    if let Err(e) = state.control_tx.send(
+        crate::libp2p_beemesh::control::Libp2pControl::SendApplyRequest {
+            peer_id: target_peer_id,
+            manifest: apply_request_bytes,
+            reply_tx,
+        },
+    ) {
+        log::error!("apply_direct: failed to send to libp2p control: {}", e);
+        let error_response = protocol::machine::build_apply_response(
+            false,
+            "unknown",
+            "Failed to forward request to libp2p",
+        );
+        return create_response_with_fallback(&error_response).await;
+    }
+
+    // Wait for response with timeout
+    let result = match tokio::time::timeout(Duration::from_secs(30), reply_rx.recv()).await {
+        Ok(Some(Ok(_msg))) => {
+            debug!("apply_direct: success for peer {}", peer_id);
+            protocol::machine::build_apply_response(true, "forwarded", "Request forwarded successfully")
+        }
+        Ok(Some(Err(e))) => {
+            log::warn!("apply_direct: error for peer {}: {}", peer_id, e);
+            protocol::machine::build_apply_response(false, "forwarded", &format!("Forward failed: {}", e))
+        }
+        _ => {
+            log::warn!("apply_direct: timeout for peer {}", peer_id);
+            protocol::machine::build_apply_response(false, "forwarded", "Timeout waiting for peer response")
+        }
+    };
+
+    // Return response (simplified - no encryption needed for this case)
+    create_response_with_fallback(&result).await
 }

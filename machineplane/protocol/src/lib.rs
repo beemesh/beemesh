@@ -104,20 +104,7 @@ mod generated {
         ));
     }
 
-    pub mod generated_assign_request {
-        #![allow(
-            dead_code,
-            non_camel_case_types,
-            non_snake_case,
-            unused_imports,
-            unused_variables,
-            mismatched_lifetime_syntaxes
-        )]
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/generated/assign_request_generated.rs"
-        ));
-    }
+
 
     pub mod generated_nodes_response {
         #![allow(
@@ -179,20 +166,7 @@ mod generated {
         ));
     }
 
-    pub mod generated_assign_response {
-        #![allow(
-            dead_code,
-            non_camel_case_types,
-            non_snake_case,
-            unused_imports,
-            unused_variables,
-            mismatched_lifetime_syntaxes
-        )]
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/generated/assign_response_generated.rs"
-        ));
-    }
+
 
     pub mod generated_applied_manifest {
         #![allow(
@@ -226,8 +200,7 @@ pub mod machine {
     pub use crate::generated::generated_apply_response::beemesh::machine::{
         root_as_apply_response, ApplyResponse,
     };
-    pub use crate::generated::generated_assign_request::beemesh::machine::root_as_assign_request;
-    pub use crate::generated::generated_assign_response::beemesh::machine::root_as_assign_response;
+
     pub use crate::generated::generated_candidates_response::beemesh::machine::root_as_candidates_response;
     pub use crate::generated::generated_capacity_reply::beemesh::machine::CapacityReplyArgs;
     pub use crate::generated::generated_capacity_request::beemesh::machine::CapacityRequestArgs;
@@ -244,13 +217,7 @@ pub mod machine {
         finish_envelope_buffer, EnvelopeArgs,
     };
 
-    // Assign types
-    pub use crate::generated::generated_assign_request::beemesh::machine::{
-        AssignRequest, AssignRequestArgs,
-    };
-    pub use crate::generated::generated_assign_response::beemesh::machine::{
-        AssignResponse, AssignResponseArgs,
-    };
+
 
     // Nodes response
     pub use crate::generated::generated_nodes_response::beemesh::machine::{
@@ -731,24 +698,7 @@ pub mod machine {
         (peer_id.to_string(), payload_json.to_string())
     }
 
-    pub fn build_assign_request(chosen_peers: &[String]) -> Vec<u8> {
-        let mut fbb = FlatBufferBuilder::with_capacity(512);
 
-        // Create vector of peer ID strings
-        let peer_offsets: Vec<_> = chosen_peers
-            .iter()
-            .map(|peer_id| fbb.create_string(peer_id))
-            .collect();
-        let peers_offset = fbb.create_vector(&peer_offsets);
-
-        let args = AssignRequestArgs {
-            chosen_peers: Some(peers_offset),
-        };
-
-        let request = AssignRequest::create(&mut fbb, &args);
-        fbb.finish(request, None);
-        fbb.finished_data().to_vec()
-    }
 
     pub fn build_nodes_response(peers: &[String]) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(512);
@@ -868,43 +818,7 @@ pub mod machine {
         fbb.finished_data().to_vec()
     }
 
-    pub fn build_assign_response(
-        ok: bool,
-        task_id: &str,
-        assigned_peers: &[String],
-        per_peer_results: &[(String, String)],
-    ) -> Vec<u8> {
-        let mut fbb = FlatBufferBuilder::with_capacity(512);
-        let task_id_off = fbb.create_string(task_id);
 
-        let assigned_strings: Vec<_> = assigned_peers
-            .iter()
-            .map(|p| fbb.create_string(p))
-            .collect();
-        let assigned_vector = fbb.create_vector(&assigned_strings);
-
-        let per_peer_json = serde_json::to_string(
-            &per_peer_results
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect::<std::collections::HashMap<_, _>>(),
-        )
-        .unwrap_or_default();
-        let per_peer_off = fbb.create_string(&per_peer_json);
-
-        let assign_response =
-            crate::generated::generated_assign_response::beemesh::machine::AssignResponse::create(
-                &mut fbb,
-                &crate::generated::generated_assign_response::beemesh::machine::AssignResponseArgs {
-                    ok,
-                    task_id: Some(task_id_off),
-                    assigned_peers: Some(assigned_vector),
-                    per_peer_results_json: Some(per_peer_off),
-                },
-            );
-        fbb.finish(assign_response, None);
-        fbb.finished_data().to_vec()
-    }
 
     /// Create an encrypted envelope with hybrid encryption (KEM + AES-GCM)
     pub fn build_encrypted_envelope(

@@ -1,12 +1,11 @@
 use anyhow::Result;
 use base64::Engine;
-use protocol::machine::{self};
 use rand;
 use serde_json::Value as JsonValue;
 
 /// Convert JSON requests into flatbuffer payloads for direct communication with the machine
 pub struct FlatbufferClient {
-    base_url: String,
+    pub base_url: String,
     client: reqwest::Client,
     /// CLI's private key for decryption (signing key private bytes)
     private_key: Vec<u8>,
@@ -198,7 +197,7 @@ impl FlatbufferClient {
     }
 
     /// Send an encrypted flatbuffer request
-    async fn send_encrypted_request(
+    pub async fn send_encrypted_request(
         &self,
         url: &str,
         payload: &[u8],
@@ -499,60 +498,5 @@ impl FlatbufferClient {
         }
     }
 
-    /// Assign task using flatbuffer apply request
-    pub async fn assign_task(
-        &self,
-        tenant: &str,
-        task_id: &str,
-        chosen_peers: Vec<String>,
-    ) -> Result<JsonValue> {
-        log::info!(
-            "assign_task called with tenant={}, task_id={}, chosen_peers={:?}",
-            tenant,
-            task_id,
-            chosen_peers
-        );
 
-        // Create flatbuffer request
-        let flatbuffer_data = machine::build_assign_request(&chosen_peers);
-
-        let url = format!(
-            "{}/tenant/{}/tasks/{}/assign",
-            self.base_url.trim_end_matches('/'),
-            tenant,
-            task_id
-        );
-
-        let response_bytes = self
-            .send_encrypted_request(&url, &flatbuffer_data, "assign_request")
-            .await?;
-
-        log::info!(
-            "assign_task response_bytes length: {}",
-            response_bytes.len()
-        );
-        log::info!(
-            "assign_task response_bytes preview: {:?}",
-            &response_bytes[..std::cmp::min(50, response_bytes.len())]
-        );
-
-        // Try to parse as flatbuffer AssignResponse first
-        let assign_response = protocol::machine::root_as_assign_response(&response_bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to parse AssignResponse: {}", e))?;
-
-        let assigned_peers: Vec<String> = assign_response
-            .assigned_peers()
-            .map(|v| v.iter().map(|s| s.to_string()).collect())
-            .unwrap_or_default();
-        let per_peer_json = assign_response.per_peer_results_json().unwrap_or("{}");
-        let per_peer: JsonValue =
-            serde_json::from_str(per_peer_json).unwrap_or(serde_json::json!({}));
-
-        Ok(serde_json::json!({
-            "ok": assign_response.ok(),
-            "task_id": assign_response.task_id().unwrap_or(""),
-            "assigned_peers": assigned_peers,
-            "per_peer": per_peer
-        }))
-    }
 }

@@ -81,6 +81,41 @@ async fn get_peer_ids(
     port_to_peer_id
 }
 
+async fn wait_for_mesh_formation(client: &reqwest::Client, ports: &[u16], timeout: Duration) -> bool {
+    let start = tokio::time::Instant::now();
+    loop {
+        // Check if we have at least 2 peers in the mesh
+        let mut total_peers = 0;
+        for &port in ports {
+            let base = format!("http://127.0.0.1:{}", port);
+            if let Ok(resp) = client
+                .get(format!("{}/debug/peers", base))
+                .send()
+                .await
+            {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(peers_array) = json.get("peers").and_then(|p| p.as_array()) {
+                        total_peers += peers_array.len();
+                    }
+                }
+            }
+        }
+        
+        // We need at least some peer connections for the mesh to work
+        if total_peers >= 2 {
+            log::info!("Mesh formation successful: {} total peer connections", total_peers);
+            return true;
+        }
+        
+        if start.elapsed() > timeout {
+            log::warn!("Mesh formation timed out after {:?}, only {} peer connections", timeout, total_peers);
+            return false;
+        }
+        
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 async fn check_workload_deployment(
     client: &reqwest::Client,
     ports: &[u16],
@@ -227,7 +262,12 @@ async fn test_apply_functionality() {
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_test_nodes().await;
 
+    // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
+    let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(15)).await;
+    if !mesh_formed {
+        log::warn!("Mesh formation incomplete, but proceeding with test");
+    }
 
     // Resolve manifest path relative to this test crate's manifest dir so it's robust under cargo test
     let manifest_path = PathBuf::from(format!(
@@ -244,52 +284,8 @@ async fn test_apply_functionality() {
         .await
         .expect("apply_file should succeed");
 
-    sleep(Duration::from_secs(3)).await;
-
-    // Check which nodes have the assigned task using debug endpoints first
-    let task_assignment_tasks = ports.iter().map(|&port| {
-        let client = client.clone();
-        let task_id = task_id.clone();
-        async move {
-            let base = format!("http://127.0.0.1:{}", port);
-            let mut has_task = false;
-
-            // Check if this node has the task assigned
-            let resp = client.get(format!("{}/debug/tasks", base)).send().await;
-            if let Ok(r) = resp {
-                if let Ok(j) = r.json::<serde_json::Value>().await {
-                    if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                        if let Some(tasks) = j.get("tasks").and_then(|v| v.as_object()) {
-                            if tasks.contains_key(&task_id) {
-                                has_task = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            (port, has_task)
-        }
-    });
-
-    // Execute all task assignment checks in parallel
-    let assignment_results = join_all(task_assignment_tasks).await;
-    let mut nodes_with_assigned_tasks: Vec<u16> = Vec::new();
-
-    for (port, has_task) in assignment_results {
-        if has_task {
-            nodes_with_assigned_tasks.push(port);
-        }
-    }
-
-    // Verify at least one node got the task assignment
-    assert!(
-        !nodes_with_assigned_tasks.is_empty(),
-        "No nodes have the assigned task - direct delivery failed"
-    );
-
-    // Wait a bit longer for deployment to complete
-    sleep(Duration::from_secs(3)).await;
+    // Wait for direct delivery and deployment to complete
+    sleep(Duration::from_secs(6)).await;
 
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;
@@ -362,51 +358,8 @@ async fn test_apply_with_real_podman() {
         .await
         .expect("apply_file should succeed with real Podman");
 
-    sleep(Duration::from_secs(5)).await;
-
-    // Check which nodes have the assigned task using debug endpoints first
-    let task_assignment_tasks = ports.iter().map(|&port| {
-        let client = client.clone();
-        let task_id = task_id.clone();
-        async move {
-            let base = format!("http://127.0.0.1:{}", port);
-            let mut has_task = false;
-
-            // Check if this node has the task assigned
-            let resp = client.get(format!("{}/debug/tasks", base)).send().await;
-            if let Ok(r) = resp {
-                if let Ok(j) = r.json::<serde_json::Value>().await {
-                    if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                        if let Some(tasks) = j.get("tasks").and_then(|v| v.as_object()) {
-                            if tasks.contains_key(&task_id) {
-                                has_task = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            (port, has_task)
-        }
-    });
-
-    let assignment_results = join_all(task_assignment_tasks).await;
-    let mut nodes_with_assigned_tasks: Vec<u16> = Vec::new();
-
-    for (port, has_task) in assignment_results {
-        if has_task {
-            nodes_with_assigned_tasks.push(port);
-        }
-    }
-
-    // Verify at least one node got the task assignment
-    assert!(
-        !nodes_with_assigned_tasks.is_empty(),
-        "No nodes have the assigned task - direct delivery failed"
-    );
-
-    // Wait for Podman deployment to complete (longer timeout for real containers)
-    sleep(Duration::from_secs(10)).await;
+    // Wait for direct delivery and Podman deployment to complete (longer timeout for real containers)
+    sleep(Duration::from_secs(15)).await;
 
     // Verify actual Podman deployment
     let podman_verification_successful = verify_podman_deployment(&task_id, &original_content).await;
@@ -429,7 +382,12 @@ async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_test_nodes().await;
 
+    // Wait for libp2p mesh to form before proceeding  
     sleep(Duration::from_secs(3)).await;
+    let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(15)).await;
+    if !mesh_formed {
+        log::warn!("Mesh formation incomplete, but proceeding with test");
+    }
 
     // Resolve manifest path for nginx with replicas
     let manifest_path = PathBuf::from(format!(
@@ -446,52 +404,8 @@ async fn test_apply_nginx_with_replicas() {
         .await
         .expect("apply_file should succeed for nginx_with_replicas");
 
-    sleep(Duration::from_secs(5)).await;
-
-    // Check which nodes have the assigned task using debug endpoints first
-    let task_assignment_tasks = ports.iter().map(|&port| {
-        let client = client.clone();
-        let task_id = task_id.clone();
-        async move {
-            let base = format!("http://127.0.0.1:{}", port);
-            let mut has_task = false;
-
-            // Check if this node has the task assigned
-            let resp = client.get(format!("{}/debug/tasks", base)).send().await;
-            if let Ok(r) = resp {
-                if let Ok(j) = r.json::<serde_json::Value>().await {
-                    if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                        if let Some(tasks) = j.get("tasks").and_then(|v| v.as_object()) {
-                            if tasks.contains_key(&task_id) {
-                                has_task = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            (port, has_task)
-        }
-    });
-
-    // Execute all task assignment checks in parallel
-    let assignment_results = join_all(task_assignment_tasks).await;
-    let mut nodes_with_assigned_tasks: Vec<u16> = Vec::new();
-
-    for (port, has_task) in assignment_results {
-        if has_task {
-            nodes_with_assigned_tasks.push(port);
-        }
-    }
-
-    // Verify at least one node got the task assignment
-    assert!(
-        !nodes_with_assigned_tasks.is_empty(),
-        "No nodes have the assigned task - direct delivery failed"
-    );
-
-    // Wait a bit longer for deployment to complete
-    sleep(Duration::from_secs(3)).await;
+    // Wait for direct delivery and deployment to complete
+    sleep(Duration::from_secs(8)).await;
 
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;

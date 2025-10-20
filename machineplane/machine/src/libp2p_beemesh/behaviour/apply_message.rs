@@ -304,27 +304,16 @@ pub fn process_self_apply_request(
                     operation_id_s.as_deref(),
                     manifest_json_s.as_deref(),
                 ) {
-                    // Try to get the stored manifest_cid for this operation_id
-                    let manifest_id = if let Some(stored_cid) =
-                        crate::restapi::get_manifest_cid_for_operation(operation_id).await
-                    {
-                        log::debug!(
-                            "libp2p: self-apply using stored manifest_cid={} for operation_id={}",
-                            stored_cid,
-                            operation_id
-                        );
-                        stored_cid
-                    } else {
-                        // Fallback to calculation (for backwards compatibility)
-                        let mut hasher = DefaultHasher::new();
-                        tenant.hash(&mut hasher);
-                        operation_id.hash(&mut hasher);
-                        manifest_json.hash(&mut hasher);
-                        let calculated_id = format!("{:x}", hasher.finish());
-                        log::warn!("libp2p: self-apply calculated fallback manifest_id={} from tenant='{}' operation_id='{}' manifest_json_len={}",
-                                  calculated_id, tenant, operation_id, manifest_json.len());
-                        calculated_id
-                    };
+                    // Calculate manifest_id deterministically from the request content
+                    let mut hasher = DefaultHasher::new();
+                    tenant.hash(&mut hasher);
+                    operation_id.hash(&mut hasher);
+                    manifest_json.hash(&mut hasher);
+                    let manifest_id = format!("{:x}", hasher.finish());
+                    log::debug!(
+                        "libp2p: self-apply calculated manifest_id={} from tenant='{}' operation_id='{}' manifest_json_len={}",
+                        manifest_id, tenant, operation_id, manifest_json.len()
+                    );
 
                     log::debug!(
                         "libp2p: self-apply triggering decryption for manifest_id={}",

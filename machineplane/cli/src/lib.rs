@@ -4,6 +4,7 @@ use log::debug;
 use log::error;
 use log::info;
 use scheduler::{NodeCandidate, NodeCapabilities, Scheduler, SchedulerConfig, SchedulingStrategy};
+use uuid::Uuid;
 
 use serde_json::Value as JsonValue;
 use serde_yaml;
@@ -225,40 +226,45 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
             None, // pubkey
         );
 
-        // 4) Create task with base manifest_id so nodes announce the same ID to DHT
+        // 4) Send ApplyRequest directly to the target peer via the forwarding endpoint
         debug!(
-            "Creating task for node {} with base manifest_id {} for DHT consistency",
+            "Sending ApplyRequest directly to node {} with manifest_id {}",
             node_id, manifest_id
         );
-        let create_resp = fb_client
-            .create_task(
-                tenant,
-                &encrypted_manifest_bytes,
-                Some(manifest_id.clone()),
-                None,
-            )
-            .await?;
-        debug!("Task created for node {}: {:?}", node_id, create_resp);
-
-        // 5) Assign this specific task to its intended recipient node only
-        let chosen_peers = vec![node_id.clone()];
-        debug!(
-            "Assigning task {} to specific node: {}",
-            manifest_id, node_id
+        
+        // Build ApplyRequest with the encrypted manifest
+        let operation_id = Uuid::new_v4().to_string();
+        let manifest_json_b64 = base64::engine::general_purpose::STANDARD.encode(&encrypted_manifest_bytes);
+        
+        let apply_request_bytes = protocol::machine::build_apply_request(
+            1, // replicas (1 per target peer)
+            tenant,
+            &operation_id,
+            &manifest_json_b64,
+            "", // origin_peer (CLI doesn't have peer ID)
         );
-
-        let assign_resp = fb_client
-            .assign_task(tenant, &manifest_id, chosen_peers)
+        
+        // Send via the apply_direct endpoint which forwards to the peer
+        let url = format!(
+            "{}/tenant/{}/apply_direct/{}",
+            fb_client.base_url.trim_end_matches('/'),
+            tenant,
+            node_id
+        );
+        
+        let response_bytes = fb_client
+            .send_encrypted_request(&url, &apply_request_bytes, "apply_request")
             .await?;
-        debug!("Task assigned to node {}: {:?}", node_id, assign_resp);
-
-        let ok = assign_resp
-            .get("ok")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !ok {
-            anyhow::bail!("assign failed for node {}", node_id);
+            
+        // Parse response as ApplyResponse
+        let apply_response = protocol::machine::root_as_apply_response(&response_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse ApplyResponse: {}", e))?;
+            
+        if !apply_response.ok() {
+            anyhow::bail!("Direct apply failed for node {}: {}", node_id, apply_response.message().unwrap_or("unknown error"));
         }
+        
+        debug!("Direct apply successful for node {}", node_id);
 
         created_task_ids.push(manifest_id.clone());
 

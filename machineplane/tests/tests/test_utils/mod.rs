@@ -12,12 +12,17 @@ static CLEANUP_HOOK_INIT: Once = Once::new();
 pub struct NodeGuard {
     pub handles: Vec<JoinHandle<()>>, // spawned background tasks for in-process nodes
     pub processes: Vec<Child>,        // spawned processes for separate-process nodes
+    cleaned_up: bool,                 // track if cleanup was already called
 }
 
 #[cfg(test)]
 impl NodeGuard {
     #[allow(dead_code)]
     pub async fn cleanup(&mut self) {
+        if self.cleaned_up {
+            return; // Already cleaned up
+        }
+        
         // best-effort abort all handles
         for h in self.handles.drain(..) {
             let _ = h.abort();
@@ -27,11 +32,17 @@ impl NodeGuard {
         for mut process in self.processes.drain(..) {
             let _ = process.kill().await;
         }
+        
+        self.cleaned_up = true;
     }
 }
 
 impl Drop for NodeGuard {
     fn drop(&mut self) {
+        if self.cleaned_up {
+            return; // Already cleaned up properly
+        }
+        
         eprintln!("NodeGuard::drop() - Running emergency cleanup");
 
         // Abort async handles (synchronous)
@@ -85,6 +96,7 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
     let mut guard = NodeGuard {
         handles: Vec::new(),
         processes: Vec::new(),
+        cleaned_up: false,
     };
 
     // Build the machine binary path - it should be available in the workspace root target/debug/
@@ -161,6 +173,7 @@ pub async fn start_nodes(clis: Vec<Cli>, startup_delay: Duration) -> NodeGuard {
     let mut guard = NodeGuard {
         handles: Vec::new(),
         processes: Vec::new(),
+        cleaned_up: false,
     };
     for cli in clis {
         match start_machine(cli).await {
