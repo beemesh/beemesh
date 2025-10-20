@@ -138,7 +138,6 @@ pub fn build_router(
         .route("/debug/dht/peers", get(debug_dht_peers))
         .route("/debug/peers", get(debug_peers))
         .route("/debug/tasks", get(debug_all_tasks))
-        .route("/debug/mock_engine_state", get(debug_mock_engine_state))
         .route(
             "/debug/workloads_by_peer/{peer_id}",
             get(debug_workloads_by_peer),
@@ -512,116 +511,7 @@ async fn debug_active_announces(State(_state): State<RestState>) -> axum::Json<s
     axum::Json(serde_json::json!({"ok": true, "cids": cids}))
 }
 
-// Debug: get MockEngine state for testing
-async fn debug_mock_engine_state(State(_state): State<RestState>) -> axum::Json<serde_json::Value> {
-    // Try to access the global runtime registry to get MockEngine state
-    if let Some(registry_guard) = crate::workload_integration::get_global_runtime_registry().await {
-        if let Some(ref registry) = *registry_guard {
-            if let Some(mock_engine) = registry.get_engine("mock") {
-                // Try to downcast to MockEngine to get full workload data including manifest content
-                if let Some(mock_engine) = mock_engine
-                    .as_any()
-                    .downcast_ref::<crate::runtime::mock::MockEngine>()
-                {
-                    let all_workloads = mock_engine.get_all_workloads();
-                    let mut workloads_json = serde_json::Map::new();
 
-                    for workload in &all_workloads {
-                        // Try to export the manifest for debugging
-                        let exported_manifest = match mock_engine.export_manifest(&workload.info.id).await {
-                            Ok(manifest_bytes) => {
-                                match String::from_utf8(manifest_bytes) {
-                                    Ok(manifest_str) => Some(manifest_str),
-                                    Err(_) => Some("(binary data)".to_string()),
-                                }
-                            }
-                            Err(e) => {
-                                log::debug!("Failed to export manifest for {}: {}", workload.info.id, e);
-                                None
-                            }
-                        };
-
-                        workloads_json.insert(
-                            workload.info.id.clone(),
-                            serde_json::json!({
-                                "manifest_id": workload.info.manifest_id,
-                                "status": format!("{:?}", workload.info.status),
-                                "ports": workload.info.ports,
-                                "metadata": workload.info.metadata,
-                                "created_at": workload.info.created_at.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default().as_secs(),
-                                "exported_manifest": exported_manifest,
-                            })
-                        );
-                    }
-
-                    return axum::Json(serde_json::json!({
-                        "ok": true,
-                        "engine_name": mock_engine.name(),
-                        "workload_count": all_workloads.len(),
-                        "workloads": workloads_json
-                    }));
-                } else {
-                    // Fallback to standard RuntimeEngine methods if downcast fails
-                    match mock_engine.list_workloads().await {
-                        Ok(workloads) => {
-                            let mut workloads_json = serde_json::Map::new();
-                            for workload in &workloads {
-                                // Try to export the manifest for debugging
-                                let exported_manifest = match mock_engine.export_manifest(&workload.id).await {
-                                    Ok(manifest_bytes) => {
-                                        match String::from_utf8(manifest_bytes) {
-                                            Ok(manifest_str) => Some(manifest_str),
-                                            Err(_) => Some("(binary data)".to_string()),
-                                        }
-                                    }
-                                    Err(e) => {
-                                        log::debug!("Failed to export manifest for {}: {}", workload.id, e);
-                                        None
-                                    }
-                                };
-
-                                workloads_json.insert(
-                                    workload.id.clone(),
-                                    serde_json::json!({
-                                        "manifest_id": workload.manifest_id,
-                                        "status": format!("{:?}", workload.status),
-                                        "ports": workload.ports,
-                                        "metadata": workload.metadata,
-                                        "created_at": workload.created_at.duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default().as_secs(),
-                                        "exported_manifest": exported_manifest,
-                                    })
-                                );
-                            }
-
-                            return axum::Json(serde_json::json!({
-                                "ok": true,
-                                "engine_name": mock_engine.name(),
-                                "workload_count": workloads.len(),
-                                "workloads": workloads_json
-                            }));
-                        }
-                        Err(e) => {
-                            return axum::Json(serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed to list workloads: {}", e),
-                                "workload_count": 0,
-                                "workloads": {}
-                            }));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    axum::Json(serde_json::json!({
-        "ok": false,
-        "error": "MockEngine not available",
-        "workloads": {}
-    }))
-}
 
 /// Debug endpoint to get local peer ID
 async fn debug_local_peer_id(State(state): State<RestState>) -> axum::Json<serde_json::Value> {

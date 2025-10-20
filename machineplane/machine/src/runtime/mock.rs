@@ -80,10 +80,7 @@ impl MockEngine {
         self.workloads.lock().unwrap().len()
     }
 
-    /// Get a copy of all workloads (for testing)
-    pub fn get_all_workloads(&self) -> Vec<MockWorkload> {
-        self.workloads.lock().unwrap().values().cloned().collect()
-    }
+
 
     /// Get workloads deployed by a specific local peer ID (for testing)
     pub fn get_workloads_by_peer(&self, local_peer_id: &str) -> Vec<MockWorkload> {
