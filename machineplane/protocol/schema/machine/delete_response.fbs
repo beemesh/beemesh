@@ -1,0 +1,11 @@
+namespace beemesh.machine;
+
+table DeleteResponse {
+  ok:bool;
+  operation_id:string;
+  message:string;
+  manifest_id:string;
+  removed_workloads:[string];  // List of workload IDs that were removed
+}
+
+root_type DeleteResponse;

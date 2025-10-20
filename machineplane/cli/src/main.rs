@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use cli::apply_file;
+use cli::{apply_file, delete_file};
 
 #[derive(Parser, Debug)]
 #[command(name = "beemesh", about = "beemesh CLI")]
@@ -17,6 +17,15 @@ enum Commands {
         #[arg(short = 'f', long = "file", value_name = "FILE")]
         file: PathBuf,
     },
+    /// Delete a configuration from the cluster  
+    Delete {
+        /// Filename, e.g. -f ./pod.yaml
+        #[arg(short = 'f', long = "file", value_name = "FILE")]
+        file: PathBuf,
+        /// Force deletion without confirmation
+        #[arg(long = "force")]
+        force: bool,
+    },
 }
 
 #[tokio::main]
@@ -27,6 +36,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Apply { file } => {
             let _task_id = apply_file(file).await?;
+        }
+        Commands::Delete { file, force } => {
+            let _task_id = delete_file(file, force).await?;
         }
     }
 

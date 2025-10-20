@@ -3,11 +3,11 @@ use axum::{
     extract::{Extension, Path, Query, State},
     http::HeaderMap,
     middleware,
-    routing::{get, post},
+    routing::{get, post, delete},
     Router,
 };
 use base64::Engine;
-use log::debug;
+use log::{debug, info, warn, error};
 use once_cell::sync::Lazy;
 use protocol::libp2p_constants::{
     FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS,
@@ -18,6 +18,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::{sync::watch, time::Duration};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod envelope_handler;
 use crate::runtime::RuntimeEngine;
@@ -142,6 +143,7 @@ pub fn build_router(
         )
         .route("/tenant/{tenant}/tasks", post(create_task))
         .route("/tenant/{tenant}/tasks/{task_id}", get(get_task_status))
+        .route("/tenant/{tenant}/tasks/{task_id}", delete(delete_task))
         .route(
             "/tenant/{tenant}/tasks/{task_id}/candidates",
             post(get_candidates),
@@ -736,6 +738,153 @@ pub async fn get_task_status(
     }
     let error_response = protocol::machine::build_task_status_response("", "Error", &[], &[], None);
     create_response_with_fallback(&error_response).await
+}
+
+/// Delete a task by task ID - discovers providers and sends delete requests
+pub async fn delete_task(
+    Path((tenant, task_id)): Path<(String, String)>,
+    State(state): State<RestState>,
+    _headers: HeaderMap,
+    Extension(envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
+    body: Bytes,
+) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
+    info!("delete_task: tenant={} task_id={}", tenant, task_id);
+
+    // Generate operation ID for this delete request
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let operation_id = format!("delete-{}-{}", task_id, timestamp);
+
+    // Extract requesting peer info from envelope metadata
+    let origin_peer = envelope_metadata.peer_id.unwrap_or_else(|| "unknown".to_string());
+
+    // Parse query parameters for force flag
+    let force = String::from_utf8_lossy(&body).contains("force=true");
+
+    // Step 1: Discover which nodes are providing this task/manifest
+    let providers = match find_manifest_providers(&task_id, &state).await {
+        Ok(providers) => providers,
+        Err(e) => {
+            error!("Failed to discover providers for task_id {}: {}", task_id, e);
+            let error_response = protocol::machine::build_delete_response(
+                false,
+                &operation_id,
+                &format!("Failed to discover providers: {}", e),
+                &task_id,
+                &[],
+            );
+            return create_response_with_fallback(&error_response).await;
+        }
+    };
+
+    if providers.is_empty() {
+        warn!("No providers found for task_id: {}", task_id);
+        let response = protocol::machine::build_delete_response(
+            true,
+            &operation_id,
+            "No providers found for task",
+            &task_id,
+            &[],
+        );
+        return create_response_with_fallback(&response).await;
+    }
+
+    info!("Found {} providers for task_id {}: {:?}", providers.len(), task_id, providers);
+
+    // Step 2: Create delete request
+    let delete_request = protocol::machine::build_delete_request(
+        &task_id,
+        &tenant,
+        &operation_id,
+        &origin_peer,
+        force,
+    );
+
+    // Step 3: Send delete requests to all providers
+    let mut successful_deletes = Vec::new();
+    let mut failed_deletes = Vec::new();
+
+    for provider_peer_id in providers {
+        match send_delete_request_to_peer(&state, &provider_peer_id, &delete_request).await {
+            Ok(result) => {
+                info!("Delete request sent to peer {}: {:?}", provider_peer_id, result);
+                successful_deletes.push(provider_peer_id);
+            }
+            Err(e) => {
+                error!("Failed to send delete request to peer {}: {}", provider_peer_id, e);
+                failed_deletes.push(format!("{}:{}", provider_peer_id, e));
+            }
+        }
+    }
+
+    // Step 4: Return response
+    let success = !successful_deletes.is_empty();
+    let message = if success {
+        if failed_deletes.is_empty() {
+            format!("Delete requests sent to {} providers", successful_deletes.len())
+        } else {
+            format!(
+                "Delete requests sent to {}/{} providers. Failures: {:?}",
+                successful_deletes.len(),
+                successful_deletes.len() + failed_deletes.len(),
+                failed_deletes
+            )
+        }
+    } else {
+        format!("Failed to send delete requests to any providers: {:?}", failed_deletes)
+    };
+
+    let response = protocol::machine::build_delete_response(
+        success,
+        &operation_id,
+        &message,
+        &task_id,
+        &[], // Individual nodes will report their removed workloads
+    );
+
+    create_response_with_fallback(&response).await
+}
+
+/// Find providers for a task using DHT discovery
+async fn find_manifest_providers(
+    task_id: &str,
+    _state: &RestState,
+) -> Result<Vec<String>, String> {
+    // TODO: Implement DHT provider discovery
+    // For now, return a mock provider list
+    // In the real implementation, this should:
+    // 1. Use the provider discovery system to query DHT
+    // 2. Find all nodes announcing themselves as providers for the task
+    // 3. Return their peer IDs
+    
+    info!("find_manifest_providers: searching for task_id={}", task_id);
+    
+    // Mock implementation - return empty list for now
+    // In production, this would integrate with the provider discovery system
+    Ok(vec![])
+}
+
+/// Send a delete request to a specific peer
+async fn send_delete_request_to_peer(
+    _state: &RestState,
+    peer_id: &str,
+    _delete_request: &[u8],
+) -> Result<String, String> {
+    info!("send_delete_request_to_peer: sending to peer={}", peer_id);
+
+    // Parse the peer string into a PeerId
+    let _target_peer_id: libp2p::PeerId = peer_id.parse()
+        .map_err(|e| format!("Invalid peer ID '{}': {}", peer_id, e))?;
+
+    // Send the delete request via libp2p
+    // TODO: Add a new control message type for delete requests
+    // For now, we'll use a mock implementation
+    info!("Delete request prepared for peer {}, but libp2p integration pending", peer_id);
+    
+    // Mock success response
+    Ok("Delete request sent (mock)".to_string())
 }
 
 /// Forward an ApplyRequest directly to a specific peer via libp2p

@@ -311,6 +311,111 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     Ok(manifest_id)
 }
 
+pub async fn delete_file(path: PathBuf, force: bool) -> anyhow::Result<String> {
+    debug!("delete_file called for path: {:?}, force: {}", path, force);
+
+    if !path.exists() {
+        error!("delete_file: file not found: {}", path.display());
+        anyhow::bail!("file not found: {}", path.display());
+    }
+
+    let contents = tokio::fs::read_to_string(&path).await?;
+    debug!(
+        "delete_file: file contents read successfully, length: {}",
+        contents.len()
+    );
+    info!(
+        "File contents read successfully, length: {}",
+        contents.len()
+    );
+
+    // Parse manifest to JSON if possible
+    let manifest_json: JsonValue = match serde_yaml::from_str(&contents) {
+        Ok(v) => v,
+        Err(_) => serde_json::json!({"raw": contents}),
+    };
+    debug!("delete_file: manifest parsed successfully");
+
+    // Ensure CLI keypair - always use persistent keypairs for consistency
+    let (pk_bytes, _sk_bytes) = ensure_keypair_on_disk()?;
+
+    // Hardcoded tenant for now
+    let tenant = "00000000-0000-0000-0000-000000000000";
+
+    // Compute stable manifest_id from owning public key and manifest name only
+    // This matches the same logic as apply_file for consistency
+    let manifest_id = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        
+        // Hash owning public key for security
+        pk_bytes.hash(&mut hasher);
+        
+        // Extract and hash manifest name - this is the stable identifier
+        if let Some(name) = extract_manifest_name_from_json(&manifest_json) {
+            debug!("CLI: Using manifest name '{}' for manifest_id", name);
+            name.hash(&mut hasher);
+        } else {
+            return Err(anyhow::anyhow!("Manifest must have a name field in metadata for deletion"));
+        }
+        
+        format!("{:016x}", hasher.finish())[..16].to_string()
+    };
+    debug!("CLI: Computed manifest_id for deletion: {} with pubkey: {:02x?}", manifest_id, &pk_bytes[..8]);
+
+    // API base URL can be overridden with BEEMESH_API env var
+    let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+    debug!("Creating FlatbufferClient with base URL: {}", base);
+    let mut fb_client = FlatbufferClient::new(base)?;
+
+    // Fetch machine's public key for encrypted communication
+    debug!("Fetching machine's public key...");
+    fb_client.fetch_machine_public_key().await?;
+    debug!("Successfully fetched machine's public key");
+
+    // Build delete request
+    let operation_id = Uuid::new_v4().to_string();
+    let delete_request_bytes = protocol::machine::build_delete_request(
+        &manifest_id,
+        tenant,
+        &operation_id,
+        "", // origin_peer (CLI doesn't have peer ID)
+        force,
+    );
+
+    // Send delete request via REST API
+    let url = format!(
+        "{}/tenant/{}/tasks/{}",
+        fb_client.base_url.trim_end_matches('/'),
+        tenant,
+        manifest_id
+    );
+
+    debug!("Sending delete request to: {}", url);
+    
+    let body = if force { "force=true" } else { "" };
+    let response_bytes = fb_client
+        .send_delete_request(&url, body.as_bytes())
+        .await?;
+    
+    // Parse response as DeleteResponse
+    let delete_response = protocol::machine::root_as_delete_response(&response_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to parse DeleteResponse: {}", e))?;
+    
+    if !delete_response.ok() {
+        anyhow::bail!("Delete failed: {}", delete_response.message().unwrap_or("unknown error"));
+    }
+    
+    info!(
+        "Delete completed for manifest_id {}: {}",
+        manifest_id,
+        delete_response.message().unwrap_or("success")
+    );
+
+    Ok(manifest_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

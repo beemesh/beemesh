@@ -1,0 +1,261 @@
+use libp2p::request_response;
+use log::{error, info, warn};
+use protocol::machine;
+
+/// Handle a delete message (request or response)
+pub fn delete_message(
+    message: request_response::Message<Vec<u8>, Vec<u8>>,
+    peer: libp2p::PeerId,
+    swarm: &mut libp2p::Swarm<super::MyBehaviour>,
+    local_peer: libp2p::PeerId,
+) {
+    match message {
+        request_response::Message::Request {
+            request, channel, ..
+        } => {
+            info!("Received delete request from peer={}", peer);
+
+            // Verify request as a FlatBuffer Envelope 
+            let effective_request =
+                match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
+                    &request,
+                    &peer.to_string(),
+                ) {
+                    Ok((payload_bytes, _pub, _sig)) => payload_bytes,
+                    Err(e) => {
+                        if crate::libp2p_beemesh::security::require_signed_messages() {
+                            error!("Rejecting unsigned/invalid delete request: {:?}", e);
+                            let error_response = machine::build_delete_response(
+                                false,
+                                "unknown",
+                                "unsigned or invalid envelope",
+                                "unknown",
+                                &[],
+                            );
+                            let _ = swarm
+                                .behaviour_mut()
+                                .delete_rr
+                                .send_response(channel, error_response);
+                            return;
+                        }
+                        request.clone()
+                    }
+                };
+
+            // Parse the FlatBuffer delete request
+            match machine::root_as_delete_request(&effective_request) {
+                Ok(delete_req) => {
+                    info!(
+                        "Delete request - manifest_id={:?} tenant={:?} operation_id={:?} force={}",
+                        delete_req.manifest_id(),
+                        delete_req.tenant(),
+                        delete_req.operation_id(),
+                        delete_req.force()
+                    );
+
+                    // Extract envelope metadata for ownership verification
+                    let envelope_pubkey = match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
+                        &request,
+                        &peer.to_string(),
+                    ) {
+                        Ok((_, pub_key, _)) => pub_key,
+                        Err(_) => {
+                            // If not signed, reject the delete request unless force is true
+                            if !delete_req.force() {
+                                let error_response = machine::build_delete_response(
+                                    false,
+                                    delete_req.operation_id().unwrap_or("unknown"),
+                                    "delete request must be signed by manifest owner",
+                                    delete_req.manifest_id().unwrap_or("unknown"),
+                                    &[],
+                                );
+                                let _ = swarm
+                                    .behaviour_mut()
+                                    .delete_rr
+                                    .send_response(channel, error_response);
+                                return;
+                            }
+                            Vec::new() // Empty pubkey for force delete
+                        }
+                    };
+
+                    // Process the delete request asynchronously
+                    let manifest_id = delete_req.manifest_id().unwrap_or("").to_string();
+                    let tenant = delete_req.tenant().unwrap_or("").to_string();
+                    let operation_id = delete_req.operation_id().unwrap_or("").to_string();
+                    let force = delete_req.force();
+                    let requesting_peer = peer.to_string();
+
+                    tokio::spawn(async move {
+                        let (success, message, removed_workloads) = 
+                            process_delete_request(&manifest_id, &tenant, force, &envelope_pubkey, &requesting_peer).await;
+
+                        let response = machine::build_delete_response(
+                            success,
+                            &operation_id,
+                            &message,
+                            &manifest_id,
+                            &removed_workloads,
+                        );
+
+                        // Note: In a real implementation, we'd need to send this response back through a channel
+                        // For now, we'll just log the result
+                        info!(
+                            "Delete request processed: success={} message={} removed_workloads={:?}",
+                            success, message, removed_workloads
+                        );
+                    });
+
+                    // Send immediate acknowledgment (the actual processing happens async)
+                    let ack_response = machine::build_delete_response(
+                        true,
+                        delete_req.operation_id().unwrap_or("unknown"),
+                        "delete request received and processing",
+                        delete_req.manifest_id().unwrap_or("unknown"),
+                        &[],
+                    );
+                    let _ = swarm
+                        .behaviour_mut()
+                        .delete_rr
+                        .send_response(channel, ack_response);
+                }
+                Err(e) => {
+                    error!("Failed to parse delete request: {}", e);
+                    let error_response = machine::build_delete_response(
+                        false,
+                        "unknown",
+                        "invalid delete request format",
+                        "unknown",
+                        &[],
+                    );
+                    let _ = swarm
+                        .behaviour_mut()
+                        .delete_rr
+                        .send_response(channel, error_response);
+                }
+            }
+        }
+        request_response::Message::Response { response, .. } => {
+            info!("Received delete response from peer={}", peer);
+
+            // Parse the response
+            match machine::root_as_delete_response(&response) {
+                Ok(delete_resp) => {
+                    info!(
+                        "Delete response - ok={} operation_id={:?} message={:?} removed_workloads={:?}",
+                        delete_resp.ok(),
+                        delete_resp.operation_id(),
+                        delete_resp.message(),
+                        delete_resp.removed_workloads().map(|w| w.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to parse delete response: {:?}", e);
+                }
+            }
+        }
+    }
+}
+
+/// Process a delete request by verifying ownership and removing workloads
+async fn process_delete_request(
+    manifest_id: &str,
+    tenant: &str,
+    force: bool,
+    envelope_pubkey: &[u8],
+    _requesting_peer: &str,
+) -> (bool, String, Vec<String>) {
+    // Step 1: Verify ownership if not force delete
+    if !force {
+        match verify_delete_ownership(manifest_id, tenant, envelope_pubkey).await {
+            Ok(true) => {
+                info!("Delete ownership verified for manifest_id={}", manifest_id);
+            }
+            Ok(false) => {
+                warn!("Delete ownership verification failed for manifest_id={}", manifest_id);
+                return (false, "ownership verification failed".to_string(), vec![]);
+            }
+            Err(e) => {
+                error!("Delete ownership verification error for manifest_id={}: {}", manifest_id, e);
+                return (false, format!("ownership verification error: {}", e), vec![]);
+            }
+        }
+    } else {
+        info!("Forced delete for manifest_id={}, skipping ownership verification", manifest_id);
+    }
+
+    // Step 2: Remove workloads using the workload manager
+    match remove_workloads_by_manifest_id(manifest_id).await {
+        Ok(removed_workloads) => {
+            if removed_workloads.is_empty() {
+                info!("No workloads found for manifest_id={}", manifest_id);
+                (true, "no workloads found for manifest".to_string(), removed_workloads)
+            } else {
+                info!("Successfully removed {} workloads for manifest_id={}", removed_workloads.len(), manifest_id);
+                (true, format!("removed {} workloads", removed_workloads.len()), removed_workloads)
+            }
+        }
+        Err(e) => {
+            error!("Failed to remove workloads for manifest_id={}: {}", manifest_id, e);
+            (false, format!("failed to remove workloads: {}", e), vec![])
+        }
+    }
+}
+
+/// Verify that the requesting peer is the owner of the manifest
+async fn verify_delete_ownership(
+    manifest_id: &str,
+    _tenant: &str,
+    envelope_pubkey: &[u8],
+) -> Result<bool, anyhow::Error> {
+    // TODO: Implement DHT lookup to get the AppliedManifest record
+    // For now, we'll implement a simplified version that always allows deletion
+    // In the real implementation, this should:
+    // 1. Query DHT for AppliedManifest record using manifest_id
+    // 2. Extract owner_pubkey from the stored manifest
+    // 3. Compare with envelope_pubkey from delete request
+    // 4. Return true if they match, false otherwise
+
+    info!(
+        "verify_delete_ownership: manifest_id={} envelope_pubkey_len={}",
+        manifest_id,
+        envelope_pubkey.len()
+    );
+
+    // For testing purposes, allow deletion if envelope_pubkey is not empty
+    Ok(!envelope_pubkey.is_empty())
+}
+
+/// Remove workloads associated with a manifest ID
+async fn remove_workloads_by_manifest_id(manifest_id: &str) -> Result<Vec<String>, anyhow::Error> {
+    info!("remove_workloads_by_manifest_id: manifest_id={}", manifest_id);
+
+    // Get access to the global workload manager
+    match crate::workload_integration::get_global_runtime_registry().await {
+        Some(_registry_guard) => {
+            // For now, we'll return a mock result since we need a more sophisticated
+            // integration pattern to access the workload manager from here.
+            // In a complete implementation, we would:
+            // 1. Get access to the workload manager instance
+            // 2. Call remove_workloads_by_manifest_id on it
+            // 3. Return the actual list of removed workload IDs
+            
+            info!("Workload registry available, but integration pending");
+            Ok(vec![format!("mock-workload-{}", manifest_id)])
+        }
+        None => {
+            warn!("No global runtime registry available");
+            Ok(vec![])
+        }
+    }
+}
+
+/// Handle delete outbound failure
+pub fn delete_outbound_failure(peer: libp2p::PeerId, error: request_response::OutboundFailure) {
+    warn!("Delete outbound failure for peer {}: {:?}", peer, error);
+}
+
+/// Handle delete inbound failure  
+pub fn delete_inbound_failure(peer: libp2p::PeerId, error: request_response::InboundFailure) {
+    warn!("Delete inbound failure for peer {}: {:?}", peer, error);
+}

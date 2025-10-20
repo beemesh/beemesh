@@ -352,6 +352,74 @@ impl WorkloadManager {
         Ok(())
     }
 
+    /// Remove all workloads associated with a specific manifest ID
+    pub async fn remove_workloads_by_manifest_id(
+        &self,
+        swarm: &mut Swarm<MyBehaviour>,
+        manifest_id: &str,
+    ) -> WorkloadManagerResult<Vec<String>> {
+        info!("Removing all workloads for manifest_id: {}", manifest_id);
+
+        // Find all workloads with matching manifest_id
+        let workloads_to_remove: Vec<String> = {
+            let deployments = self.deployments.read().unwrap();
+            deployments
+                .iter()
+                .filter_map(|(workload_id, deployment)| {
+                    if deployment.manifest_id == manifest_id {
+                        Some(workload_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        if workloads_to_remove.is_empty() {
+            info!("No workloads found for manifest_id: {}", manifest_id);
+            return Ok(vec![]);
+        }
+
+        info!(
+            "Found {} workloads to remove for manifest_id: {}",
+            workloads_to_remove.len(),
+            manifest_id
+        );
+
+        let mut removed_workloads = Vec::new();
+        let mut errors = Vec::new();
+
+        // Remove each workload
+        for workload_id in workloads_to_remove {
+            match self.remove_workload(swarm, &workload_id).await {
+                Ok(()) => {
+                    info!("Successfully removed workload: {}", workload_id);
+                    removed_workloads.push(workload_id);
+                }
+                Err(e) => {
+                    error!("Failed to remove workload {}: {}", workload_id, e);
+                    errors.push(format!("Failed to remove {}: {}", workload_id, e));
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            warn!(
+                "Some workload removals failed for manifest_id {}: {:?}",
+                manifest_id, errors
+            );
+            // Return partial success - the workloads that were successfully removed
+        }
+
+        info!(
+            "Successfully removed {} workloads for manifest_id: {}",
+            removed_workloads.len(),
+            manifest_id
+        );
+
+        Ok(removed_workloads)
+    }
+
     /// Get status of a deployed workload
     pub async fn get_workload_status(
         &self,

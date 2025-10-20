@@ -498,5 +498,25 @@ impl FlatbufferClient {
         }
     }
 
+    /// Send a DELETE request with optional body
+    pub async fn send_delete_request(&self, url: &str, body: &[u8]) -> Result<Vec<u8>> {
+        let resp = self
+            .client
+            .delete(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header("x-peer-id", "cli-client") // Identify as CLI client
+            .body(body.to_vec())
+            .send()
+            .await?;
 
+        let status = resp.status();
+
+        if !status.is_success() {
+            let body_text = resp.text().await?;
+            anyhow::bail!("Delete request failed: {} {}", status, body_text);
+        }
+
+        let response_bytes = resp.bytes().await?;
+        Ok(response_bytes.to_vec())
+    }
 }

@@ -74,6 +74,36 @@ mod generated {
         ));
     }
 
+    pub mod generated_delete_request {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/delete_request_generated.rs"
+        ));
+    }
+
+    pub mod generated_delete_response {
+        #![allow(
+            dead_code,
+            non_camel_case_types,
+            non_snake_case,
+            unused_imports,
+            unused_variables,
+            mismatched_lifetime_syntaxes
+        )]
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/generated/delete_response_generated.rs"
+        ));
+    }
+
     pub mod generated_handshake {
         #![allow(
             dead_code,
@@ -199,6 +229,14 @@ pub mod machine {
     };
     pub use crate::generated::generated_apply_response::beemesh::machine::{
         root_as_apply_response, ApplyResponse,
+    };
+    
+    // Delete request/response
+    pub use crate::generated::generated_delete_request::beemesh::machine::{
+        root_as_delete_request, DeleteRequest,
+    };
+    pub use crate::generated::generated_delete_response::beemesh::machine::{
+        root_as_delete_response, DeleteResponse,
     };
 
     pub use crate::generated::generated_candidates_response::beemesh::machine::root_as_candidates_response;
@@ -367,6 +405,66 @@ pub mod machine {
             crate::generated::generated_apply_response::beemesh::machine::ApplyResponse::create(
                 &mut fbb, &args,
             );
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
+
+    pub fn build_delete_request(
+        manifest_id: &str,
+        tenant: &str,
+        operation_id: &str,
+        origin_peer: &str,
+        force: bool,
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(256);
+        let manifest_id_off = fbb.create_string(manifest_id);
+        let tenant_off = fbb.create_string(tenant);
+        let operation_id_off = fbb.create_string(operation_id);
+        let origin_peer_off = fbb.create_string(origin_peer);
+        
+        let mut args: crate::generated::generated_delete_request::beemesh::machine::DeleteRequestArgs = Default::default();
+        args.manifest_id = Some(manifest_id_off);
+        args.tenant = Some(tenant_off);
+        args.operation_id = Some(operation_id_off);
+        args.origin_peer = Some(origin_peer_off);
+        args.force = force;
+        
+        let off = crate::generated::generated_delete_request::beemesh::machine::DeleteRequest::create(
+            &mut fbb, &args,
+        );
+        fbb.finish(off, None);
+        fbb.finished_data().to_vec()
+    }
+
+    pub fn build_delete_response(
+        ok: bool,
+        operation_id: &str,
+        message: &str,
+        manifest_id: &str,
+        removed_workloads: &[String],
+    ) -> Vec<u8> {
+        let mut fbb = FlatBufferBuilder::with_capacity(512);
+        let operation_id_off = fbb.create_string(operation_id);
+        let message_off = fbb.create_string(message);
+        let manifest_id_off = fbb.create_string(manifest_id);
+        
+        // Create vector of workload IDs
+        let workload_offsets: Vec<_> = removed_workloads
+            .iter()
+            .map(|w| fbb.create_string(w))
+            .collect();
+        let workloads_vec = fbb.create_vector(&workload_offsets);
+        
+        let mut args: crate::generated::generated_delete_response::beemesh::machine::DeleteResponseArgs = Default::default();
+        args.ok = ok;
+        args.operation_id = Some(operation_id_off);
+        args.message = Some(message_off);
+        args.manifest_id = Some(manifest_id_off);
+        args.removed_workloads = Some(workloads_vec);
+        
+        let off = crate::generated::generated_delete_response::beemesh::machine::DeleteResponse::create(
+            &mut fbb, &args,
+        );
         fbb.finish(off, None);
         fbb.finished_data().to_vec()
     }

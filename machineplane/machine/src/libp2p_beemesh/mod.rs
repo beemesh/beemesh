@@ -21,7 +21,7 @@ use protocol::libp2p_constants::BEEMESH_CLUSTER;
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
 
 mod request_response_codec;
-pub use request_response_codec::{ApplyCodec, HandshakeCodec};
+pub use request_response_codec::{ApplyCodec, HandshakeCodec, DeleteCodec};
 
 use crate::libp2p_beemesh::{
     behaviour::{MyBehaviour, MyBehaviourEvent},
@@ -111,7 +111,14 @@ pub fn setup_libp2p_node(
                 request_response::Config::default(),
             );
 
-
+            // Create the request-response behavior for delete protocol
+            let delete_rr = request_response::Behaviour::new(
+                std::iter::once((
+                    "/beemesh/delete/1.0.0",
+                    request_response::ProtocolSupport::Full,
+                )),
+                request_response::Config::default(),
+            );
 
             // Create the request-response behavior for manifest fetch protocol
             let manifest_fetch_rr = request_response::Behaviour::new(
@@ -146,6 +153,7 @@ pub fn setup_libp2p_node(
                 apply_rr,
                 handshake_rr,
                 scheduler_rr,
+                delete_rr,
                 manifest_fetch_rr,
                 kademlia,
             })
@@ -241,6 +249,17 @@ pub async fn start_libp2p_node(
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::InboundFailure { peer, error, .. })) => {
                         behaviour::apply_inbound_failure(peer, error);
+                    }
+
+                    SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
+                        let local_peer = *swarm.local_peer_id();
+                        behaviour::delete_message(message, peer, &mut swarm, local_peer);
+                    }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::OutboundFailure { peer, error, .. })) => {
+                        behaviour::delete_outbound_failure(peer, error);
+                    }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::InboundFailure { peer, error, .. })) => {
+                        behaviour::delete_inbound_failure(peer, error);
                     }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {

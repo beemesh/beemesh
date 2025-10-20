@@ -4,6 +4,7 @@ use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub type ApplyCodec = ByteCodec;
 pub type HandshakeCodec = ByteCodec;
 pub type SchedulerCodec = ByteCodec;
+pub type DeleteCodec = ByteCodec;
 
 #[derive(Debug, Clone, Default)]
 pub struct ByteCodec;
