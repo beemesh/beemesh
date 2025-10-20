@@ -1,4 +1,3 @@
-use crate::pod_communication;
 use axum::{
     body::Bytes,
     extract::{Extension, Path, Query, State},
@@ -12,9 +11,9 @@ use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use protocol::libp2p_constants::REQUEST_RESPONSE_TIMEOUT_SECS;
 use protocol::libp2p_constants::{
-    FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS, REPLICAS_FIELD, SPEC_REPLICAS_FIELD,
+    FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS,
 };
-use protocol::machine::{root_as_apply_manifest_request, root_as_assign_request};
+use protocol::machine::root_as_assign_request;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -158,7 +157,6 @@ pub fn build_router(
             "/tenant/{tenant}/tasks/{task_id}/candidates",
             post(get_candidates),
         )
-        .route("/tenant/{tenant}/apply_manifest", post(apply_manifest))
         .route("/tenant/{tenant}/nodes", get(get_nodes))
         // Add envelope middleware to decrypt incoming requests and extract peer keys
         .layer(middleware::from_fn_with_state(
@@ -282,196 +280,6 @@ pub struct TaskRecord {
     // store last generated operation id for manifest id computation
     pub last_operation_id: Option<String>,
     pub version: u64,
-}
-
-pub async fn apply_manifest(
-    Path(tenant): Path<String>,
-    State(state): State<RestState>,
-    _headers: HeaderMap,
-    body: Bytes,
-) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    debug!("tenant: {:?}", tenant);
-
-    // Parse flatbuffer ApplyManifestRequest
-    let apply_request = match root_as_apply_manifest_request(&body) {
-        Ok(req) => req,
-        Err(e) => {
-            log::warn!(
-                "apply_manifest: failed to parse ApplyManifestRequest: {}",
-                e
-            );
-            let error_response = protocol::machine::build_apply_manifest_response(
-                false,
-                &tenant,
-                0,
-                &[],
-                &[("error".to_string(), "invalid request".to_string())],
-            );
-            return create_response_with_fallback(&error_response).await;
-        }
-    };
-
-    // Extract manifest envelope - must be base64-encoded flatbuffer envelope
-    let manifest_envelope_json = apply_request.manifest_envelope_json().unwrap_or("");
-    let manifest = match base64::engine::general_purpose::STANDARD.decode(manifest_envelope_json) {
-        Ok(envelope_bytes) => {
-            // Verify flatbuffer envelope signature
-            match crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
-                &envelope_bytes,
-                std::time::Duration::from_secs(300),
-            ) {
-                Ok((payload_bytes, _pub, _sig)) => {
-                    // Check if payload appears to be an encrypted manifest (starts with recipient-blob version byte)
-                    if !payload_bytes.is_empty() && payload_bytes[0] == 0x02 {
-                        // Encrypted manifest - decryption logic should be handled elsewhere
-                        log::debug!("apply_manifest: detected encrypted manifest payload");
-                        serde_json::json!({})
-                    } else {
-                        log::warn!(
-                            "apply_manifest: envelope payload not EncryptedManifest flatbuffer"
-                        );
-                        let error_response = protocol::machine::build_apply_manifest_response(
-                            false,
-                            &tenant,
-                            0,
-                            &[],
-                            &[("error".to_string(), "invalid manifest payload".to_string())],
-                        );
-                        return create_response_with_fallback(&error_response).await;
-                    }
-                }
-                Err(e) => {
-                    log::warn!(
-                        "apply_manifest: envelope signature verification failed: {:?}",
-                        e
-                    );
-                    let error_response = protocol::machine::build_apply_manifest_response(
-                        false,
-                        &tenant,
-                        0,
-                        &[],
-                        &[(
-                            "error".to_string(),
-                            "signature verification failed".to_string(),
-                        )],
-                    );
-                    return create_response_with_fallback(&error_response).await;
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!(
-                "apply_manifest: failed to decode base64 manifest envelope: {:?}",
-                e
-            );
-            let error_response = protocol::machine::build_apply_manifest_response(
-                false,
-                &tenant,
-                0,
-                &[],
-                &[(
-                    "error".to_string(),
-                    "invalid manifest envelope encoding".to_string(),
-                )],
-            );
-            return create_response_with_fallback(&error_response).await;
-        }
-    };
-
-    // determine desired replica count from manifest; check top-level `replicas` or `spec.replicas`
-    let replicas = manifest
-        .get(REPLICAS_FIELD)
-        .and_then(|v| v.as_u64())
-        .or_else(|| {
-            manifest
-                .get(SPEC_REPLICAS_FIELD)
-                .and_then(|s| s.get("replicas"))
-                .and_then(|r| r.as_u64())
-        })
-        .unwrap_or(1) as usize;
-
-    // publish a QueryCapacity control message to the libp2p task and collect replies
-    let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
-    // build a sample flatbuffer CapacityRequest (sample values for now)
-    let capacity_fb = protocol::machine::build_capacity_request(
-        500u32,                     // cpu_milli
-        512u64 * 1024 * 1024,       // memory_bytes (512MB)
-        10u64 * 1024 * 1024 * 1024, // storage_bytes (10GB)
-        replicas as u32,            // replicas
-    );
-    info!(
-        "apply_manifest: request_id={}, replicas={} payload_bytes={}",
-        request_id,
-        replicas,
-        capacity_fb.len()
-    );
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
-    let _ = state.control_tx.send(
-        crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
-            request_id: request_id.clone(),
-            reply_tx: reply_tx.clone(),
-            payload: capacity_fb,
-        },
-    );
-
-    // collect replies for the configured timeout (or until we have enough responders)
-    let mut responders: Vec<String> = Vec::new();
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS) {
-        let remaining =
-            Duration::from_secs(FREE_CAPACITY_TIMEOUT_SECS).saturating_sub(start.elapsed());
-        match tokio::time::timeout(remaining, reply_rx.recv()).await {
-            Ok(Some(peer)) => {
-                if !responders.contains(&peer) {
-                    responders.push(peer);
-                }
-                if responders.len() >= replicas {
-                    break;
-                }
-            }
-            _ => break, // timeout or closed
-        }
-    }
-
-    info!("apply_manifest: collected {} responders", responders.len());
-
-    let _per_peer = serde_json::Map::new();
-
-    // pick up to `replicas` peers from responders
-    let assigned: Vec<String> = responders.into_iter().take(replicas).collect();
-    if assigned.len() == 0 {
-        let error_response = protocol::machine::build_apply_manifest_response(
-            false,
-            &tenant,
-            replicas as u32,
-            &assigned,
-            &[],
-        );
-        return create_response_with_fallback(&error_response).await;
-    }
-    let mut per_peer_results: Vec<(String, String)> = Vec::new();
-
-    // dispatch manifest to each assigned peer (stubbed)
-    for peer in &assigned {
-        match pod_communication::send_apply_to_peer(peer, &manifest, &state.control_tx).await {
-            Ok(_) => {
-                per_peer_results.push((peer.clone(), "ok".to_string()));
-            }
-            Err(e) => {
-                per_peer_results.push((peer.clone(), format!("error: {}", e)));
-            }
-        }
-    }
-
-    let response_data = protocol::machine::build_apply_manifest_response(
-        true,
-        &tenant,
-        replicas as u32,
-        &assigned,
-        &per_peer_results,
-    );
-    // No envelope metadata available, return unencrypted response
-    create_response_with_fallback(&response_data).await
 }
 
 pub async fn create_task(

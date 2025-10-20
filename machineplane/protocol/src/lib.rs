@@ -194,36 +194,6 @@ mod generated {
         ));
     }
 
-    pub mod generated_apply_manifest_request {
-        #![allow(
-            dead_code,
-            non_camel_case_types,
-            non_snake_case,
-            unused_imports,
-            unused_variables,
-            mismatched_lifetime_syntaxes
-        )]
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/generated/apply_manifest_request_generated.rs"
-        ));
-    }
-
-    pub mod generated_apply_manifest_response {
-        #![allow(
-            dead_code,
-            non_camel_case_types,
-            non_snake_case,
-            unused_imports,
-            unused_variables,
-            mismatched_lifetime_syntaxes
-        )]
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/generated/apply_manifest_response_generated.rs"
-        ));
-    }
-
     pub mod generated_applied_manifest {
         #![allow(
             dead_code,
@@ -250,7 +220,6 @@ pub mod machine {
     };
     pub use crate::generated::generated_health::beemesh::machine::{root_as_health, Health};
     // Re-export Args to allow building nested FB objects in other modules
-    pub use crate::generated::generated_apply_manifest_request::beemesh::machine::root_as_apply_manifest_request;
     pub use crate::generated::generated_apply_request::beemesh::machine::{
         root_as_apply_request, ApplyRequest,
     };
@@ -301,14 +270,6 @@ pub mod machine {
     // Task status response
     pub use crate::generated::generated_task_status_response::beemesh::machine::{
         TaskStatusResponse, TaskStatusResponseArgs,
-    };
-
-    // Apply manifest types
-    pub use crate::generated::generated_apply_manifest_request::beemesh::machine::{
-        ApplyManifestRequest, ApplyManifestRequestArgs,
-    };
-    pub use crate::generated::generated_apply_manifest_response::beemesh::machine::{
-        ApplyManifestResponse, ApplyManifestResponseArgs,
     };
 
     pub mod generated_applied_manifest {
@@ -945,42 +906,6 @@ pub mod machine {
         fbb.finished_data().to_vec()
     }
 
-    pub fn build_apply_manifest_response(
-        ok: bool,
-        tenant: &str,
-        replicas_requested: u32,
-        assigned_peers: &[String],
-        per_peer_results: &[(String, String)],
-    ) -> Vec<u8> {
-        let mut fbb = FlatBufferBuilder::with_capacity(512);
-        let tenant_off = fbb.create_string(tenant);
-
-        let assigned_strings: Vec<_> = assigned_peers
-            .iter()
-            .map(|p| fbb.create_string(p))
-            .collect();
-        let assigned_vector = fbb.create_vector(&assigned_strings);
-
-        let per_peer_json = serde_json::to_string(
-            &per_peer_results
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect::<std::collections::HashMap<_, _>>(),
-        )
-        .unwrap_or_default();
-        let per_peer_off = fbb.create_string(&per_peer_json);
-
-        let manifest_response = crate::generated::generated_apply_manifest_response::beemesh::machine::ApplyManifestResponse::create(&mut fbb, &crate::generated::generated_apply_manifest_response::beemesh::machine::ApplyManifestResponseArgs {
-            ok,
-            tenant: Some(tenant_off),
-            replicas_requested,
-            assigned_peers: Some(assigned_vector),
-            per_peer_results_json: Some(per_peer_off),
-        });
-        fbb.finish(manifest_response, None);
-        fbb.finished_data().to_vec()
-    }
-
     /// Create an encrypted envelope with hybrid encryption (KEM + AES-GCM)
     pub fn build_encrypted_envelope(
         payload: &[u8],
@@ -1097,19 +1022,6 @@ pub mod machine {
         );
 
         Ok(envelope)
-    }
-
-    pub fn build_apply_manifest_request(
-        manifest_envelope_json: &str,
-    ) -> Vec<u8> {
-        let mut fbb = FlatBufferBuilder::with_capacity(1024);
-        let manifest_off = fbb.create_string(manifest_envelope_json);
-
-        let request = crate::generated::generated_apply_manifest_request::beemesh::machine::ApplyManifestRequest::create(&mut fbb, &crate::generated::generated_apply_manifest_request::beemesh::machine::ApplyManifestRequestArgs {
-            manifest_envelope_json: Some(manifest_off),
-        });
-        fbb.finish(request, None);
-        fbb.finished_data().to_vec()
     }
 
     // Extract manifest name from manifest data
