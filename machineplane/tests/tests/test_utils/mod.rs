@@ -147,8 +147,7 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
 
         // Set environment variables for this process
         cmd.env("RUST_LOG", "info,libp2p=warn,quinn=warn")
-            .env("BEEMESH_KEM_EPHEMERAL", "1")
-            .env("BEEMESH_KEYSTORE_EPHEMERAL", "1");
+            .env("BEEMESH_KEM_EPHEMERAL", "1");
 
         //println!("Starting machine process on port {}", cli.rest_api_port);
         match cmd.spawn() {
@@ -223,19 +222,7 @@ pub fn global_cleanup() {
         Err(e) => eprintln!("pkill command failed: {}", e),
     }
 
-    // Remove keystore temporary files
-    let rm_result = std::process::Command::new("sh")
-        .args(["-c", "rm -f /tmp/beemesh_keystore_*"])
-        .output();
 
-    match rm_result {
-        Ok(output) => {
-            if !output.stderr.is_empty() {
-                eprintln!("rm stderr: {}", String::from_utf8_lossy(&output.stderr));
-            }
-        }
-        Err(e) => eprintln!("rm command failed: {}", e),
-    }
 
     eprintln!("Global cleanup completed");
 }

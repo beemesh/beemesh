@@ -118,22 +118,7 @@ impl CryptoLogger {
         }
     }
 
-    /// Log keystore operations
-    pub fn log_keystore_operation(
-        operation: &str,
-        cid: Option<&str>,
-        success: bool,
-        error: Option<&str>,
-    ) {
-        match (success, cid, error) {
-            (true, Some(cid), _) => {
-                log::info!("keystore: {} successful for CID: {}", operation, cid)
-            }
-            (true, None, _) => log::info!("keystore: {} successful", operation),
-            (false, _, Some(err)) => log::warn!("keystore: {} failed: {}", operation, err),
-            (false, _, None) => log::warn!("keystore: {} failed", operation),
-        }
-    }
+
 
     /// Log signature verification results
     pub fn log_signature_verification(valid: bool, peer: Option<libp2p::PeerId>) {
@@ -167,7 +152,5 @@ mod tests {
     fn test_crypto_logger_operations() {
         CryptoLogger::log_crypto_operation("encryption", true, Some("AES-256"));
         CryptoLogger::log_crypto_operation("decryption", false, None);
-        CryptoLogger::log_keystore_operation("put", Some("test_cid"), true, None);
-        CryptoLogger::log_keystore_operation("get", None, false, Some("not found"));
     }
 }

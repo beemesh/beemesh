@@ -17,16 +17,10 @@ use saorsa_pqc::api::kem::{
 use zeroize::Zeroizing;
 
 use dirs::home_dir;
-use hex;
-use sha2::{Digest, Sha256};
-use std::path::PathBuf;
 
 pub mod envelope_validator;
 pub mod keypair_manager;
-mod keystore;
-pub mod keystore_helper;
 pub mod logging;
-pub use keystore::Keystore;
 
 pub const KEY_DIR: &str = ".beemesh";
 pub const PUBKEY_FILE: &str = "pubkey.bin";
@@ -198,145 +192,6 @@ pub fn decapsulate_share(
     let shared = kem.decapsulate(&privk, &ct)?;
     let shared_arr = shared.to_bytes();
     Ok(Zeroizing::new(shared_arr[..].to_vec()))
-}
-
-/// Returns (stored_blob, cid_hex) where stored_blob contains wrapped-key + aes nonce + ciphertext
-pub fn encrypt_share_for_keystore(payload: &[u8]) -> anyhow::Result<(Vec<u8>, String)> {
-    // Use KEM encapsulation to derive the symmetric key for encrypting the payload.
-    let (kem_pub, _kem_priv) = ensure_kem_keypair_on_disk()?;
-    // encapsulate_to_pubkey returns (ct_bytes, shared_secret) where shared_secret is used as AES key
-    let (wrapped_key_ct, shared_secret) = encapsulate_to_pubkey(&kem_pub)?;
-    let cipher = Aes256Gcm::new_from_slice(&shared_secret)
-        .map_err(|e| anyhow::anyhow!("invalid key length for AES-GCM: {}", e))?;
-    let mut nonce_bytes = [0u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, payload)
-        .map_err(|e| anyhow::anyhow!("aes-gcm encrypt error: {}", e))?;
-
-    // Stored blob format: [version=1 u8][wrapped_len u16 BE][wrapped bytes][nonce_len u8][nonce bytes][ciphertext_len u32 BE][ciphertext]
-    let mut blob = Vec::with_capacity(
-        1 + 2 + wrapped_key_ct.len() + 1 + nonce_bytes.len() + 4 + ciphertext.len(),
-    );
-    blob.push(0x01u8);
-    let wlen = wrapped_key_ct.len() as u16;
-    blob.extend_from_slice(&wlen.to_be_bytes());
-    blob.extend_from_slice(&wrapped_key_ct);
-    blob.push(nonce_bytes.len() as u8);
-    blob.extend_from_slice(&nonce_bytes);
-    let clen = ciphertext.len() as u32;
-    blob.extend_from_slice(&clen.to_be_bytes());
-    blob.extend_from_slice(&ciphertext);
-
-    // compute CID as sha256 hex of the blob
-    let mut hasher = Sha256::default();
-    hasher.update(&blob);
-    let cid = hex::encode(hasher.finalize());
-    // log some diagnostics about the blob we produced
-    log::debug!(
-        "encrypt_share_for_keystore: payload_len={} wrapped_len={} ciphertext_len={} cid={}",
-        payload.len(),
-        wrapped_key_ct.len(),
-        ciphertext.len(),
-        cid
-    );
-    log::debug!(
-        "encrypt_share_for_keystore: produced blob len={} cid={}",
-        blob.len(),
-        cid
-    );
-    Ok((blob, cid))
-}
-
-/// Reverse of encrypt_share_for_keystore - requires decapsulating the wrapped key first
-pub fn decrypt_share_from_blob(blob: &[u8], priv_kem_bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
-    if blob.is_empty() || blob[0] != 0x01 {
-        anyhow::bail!("unsupported blob version");
-    }
-    let mut idx = 1usize;
-    if blob.len() < idx + 2 {
-        anyhow::bail!("blob too short");
-    }
-    let wlen = u16::from_be_bytes([blob[idx], blob[idx + 1]]) as usize;
-    idx += 2;
-    if blob.len() < idx + wlen {
-        anyhow::bail!("blob too short for wrapped");
-    }
-    let wrapped = &blob[idx..idx + wlen];
-    idx += wlen;
-    if blob.len() < idx + 1 {
-        anyhow::bail!("blob too short for nonce len");
-    }
-    let nlen = blob[idx] as usize;
-    idx += 1;
-    if blob.len() < idx + nlen {
-        anyhow::bail!("blob too short for nonce");
-    }
-    let nonce = &blob[idx..idx + nlen];
-    idx += nlen;
-    if blob.len() < idx + 4 {
-        anyhow::bail!("blob too short for ct len");
-    }
-    let clen =
-        u32::from_be_bytes([blob[idx], blob[idx + 1], blob[idx + 2], blob[idx + 3]]) as usize;
-    idx += 4;
-    if blob.len() < idx + clen {
-        anyhow::bail!("blob too short for ciphertext");
-    }
-    let ciphertext = &blob[idx..idx + clen];
-
-    // decapsulate wrapped key
-    let shared = decapsulate_share(priv_kem_bytes, wrapped)?; // Zeroizing<Vec<u8>>
-    let cipher = Aes256Gcm::new_from_slice(&shared[..])
-        .map_err(|e| anyhow::anyhow!("aes key error: {}", e))?;
-    let plain = cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext.as_ref())
-        .map_err(|e| anyhow::anyhow!("aes-gcm decrypt error: {}", e))?;
-    Ok(plain)
-}
-
-/// Determine keystore default path / behaviour from environment.
-pub fn keystore_default_path() -> PathBuf {
-    if std::env::var("BEEMESH_KEYSTORE_PATH").is_ok() {
-        PathBuf::from(std::env::var("BEEMESH_KEYSTORE_PATH").unwrap())
-    } else {
-        PathBuf::from("/etc/beemesh/keystore.db")
-    }
-}
-
-/// Open default keystore reading BEEMESH_KEYSTORE_EPHEMERAL env var to decide in-memory.
-pub fn open_keystore_default() -> anyhow::Result<Keystore> {
-    let ephemeral = std::env::var("BEEMESH_KEYSTORE_EPHEMERAL").is_ok();
-    let shared_name = std::env::var("BEEMESH_KEYSTORE_SHARED_NAME").unwrap_or_default();
-    log::warn!(
-        "open_keystore_default: ephemeral={} shared_name='{}' thread_id={:?}",
-        ephemeral,
-        shared_name,
-        std::thread::current().id()
-    );
-    let path = keystore_default_path();
-    Keystore::open(&path, ephemeral).map_err(|e| anyhow::anyhow!("keystore open failed: {}", e))
-}
-
-pub fn open_keystore_with_shared_name(shared_name: &str) -> anyhow::Result<Keystore> {
-    let ephemeral = std::env::var("BEEMESH_KEYSTORE_EPHEMERAL").is_ok();
-    log::debug!(
-        "open_keystore_with_shared_name: ephemeral={} shared_name='{}' thread_id={:?}",
-        ephemeral,
-        shared_name,
-        std::thread::current().id()
-    );
-
-    if ephemeral && !shared_name.is_empty() {
-        // Use temp file approach with explicit shared name
-        let temp_path = std::env::temp_dir().join(format!("beemesh_keystore_{}", shared_name));
-        Keystore::open(&temp_path, false) // false for ephemeral since we're using temp file
-    } else {
-        let path = keystore_default_path();
-        Keystore::open(&path, ephemeral)
-    }
-    .map_err(|e| anyhow::anyhow!("keystore open failed: {}", e))
 }
 
 pub fn ensure_keypair_ephemeral() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
@@ -636,54 +491,6 @@ mod tests {
         let shared_dec = decapsulate_share(&privb, &ct_bytes).expect("decapsulate");
         assert_eq!(&shared_enc[..], &shared_dec[..]);
         // shared_dec is Zeroizing and will be zeroed on drop
-    }
-
-    #[test]
-    fn test_encrypt_decrypt_keystore_blob_roundtrip() {
-        let _guard = PQC_TEST_MUTEX
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        ensure_pqc_init().expect("pqc init");
-        // generate ephemeral kem keypair and write to disk in the keydir used by ensure_kem_keypair_on_disk
-        let kem = ml_kem_512();
-        let (pubk, privk) = kem.generate_keypair().expect("kem keygen");
-        let pubb = pubk.to_bytes();
-        let privb = privk.to_bytes();
-
-        // Temporarily write these into the keydir used by ensure_kem_keypair_on_disk
-        let home = home_dir().unwrap();
-        let key_dir = home.join(KEY_DIR);
-        let _ = std::fs::create_dir_all(&key_dir);
-        let pub_path = key_dir.join(KEM_PUBFILE);
-        let priv_path = key_dir.join(KEM_PRIVFILE);
-        let _ = std::fs::write(&pub_path, &pubb);
-        let _ = std::fs::write(&priv_path, &privb);
-
-        let payload = b"hello keystore payload";
-        let (blob, cid) = encrypt_share_for_keystore(payload).expect("encrypt failed");
-        assert!(!cid.is_empty());
-
-        // Parse blob locally to inspect parts
-        assert!(blob.len() > 10);
-        let mut idx = 1usize;
-        let wlen = u16::from_be_bytes([blob[idx], blob[idx + 1]]) as usize;
-        idx += 2;
-        let _wrapped = &blob[idx..idx + wlen];
-        idx += wlen;
-        let nlen = blob[idx] as usize;
-        idx += 1;
-        let _nonce = &blob[idx..idx + nlen];
-        idx += nlen;
-        let clen =
-            u32::from_be_bytes([blob[idx], blob[idx + 1], blob[idx + 2], blob[idx + 3]]) as usize;
-        idx += 4;
-        let _ciphertext = &blob[idx..idx + clen];
-
-        // Finally attempt to decrypt ciphertext using the priv key
-        let recovered = decrypt_share_from_blob(&blob, &privb).expect("decrypt failed");
-        assert_eq!(&recovered, payload);
     }
 
     #[test]

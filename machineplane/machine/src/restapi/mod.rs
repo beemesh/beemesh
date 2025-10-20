@@ -59,7 +59,6 @@ pub struct RestState {
     pub peer_rx: watch::Receiver<Vec<String>>,
     pub control_tx: mpsc::UnboundedSender<crate::libp2p_beemesh::control::Libp2pControl>,
     task_store: Arc<RwLock<HashMap<String, TaskRecord>>>,
-    pub shared_name: Option<String>,
     pub envelope_handler: std::sync::Arc<EnvelopeHandler>,
     pub version_store: Arc<RwLock<crate::libp2p_beemesh::versioning::VersionStore>>,
 }
@@ -116,14 +115,12 @@ pub async fn get_decrypted_manifests_map() -> serde_json::Value {
 pub fn build_router(
     peer_rx: watch::Receiver<Vec<String>>,
     control_tx: mpsc::UnboundedSender<crate::libp2p_beemesh::control::Libp2pControl>,
-    shared_name: Option<String>,
     envelope_handler: std::sync::Arc<EnvelopeHandler>,
 ) -> Router {
     let state = RestState {
         peer_rx,
         control_tx,
         task_store: Arc::new(RwLock::new(HashMap::new())),
-        shared_name,
         envelope_handler,
         version_store: Arc::new(RwLock::new(
             crate::libp2p_beemesh::versioning::VersionStore::new(),

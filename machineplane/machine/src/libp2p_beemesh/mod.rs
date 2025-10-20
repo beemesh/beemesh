@@ -185,35 +185,9 @@ pub fn setup_libp2p_node(
 
 // Global node keypair set at startup by machine::main
 pub static NODE_KEYPAIR: OnceCell<Option<(Vec<u8>, Vec<u8>)>> = OnceCell::new();
-// Global shared name for keystore set at startup by machine::main
-pub static KEYSTORE_SHARED_NAME: OnceCell<Option<String>> = OnceCell::new();
 
 pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
     let _ = NODE_KEYPAIR.set(pair);
-}
-
-pub fn set_keystore_shared_name(shared_name: Option<String>) {
-    let _ = KEYSTORE_SHARED_NAME.set(shared_name);
-}
-
-pub fn open_keystore() -> anyhow::Result<crypto::Keystore> {
-    if let Some(shared_name_opt) = KEYSTORE_SHARED_NAME.get() {
-        if let Some(shared_name) = shared_name_opt {
-            crypto::open_keystore_with_shared_name(shared_name)
-        } else {
-            crypto::open_keystore_default()
-        }
-    } else {
-        crypto::open_keystore_default()
-    }
-}
-
-pub fn open_keystore_with_name(shared_name: &Option<String>) -> anyhow::Result<crypto::Keystore> {
-    if let Some(name) = shared_name {
-        crypto::open_keystore_with_shared_name(name)
-    } else {
-        crypto::open_keystore_default()
-    }
 }
 
 /// Set the global control sender for distributed operations
@@ -231,7 +205,6 @@ pub async fn start_libp2p_node(
     topic: gossipsub::IdentTopic,
     peer_tx: watch::Sender<Vec<String>>,
     mut control_rx: mpsc::UnboundedReceiver<Libp2pControl>,
-    _keystore_shared_name: Option<String>,
 ) -> Result<()> {
     use std::collections::HashMap;
     use tokio::time::Instant;
