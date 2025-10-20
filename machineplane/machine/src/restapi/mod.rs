@@ -7,7 +7,7 @@ use axum::{
     Router,
 };
 use base64::Engine;
-use log::{debug, info, warn};
+use log::debug;
 use once_cell::sync::Lazy;
 use protocol::libp2p_constants::{
     FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS,
@@ -60,7 +60,6 @@ pub struct RestState {
     pub control_tx: mpsc::UnboundedSender<crate::libp2p_beemesh::control::Libp2pControl>,
     task_store: Arc<RwLock<HashMap<String, TaskRecord>>>,
     pub envelope_handler: std::sync::Arc<EnvelopeHandler>,
-    pub version_store: Arc<RwLock<crate::libp2p_beemesh::versioning::VersionStore>>,
 }
 
 // Global in-memory store of decrypted manifests for debugging / tests.
@@ -122,9 +121,6 @@ pub fn build_router(
         control_tx,
         task_store: Arc::new(RwLock::new(HashMap::new())),
         envelope_handler,
-        version_store: Arc::new(RwLock::new(
-            crate::libp2p_beemesh::versioning::VersionStore::new(),
-        )),
     };
     Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -287,7 +283,6 @@ pub struct TaskRecord {
     pub manifest_cid: Option<String>,
     // store last generated operation id for manifest id computation
     pub last_operation_id: Option<String>,
-    pub version: u64,
 }
 
 pub async fn create_task(
@@ -369,38 +364,11 @@ pub async fn create_task(
     // Extract owner public key from secure request extensions (set by envelope middleware)
     let owner_pubkey = envelope_metadata.signing_pubkey.clone();
 
-    // Generate content hash for versioning
-    let content_hash =
-        crate::libp2p_beemesh::versioning::generate_content_hash(&payload_bytes_for_parsing);
-
-    // Create or update manifest in version store
-    let version = {
-        let mut version_store = state.version_store.write().await;
-        match version_store.create_or_update_manifest(
-            manifest_id.clone(),
-            content_hash.clone(),
-            owner_pubkey.clone(),
-            Some(format!(
-                "Created via API with operation_id: {}",
-                operation_id
-            )),
-        ) {
-            Ok(version) => {
-                info!(
-                    "create_task: manifest version {} created/updated in version store",
-                    version
-                );
-                version
-            }
-            Err(e) => {
-                warn!(
-                    "create_task: failed to create/update manifest in version store: {}",
-                    e
-                );
-                1 // Default to version 1
-            }
-        }
-    };
+    log::info!(
+        "create_task: owner_pubkey len={} for manifest_id={}",
+        owner_pubkey.len(),
+        manifest_id
+    );
 
     // Parse as EncryptedManifest flatbuffer only (no YAML support)
     log::info!(
@@ -446,7 +414,6 @@ pub async fn create_task(
         assigned_peers: None,
         manifest_cid: Some(manifest_id.clone()),
         last_operation_id: Some(operation_id),
-        version,
     };
     {
         let mut store = state.task_store.write().await;
