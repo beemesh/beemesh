@@ -13,8 +13,7 @@ use libp2p::Swarm;
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use protocol::machine;
-use std::collections::{hash_map::DefaultHasher, HashMap};
-use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -202,8 +201,9 @@ async fn process_manifest_deployment(
     // Decrypt the manifest content first
     let manifest_content = decrypt_manifest_content(manifest_json, "temp").await?;
     
-    // Now generate manifest ID from the decrypted content
-    let manifest_id = generate_manifest_id_from_decrypted(apply_req, &manifest_content);
+    // Use the manifest_id from the apply request for provider announcements
+    // This ensures consistency between apply and delete operations  
+    let manifest_id = apply_req.manifest_id().unwrap_or("unknown").to_string();
 
     info!(
         "Processing manifest deployment for manifest_id: {} (calculated from decrypted content)",
@@ -231,10 +231,25 @@ async fn process_manifest_deployment(
         .get_engine(&engine_name)
         .ok_or(format!("Runtime engine '{}' not available", engine_name))?;
 
-    // Deploy the workload
-    let workload_info = engine
-        .deploy_workload(&manifest_id, &manifest_content, &deployment_config)
-        .await?;
+    // Deploy the workload - use peer-aware deployment for mock engine
+    let workload_info = if engine_name == "mock" {
+        // For mock engine, use the peer-aware deployment method if available
+        if let Some(mock_engine) = engine.as_any().downcast_ref::<crate::runtime::mock::MockEngine>() {
+            debug!("Using peer-aware deployment for mock engine");
+            mock_engine.deploy_workload_with_peer(
+                &manifest_id, 
+                &manifest_content, 
+                &deployment_config,
+                *swarm.local_peer_id()
+            ).await?
+        } else {
+            // Fallback to regular deployment
+            engine.deploy_workload(&manifest_id, &manifest_content, &deployment_config).await?
+        }
+    } else {
+        // For other engines, use regular deployment
+        engine.deploy_workload(&manifest_id, &manifest_content, &deployment_config).await?
+    };
 
     info!(
         "Workload deployed successfully: {} using engine '{}', status: {:?}",
@@ -285,20 +300,21 @@ async fn select_runtime_engine(
             }
         }
 
-        // Check manifest type and select appropriate engine
+        // Check manifest type - note preferences, but don't hardcode
         if let Some(kind) = doc.get("kind").and_then(|k| k.as_str()) {
             match kind {
                 "Pod" | "Deployment" | "Service" | "ConfigMap" | "Secret" => {
-                    // Kubernetes resources -> prefer Podman
-                    return Ok("podman".to_string());
+                    // Kubernetes resources - will prefer Podman below if available
+                    debug!("Detected Kubernetes manifest kind: {}", kind);
                 }
                 _ => {}
             }
         }
 
-        // Check for Docker Compose format
+        // Check for Docker Compose format - note preference, but don't hardcode
         if doc.get("services").is_some() && doc.get("version").is_some() {
-            return Ok("docker".to_string());
+            debug!("Detected Docker Compose manifest");
+            // Will prefer Docker below if available
         }
     }
 
@@ -317,26 +333,6 @@ async fn select_runtime_engine(
     }
 
     Err("No suitable runtime engine available".into())
-}
-
-/// Generate a stable manifest ID from the apply request using stable identifiers
-fn generate_manifest_id_from_decrypted(apply_req: &machine::ApplyRequest<'_>, manifest_content: &[u8]) -> String {
-    let mut hasher = DefaultHasher::new();
-
-    if let Some(tenant) = apply_req.tenant() {
-        tenant.hash(&mut hasher);
-    }
-    
-    // Extract manifest name from the decrypted content for stability
-    if let Some(name) = protocol::machine::extract_manifest_name(manifest_content) {
-        debug!("generate_manifest_id_from_decrypted: found manifest name: {}", name);
-        name.hash(&mut hasher);
-    } else {
-        debug!("generate_manifest_id_from_decrypted: no manifest name found, using content hash");
-        manifest_content.hash(&mut hasher);
-    }
-
-    format!("{:x}", hasher.finish())[..16].to_string()
 }
 
 /// Decrypt manifest content from the encrypted envelope
@@ -530,6 +526,65 @@ pub async fn remove_workload_by_id(
     Ok(())
 }
 
+/// Remove workloads by manifest ID - searches through all engines and removes matching workloads
+pub async fn remove_workloads_by_manifest_id(
+    manifest_id: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    info!("remove_workloads_by_manifest_id: manifest_id={}", manifest_id);
+    
+    let registry_guard = RUNTIME_REGISTRY.read().await;
+    let registry = registry_guard
+        .as_ref()
+        .ok_or("Runtime registry not initialized")?;
+
+    let mut removed_workloads = Vec::new();
+    let engine_names = registry.list_engines();
+
+    for engine_name in &engine_names {
+        if let Some(engine) = registry.get_engine(engine_name) {
+            info!("Checking engine '{}' for workloads with manifest_id '{}'", engine_name, manifest_id);
+            
+            // List workloads from this engine
+            match engine.list_workloads().await {
+                Ok(workloads) => {
+                    // Find workloads that match the manifest_id
+                    for workload in workloads {
+                        if workload.manifest_id == manifest_id {
+                            info!("Found matching workload: {} in engine '{}'", workload.id, engine_name);
+                            
+                            // Remove the workload
+                            match engine.remove_workload(&workload.id).await {
+                                Ok(()) => {
+                                    info!("Successfully removed workload: {} from engine '{}'", workload.id, engine_name);
+                                    removed_workloads.push(workload.id);
+                                }
+                                Err(e) => {
+                                    error!("Failed to remove workload {} from engine '{}': {}", workload.id, engine_name, e);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to list workloads from engine '{}': {}", engine_name, e);
+                }
+            }
+        }
+    }
+
+    // Also withdraw provider announcement if we were providing this manifest
+    if let Some(provider_manager) = PROVIDER_MANAGER.read().await.as_ref() {
+        if let Err(e) = provider_manager.stop_providing(manifest_id) {
+            warn!("Failed to stop providing manifest_id {}: {}", manifest_id, e);
+        } else {
+            info!("Stopped providing manifest_id: {}", manifest_id);
+        }
+    }
+
+    info!("remove_workloads_by_manifest_id completed: removed {} workloads for manifest_id '{}'", removed_workloads.len(), manifest_id);
+    Ok(removed_workloads)
+}
+
 /// Get logs from a workload (requires engine name)
 pub async fn get_workload_logs_by_id(
     workload_id: &str,
@@ -615,23 +670,6 @@ services:
         let engine = select_runtime_engine(docker_manifest.as_bytes()).await;
         assert!(engine.is_ok());
         // Should prefer docker for compose files, but fall back to available engines
-    }
-
-    #[test]
-    fn test_manifest_id_generation() {
-        // Create test data
-        let tenant = "test-tenant";
-        let operation_id = "test-operation";
-        let manifest_json = r#"{"kind": "Pod", "metadata": {"name": "test"}}"#;
-
-        let mut hasher = DefaultHasher::new();
-        tenant.hash(&mut hasher);
-        operation_id.hash(&mut hasher);
-        manifest_json.hash(&mut hasher);
-        let expected_id = format!("{:x}", hasher.finish());
-
-        assert!(!expected_id.is_empty());
-        assert!(expected_id.len() > 8);
     }
 
     #[test]

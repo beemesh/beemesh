@@ -127,7 +127,7 @@ async fn test_delete_nonexistent_task() {
     let _node_guard = start_test_nodes().await;
 
     // Give nodes time to start up and connect
-    sleep(Duration::from_secs(2)).await;
+    sleep(Duration::from_secs(5)).await;
 
     // Set API endpoint for CLI to use
     std::env::set_var("BEEMESH_API", "http://127.0.0.1:3000");

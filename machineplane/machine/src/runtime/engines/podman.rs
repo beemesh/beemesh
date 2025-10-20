@@ -315,9 +315,9 @@ impl RuntimeEngine for PodmanEngine {
         for (key, value) in &config.env {
             env_strings.push(format!("{}={}", key, value));
         }
-        for env_str in &env_strings {
+        /*for env_str in &env_strings {
             args.extend(&["--env", env_str]);
-        }
+        }*/
 
         // Add runtime-specific options
         for (key, value) in &config.runtime_options {
@@ -417,11 +417,11 @@ impl RuntimeEngine for PodmanEngine {
             env_strings.push(format!("{}={}", key, value));
         }
 
-        if !env_strings.is_empty() {
+        /*if !env_strings.is_empty() {
             for env in &env_strings {
                 args.extend(&["--env", env]);
             }
-        }
+        }*/
 
         // Add the manifest file
         args.push(temp_file.to_str().unwrap());
@@ -511,13 +511,93 @@ impl RuntimeEngine for PodmanEngine {
     async fn list_workloads(&self) -> RuntimeResult<Vec<WorkloadInfo>> {
         debug!("Listing all workloads");
 
-        let _output = self
+        let output = self
             .execute_command(&["pod", "ls", "--format", "json"])
             .await?;
 
+        let mut workloads = Vec::new();
+
         // Parse JSON output to create WorkloadInfo objects
-        // This is a simplified implementation - in practice you'd parse the full JSON
-        let workloads = Vec::new();
+        if !output.trim().is_empty() {
+            match serde_json::from_str::<serde_json::Value>(&output) {
+                Ok(json) => {
+                    if let Some(pods_array) = json.as_array() {
+                        for pod in pods_array {
+                            if let Some(pod_name) = pod.get("Name").and_then(|n| n.as_str()) {
+                                // Only include pods that match our naming convention "beemesh-*"
+                                if pod_name.starts_with("beemesh-") {
+                                    // Extract manifest_id from pod name
+                                    let manifest_id = if pod_name.ends_with("-pod") {
+                                        // Remove both "beemesh-" prefix and "-pod" suffix
+                                        pod_name.strip_prefix("beemesh-")
+                                                .unwrap_or(pod_name)
+                                                .strip_suffix("-pod")
+                                                .unwrap_or(pod_name)
+                                                .to_string()
+                                    } else {
+                                        // Remove "beemesh-" prefix only
+                                        pod_name.strip_prefix("beemesh-")
+                                                .unwrap_or(pod_name)
+                                                .to_string()
+                                    };
+
+                                    // Parse pod status
+                                    let status = match pod.get("Status").and_then(|s| s.as_str()) {
+                                        Some("Running") => WorkloadStatus::Running,
+                                        Some("Stopped") | Some("Exited") => WorkloadStatus::Stopped,
+                                        Some("Error") => WorkloadStatus::Failed("Pod in error state".to_string()),
+                                        Some("Failed") => WorkloadStatus::Failed("Pod failed".to_string()),
+                                        _ => WorkloadStatus::Unknown,
+                                    };
+
+                                    // Extract metadata from pod labels if available
+                                    let mut metadata = HashMap::new();
+                                    if let Some(labels) = pod.get("Labels") {
+                                        if let Some(labels_obj) = labels.as_object() {
+                                            for (key, value) in labels_obj {
+                                                if let Some(value_str) = value.as_str() {
+                                                    metadata.insert(key.clone(), value_str.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Parse created timestamp
+                                    let created_at = pod.get("Created")
+                                        .and_then(|c| c.as_str())
+                                        .and_then(|created_str| {
+                                            // Try to parse RFC3339 timestamp
+                                            std::time::SystemTime::UNIX_EPOCH.checked_add(
+                                                std::time::Duration::from_secs(
+                                                    created_str.parse::<u64>().unwrap_or(0)
+                                                )
+                                            )
+                                        })
+                                        .unwrap_or_else(std::time::SystemTime::now);
+
+                                    let workload_info = WorkloadInfo {
+                                        id: format!("beemesh-{}", manifest_id),
+                                        manifest_id,
+                                        status,
+                                        metadata,
+                                        created_at,
+                                        updated_at: std::time::SystemTime::now(),
+                                        ports: Vec::new(), // Port mappings would need separate inspection
+                                    };
+
+                                    debug!("Found beemesh workload: {} (pod: {})", workload_info.id, pod_name);
+                                    workloads.push(workload_info);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to parse JSON output: {}", e);
+                    debug!("Raw output: {}", output);
+                }
+            }
+        }
 
         debug!("Found {} workloads", workloads.len());
         Ok(workloads)

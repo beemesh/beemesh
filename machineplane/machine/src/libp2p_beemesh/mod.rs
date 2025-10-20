@@ -242,7 +242,12 @@ pub async fn start_libp2p_node(
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         let local_peer = *swarm.local_peer_id();
-                        behaviour::apply_message(message, peer, &mut swarm, local_peer);
+                        // Create a future for the workload manager handler and drive it immediately
+                        let future = crate::workload_integration::handle_apply_message_with_workload_manager(
+                            message, peer, &mut swarm, local_peer
+                        );
+                        // Since we're in an async context, we can await this directly
+                        future.await;
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::OutboundFailure { peer, error, .. })) => {
                         behaviour::apply_outbound_failure(peer, error);

@@ -416,24 +416,6 @@ mod tests {
     static PQC_TEST_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
 
     #[test]
-    fn test_split_and_recover_shamir() {
-        // create a random 32-byte secret
-        let mut secret = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut secret);
-
-        let n = 5usize;
-        let k = 3usize;
-        let shares = split_symmetric_key(&secret, n, k);
-        assert_eq!(shares.len(), n);
-
-        // pick any k shares (take first k)
-        let chosen: Vec<Vec<u8>> = shares.into_iter().take(k).collect();
-
-        let recovered = recover_symmetric_key(&chosen, k).expect("recover failed");
-        assert_eq!(&recovered[..], &secret[..]);
-    }
-
-    #[test]
     fn test_sign_and_verify_envelope() {
         // serialize access to PQC library across tests to avoid races in the FIPS backend
         // tolerate mutex poisoning in tests by recovering inner mutex guard

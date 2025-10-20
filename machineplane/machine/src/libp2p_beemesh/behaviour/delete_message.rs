@@ -7,7 +7,7 @@ pub fn delete_message(
     message: request_response::Message<Vec<u8>, Vec<u8>>,
     peer: libp2p::PeerId,
     swarm: &mut libp2p::Swarm<super::MyBehaviour>,
-    local_peer: libp2p::PeerId,
+    _local_peer: libp2p::PeerId,
 ) {
     match message {
         request_response::Message::Request {
@@ -90,7 +90,7 @@ pub fn delete_message(
                         let (success, message, removed_workloads) = 
                             process_delete_request(&manifest_id, &tenant, force, &envelope_pubkey, &requesting_peer).await;
 
-                        let response = machine::build_delete_response(
+                        let _response = machine::build_delete_response(
                             success,
                             &operation_id,
                             &message,
@@ -230,22 +230,15 @@ async fn verify_delete_ownership(
 async fn remove_workloads_by_manifest_id(manifest_id: &str) -> Result<Vec<String>, anyhow::Error> {
     info!("remove_workloads_by_manifest_id: manifest_id={}", manifest_id);
 
-    // Get access to the global workload manager
-    match crate::workload_integration::get_global_runtime_registry().await {
-        Some(_registry_guard) => {
-            // For now, we'll return a mock result since we need a more sophisticated
-            // integration pattern to access the workload manager from here.
-            // In a complete implementation, we would:
-            // 1. Get access to the workload manager instance
-            // 2. Call remove_workloads_by_manifest_id on it
-            // 3. Return the actual list of removed workload IDs
-            
-            info!("Workload registry available, but integration pending");
-            Ok(vec![format!("mock-workload-{}", manifest_id)])
+    // Use the integrated workload manager to remove workloads
+    match crate::workload_integration::remove_workloads_by_manifest_id(manifest_id).await {
+        Ok(removed_workloads) => {
+            info!("Successfully removed {} workloads for manifest_id '{}'", removed_workloads.len(), manifest_id);
+            Ok(removed_workloads)
         }
-        None => {
-            warn!("No global runtime registry available");
-            Ok(vec![])
+        Err(e) => {
+            error!("Failed to remove workloads for manifest_id '{}': {}", manifest_id, e);
+            Err(anyhow::anyhow!("Failed to remove workloads: {}", e))
         }
     }
 }

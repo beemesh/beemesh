@@ -225,6 +225,59 @@ impl MockEngine {
             Vec::new()
         }
     }
+
+    /// Deploy a workload with local peer ID tracking
+    pub async fn deploy_workload_with_peer(
+        &self,
+        manifest_id: &str,
+        manifest_content: &[u8],
+        config: &DeploymentConfig,
+        local_peer_id: libp2p::PeerId,
+    ) -> RuntimeResult<WorkloadInfo> {
+        // Simulate deployment failure based on configuration
+        if !self.should_deployment_succeed() {
+            return Err(RuntimeError::DeploymentFailed(
+                "Mock deployment failure".to_string(),
+            ));
+        }
+
+        // Generate unique workload ID with peer ID for uniqueness
+        let workload_id = self.generate_workload_id_with_peer(manifest_id, manifest_content, local_peer_id);
+
+        // Parse manifest metadata
+        let mut metadata = self.parse_manifest_metadata(manifest_content);
+
+        // Add local peer ID to metadata
+        metadata.insert("local_peer_id".to_string(), local_peer_id.to_string());
+
+        // Generate port mappings
+        let ports = self.generate_port_mappings();
+
+        // Create workload info
+        let now = SystemTime::now();
+        let workload_info = WorkloadInfo {
+            id: workload_id.clone(),
+            manifest_id: manifest_id.to_string(),
+            status: WorkloadStatus::Running,
+            metadata,
+            created_at: now,
+            updated_at: now,
+            ports,
+        };
+
+        // Store the workload
+        let mock_workload = MockWorkload {
+            info: workload_info.clone(),
+            config: config.clone(),
+        };
+
+        self.workloads
+            .lock()
+            .unwrap()
+            .insert(workload_id, mock_workload);
+
+        Ok(workload_info)
+    }
 }
 
 impl Default for MockEngine {
@@ -327,59 +380,6 @@ impl RuntimeEngine for MockEngine {
             "Mock engine: successfully deployed workload {} for manifest {}",
             workload_id, manifest_id
         );
-
-        Ok(workload_info)
-    }
-
-    /// Deploy a workload with local peer ID tracking
-    async fn deploy_workload_with_peer(
-        &self,
-        manifest_id: &str,
-        manifest_content: &[u8],
-        config: &DeploymentConfig,
-        local_peer_id: libp2p::PeerId,
-    ) -> RuntimeResult<WorkloadInfo> {
-        // Simulate deployment failure based on configuration
-        if !self.should_deployment_succeed() {
-            return Err(RuntimeError::DeploymentFailed(
-                "Mock deployment failure".to_string(),
-            ));
-        }
-
-        // Generate unique workload ID with peer ID for uniqueness
-        let workload_id = self.generate_workload_id_with_peer(manifest_id, manifest_content, local_peer_id);
-
-        // Parse manifest metadata
-        let mut metadata = self.parse_manifest_metadata(manifest_content);
-
-        // Add local peer ID to metadata
-        metadata.insert("local_peer_id".to_string(), local_peer_id.to_string());
-
-        // Generate port mappings
-        let ports = self.generate_port_mappings();
-
-        // Create workload info
-        let now = SystemTime::now();
-        let workload_info = WorkloadInfo {
-            id: workload_id.clone(),
-            manifest_id: manifest_id.to_string(),
-            status: WorkloadStatus::Running,
-            metadata,
-            created_at: now,
-            updated_at: now,
-            ports,
-        };
-
-        // Store the workload
-        let mock_workload = MockWorkload {
-            info: workload_info.clone(),
-            config: config.clone(),
-        };
-
-        self.workloads
-            .lock()
-            .unwrap()
-            .insert(workload_id, mock_workload);
 
         Ok(workload_info)
     }

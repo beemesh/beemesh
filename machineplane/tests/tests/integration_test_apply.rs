@@ -281,13 +281,6 @@ async fn test_apply_functionality() {
         nodes_with_content_mismatch
     );
 
-    log::info!(
-        "✓ MockEngine verification passed: manifest {} deployed (visible on {} node(s) due to shared MockEngine): {:?}",
-        task_id,
-        nodes_with_deployed_workloads.len(),
-        nodes_with_deployed_workloads
-    );
-
     // Clean up nodes
     guard.cleanup().await;
 
@@ -325,7 +318,7 @@ async fn test_apply_with_real_podman() {
         .expect("apply_file should succeed with real Podman");
 
     // Wait for direct delivery and Podman deployment to complete (longer timeout for real containers)
-    sleep(Duration::from_secs(15)).await;
+    sleep(Duration::from_secs(5)).await;
 
     // Verify actual Podman deployment
     let podman_verification_successful = verify_podman_deployment(&task_id, &original_content).await;
@@ -333,6 +326,15 @@ async fn test_apply_with_real_podman() {
     assert!(
         podman_verification_successful,
         "Podman deployment verification failed - no matching pods found"
+    );
+
+    let _delete_result = cli::delete_file(manifest_path, true).await;
+    sleep(Duration::from_secs(5)).await;
+
+    let podman_verification_successful = verify_podman_deployment(&task_id, &original_content).await;
+    assert!(
+        !podman_verification_successful,
+        "Podman deployment still exists after deletion attempt"
     );
 
     // Clean up Podman resources before test cleanup
@@ -350,7 +352,7 @@ async fn test_apply_nginx_with_replicas() {
 
     // Wait for libp2p mesh to form before proceeding  
     sleep(Duration::from_secs(3)).await;
-    let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(15)).await;
+    let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(5)).await;
     if !mesh_formed {
         log::warn!("Mesh formation incomplete, but proceeding with test");
     }
@@ -371,7 +373,7 @@ async fn test_apply_nginx_with_replicas() {
         .expect("apply_file should succeed for nginx_with_replicas");
 
     // Wait for direct delivery and deployment to complete
-    sleep(Duration::from_secs(8)).await;
+    sleep(Duration::from_secs(5)).await;
 
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;

@@ -1,5 +1,4 @@
 pub mod apply_inbound_failure;
-pub mod apply_message;
 pub mod apply_outbound_failure;
 pub mod delete_message;
 pub mod failure_handlers;
@@ -14,7 +13,6 @@ pub mod handshake_outbound_failure;
 pub mod scheduler_message;
 
 pub use apply_inbound_failure::apply_inbound_failure;
-pub use apply_message::apply_message;
 pub use apply_outbound_failure::apply_outbound_failure;
 pub use delete_message::{delete_message, delete_outbound_failure, delete_inbound_failure};
 pub use gossipsub_message::gossipsub_message;

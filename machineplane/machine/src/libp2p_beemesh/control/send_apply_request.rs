@@ -25,14 +25,11 @@ pub async fn handle_send_apply_request(
     if peer_id == *swarm.local_peer_id() {
         debug!("libp2p: handling self-apply locally for peer {}", peer_id);
 
-        // Now that the local capability (if any) has been stored, perform the self-apply
-        // which may request key shares and will be able to find the capability in the keystore.
-        // Note: process_self_apply_request expects raw flatbuffer bytes, not signed envelopes
-        crate::libp2p_beemesh::behaviour::apply_message::process_self_apply_request(
+        // Use the new workload manager integration for self-apply as well
+        crate::workload_integration::process_enhanced_self_apply_request(
             &manifest,
             swarm,
-            *swarm.local_peer_id(),
-        );
+        ).await;
 
         let _ = reply_tx.send(Ok(format!("Apply request handled locally for {}", peer_id)));
         return;

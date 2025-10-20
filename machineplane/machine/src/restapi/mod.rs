@@ -805,16 +805,79 @@ pub async fn delete_task(
     // Step 3: Send delete requests to all providers
     let mut successful_deletes = Vec::new();
     let mut failed_deletes = Vec::new();
+    let mut removed_workloads = Vec::new();
 
-    for provider_peer_id in providers {
-        match send_delete_request_to_peer(&state, &provider_peer_id, &delete_request).await {
-            Ok(result) => {
-                info!("Delete request sent to peer {}: {:?}", provider_peer_id, result);
-                successful_deletes.push(provider_peer_id);
-            }
+    // Get our local peer ID for comparison
+    let (local_peer_tx, mut local_peer_rx) = mpsc::unbounded_channel();
+    if let Err(e) = state.control_tx.send(
+        crate::libp2p_beemesh::control::Libp2pControl::GetLocalPeerId {
+            reply_tx: local_peer_tx,
+        },
+    ) {
+        error!("Failed to get local peer ID: {}", e);
+        let error_response = protocol::machine::build_delete_response(
+            false,
+            &operation_id,
+            &format!("Failed to get local peer ID: {}", e),
+            &task_id,
+            &[],
+        );
+        return create_response_with_fallback(&error_response).await;
+    }
+
+    let local_peer_id = match tokio::time::timeout(Duration::from_secs(2), local_peer_rx.recv()).await {
+        Ok(Some(peer_id)) => peer_id,
+        _ => {
+            error!("Timeout getting local peer ID");
+            let error_response = protocol::machine::build_delete_response(
+                false,
+                &operation_id,
+                "Timeout getting local peer ID",
+                &task_id,
+                &[],
+            );
+            return create_response_with_fallback(&error_response).await;
+        }
+    };
+
+    for provider_peer_id_str in providers {
+        // Parse provider peer ID
+        let provider_peer_id: libp2p::PeerId = match provider_peer_id_str.parse() {
+            Ok(id) => id,
             Err(e) => {
-                error!("Failed to send delete request to peer {}: {}", provider_peer_id, e);
-                failed_deletes.push(format!("{}:{}", provider_peer_id, e));
+                error!("Invalid provider peer ID '{}': {}", provider_peer_id_str, e);
+                failed_deletes.push(format!("{}:invalid_peer_id", provider_peer_id_str));
+                continue;
+            }
+        };
+
+        // Check if this is a self-delete (local peer)
+        if provider_peer_id == local_peer_id {
+            info!("Performing self-delete for manifest_id: {}", task_id);
+            
+            // Handle local workload deletion directly
+            match handle_local_delete(&task_id, force).await {
+                Ok(local_removed_workloads) => {
+                    info!("Self-delete successful for manifest_id {}: removed {} workloads", task_id, local_removed_workloads.len());
+                    successful_deletes.push(provider_peer_id_str);
+                    removed_workloads.extend(local_removed_workloads);
+                }
+                Err(e) => {
+                    error!("Self-delete failed for manifest_id {}: {}", task_id, e);
+                    failed_deletes.push(format!("{}:self_delete_failed:{}", provider_peer_id_str, e));
+                }
+            }
+        } else {
+            // Send delete request to remote peer
+            match send_delete_request_to_peer(&state, &provider_peer_id_str, &delete_request).await {
+                Ok(result) => {
+                    info!("Delete request sent to peer {}: {:?}", provider_peer_id_str, result);
+                    successful_deletes.push(provider_peer_id_str);
+                }
+                Err(e) => {
+                    error!("Failed to send delete request to peer {}: {}", provider_peer_id_str, e);
+                    failed_deletes.push(format!("{}:{}", provider_peer_id_str, e));
+                }
             }
         }
     }
@@ -841,50 +904,114 @@ pub async fn delete_task(
         &operation_id,
         &message,
         &task_id,
-        &[], // Individual nodes will report their removed workloads
+        &removed_workloads,
     );
 
     create_response_with_fallback(&response).await
 }
 
+/// Handle local workload deletion when the provider is the same machine
+async fn handle_local_delete(
+    manifest_id: &str,
+    _force: bool,
+) -> Result<Vec<String>, String> {
+    info!("handle_local_delete: processing manifest_id={}", manifest_id);
+    
+    // Use the workload integration module to remove workloads by manifest ID
+    match crate::workload_integration::remove_workloads_by_manifest_id(manifest_id).await {
+        Ok(removed_workloads) => {
+            info!("handle_local_delete: successfully removed {} workloads for manifest_id '{}'", removed_workloads.len(), manifest_id);
+            Ok(removed_workloads)
+        }
+        Err(e) => {
+            error!("handle_local_delete: failed to remove workloads for manifest_id '{}': {}", manifest_id, e);
+            Err(format!("local deletion failed: {}", e))
+        }
+    }
+}
+
 /// Find providers for a task using DHT discovery
 async fn find_manifest_providers(
     task_id: &str,
-    _state: &RestState,
+    state: &RestState,
 ) -> Result<Vec<String>, String> {
-    // TODO: Implement DHT provider discovery
-    // For now, return a mock provider list
-    // In the real implementation, this should:
-    // 1. Use the provider discovery system to query DHT
-    // 2. Find all nodes announcing themselves as providers for the task
-    // 3. Return their peer IDs
-    
     info!("find_manifest_providers: searching for task_id={}", task_id);
     
-    // Mock implementation - return empty list for now
-    // In production, this would integrate with the provider discovery system
-    Ok(vec![])
+    // Use the libp2p control system to find providers for this manifest
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    
+    // Send request to find providers via DHT
+    let control_msg = crate::libp2p_beemesh::control::Libp2pControl::FindManifestHolders {
+        manifest_id: task_id.to_string(),
+        reply_tx: tx,
+    };
+    
+    if let Err(e) = state.control_tx.send(control_msg) {
+        warn!("Failed to send find providers request: {}", e);
+        return Ok(vec![]);
+    }
+    
+    // Wait for response with timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+        Ok(Some(providers)) => {
+            info!("find_manifest_providers: found {} providers for task_id={}", providers.len(), task_id);
+            Ok(providers.into_iter().map(|peer_id| peer_id.to_string()).collect())
+        }
+        Ok(None) => {
+            warn!("find_manifest_providers: channel closed for task_id={}", task_id);
+            Ok(vec![])
+        }
+        Err(_) => {
+            warn!("find_manifest_providers: timeout waiting for providers for task_id={}", task_id);
+            Ok(vec![])
+        }
+    }
 }
 
 /// Send a delete request to a specific peer
 async fn send_delete_request_to_peer(
-    _state: &RestState,
+    state: &RestState,
     peer_id: &str,
-    _delete_request: &[u8],
+    delete_request: &[u8],
 ) -> Result<String, String> {
     info!("send_delete_request_to_peer: sending to peer={}", peer_id);
 
     // Parse the peer string into a PeerId
-    let _target_peer_id: libp2p::PeerId = peer_id.parse()
+    let target_peer_id: libp2p::PeerId = peer_id.parse()
         .map_err(|e| format!("Invalid peer ID '{}': {}", peer_id, e))?;
 
-    // Send the delete request via libp2p
-    // TODO: Add a new control message type for delete requests
-    // For now, we'll use a mock implementation
-    info!("Delete request prepared for peer {}, but libp2p integration pending", peer_id);
+    // Send the delete request via libp2p control message
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
     
-    // Mock success response
-    Ok("Delete request sent (mock)".to_string())
+    let control_msg = crate::libp2p_beemesh::control::Libp2pControl::SendDeleteRequest {
+        peer_id: target_peer_id,
+        delete_request: delete_request.to_vec(),
+        reply_tx,
+    };
+    
+    if let Err(e) = state.control_tx.send(control_msg) {
+        return Err(format!("Failed to send delete request to libp2p control: {}", e));
+    }
+
+    // Wait for response with timeout
+    match tokio::time::timeout(Duration::from_secs(10), reply_rx.recv()).await {
+        Ok(Some(Ok(result))) => {
+            info!("Delete request to peer {} completed successfully: {}", peer_id, result);
+            Ok(result)
+        }
+        Ok(Some(Err(e))) => {
+            error!("Delete request to peer {} failed: {}", peer_id, e);
+            Err(e) 
+        }
+        Ok(None) => {
+            error!("Delete request to peer {} - reply channel closed", peer_id);
+            Err("Reply channel closed".to_string())
+        }
+        Err(_) => {
+            error!("Delete request to peer {} timed out", peer_id);
+            Err("Request timed out".to_string())
+        }
+    }
 }
 
 /// Forward an ApplyRequest directly to a specific peer via libp2p

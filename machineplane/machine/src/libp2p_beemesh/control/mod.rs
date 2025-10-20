@@ -15,9 +15,11 @@ use libp2p::kad::QueryId;
 
 mod query_capacity;
 mod send_apply_request;
+mod send_delete_request;
 
 pub use query_capacity::handle_query_capacity_with_payload;
 pub use send_apply_request::handle_send_apply_request;
+pub use send_delete_request::handle_send_delete_request;
 
 /// Calculate a simple CID for manifest data
 /// For now, use a basic hash - this should be replaced with proper CID calculation
@@ -63,6 +65,13 @@ pub async fn handle_control_message(
             reply_tx,
         } => {
             handle_send_apply_request(peer_id, manifest, reply_tx, swarm).await;
+        }
+        Libp2pControl::SendDeleteRequest {
+            peer_id,
+            delete_request,
+            reply_tx,
+        } => {
+            handle_send_delete_request(peer_id, delete_request, reply_tx, swarm).await;
         }
 
         Libp2pControl::StoreAppliedManifest {
@@ -220,10 +229,10 @@ pub async fn handle_control_message(
             manifest_id,
             reply_tx,
         } => {
-            // Use Kademlia providers API by issuing a get_providers for the manifest key
-            let record_key = RecordKey::new(&format!("manifest:{}", manifest_id));
+            // Use Kademlia providers API by issuing a get_providers for the provider key
+            let record_key = RecordKey::new(&format!("provider:{}", manifest_id));
             info!(
-                "DHT: attempting get_providers for key=manifest:{}",
+                "DHT: attempting get_providers for key=provider:{}",
                 manifest_id
             );
             let query_id = swarm.behaviour_mut().kademlia.get_providers(record_key);
@@ -547,6 +556,12 @@ pub enum Libp2pControl {
         peer_id: PeerId,
         /// FlatBuffer ApplyRequest bytes
         manifest: Vec<u8>,
+        reply_tx: mpsc::UnboundedSender<Result<String, String>>,
+    },
+    SendDeleteRequest {
+        peer_id: PeerId,
+        /// FlatBuffer DeleteRequest bytes
+        delete_request: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<String, String>>,
     },
 
