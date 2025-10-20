@@ -29,13 +29,11 @@ use crate::libp2p_beemesh::{
 };
 
 pub mod behaviour;
-pub mod constants;
 pub mod control;
 pub mod dht_helpers;
 pub mod dht_manager;
 pub mod envelope;
 pub mod error_helpers;
-pub mod manifest_announcement;
 pub mod security;
 pub mod versioning;
 
@@ -114,14 +112,7 @@ pub fn setup_libp2p_node(
                 request_response::Config::default(),
             );
 
-            // Create the request-response behavior for manifest announcement protocol
-            let manifest_announcement_rr = request_response::Behaviour::new(
-                std::iter::once((
-                    "/beemesh/manifest-announcement/1.0.0",
-                    request_response::ProtocolSupport::Full,
-                )),
-                request_response::Config::default(),
-            );
+
 
             // Create the request-response behavior for manifest fetch protocol
             let manifest_fetch_rr = request_response::Behaviour::new(
@@ -156,7 +147,6 @@ pub fn setup_libp2p_node(
                 apply_rr,
                 handshake_rr,
                 scheduler_rr,
-                manifest_announcement_rr,
                 manifest_fetch_rr,
                 kademlia,
             })
@@ -275,9 +265,7 @@ pub async fn start_libp2p_node(
                         let local_peer = *swarm.local_peer_id();
                         behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);
                     }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::ManifestAnnouncementRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        behaviour::manifest_announcement_message(message, peer, &mut swarm);
-                    }
+
                     SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::OutboundFailure { peer, request_id, error, connection_id: _ })) => {
                         warn!("libp2p: manifest fetch outbound failure for peer {}: {:?}", peer, error);
                         // Handle failed manifest distribution requests

@@ -234,97 +234,8 @@ pub async fn handle_control_message(
                 query_id
             );
         }
-        Libp2pControl::AnnounceManifestHolder {
-            manifest_id,
-            version,
-            reply_tx,
-        } => {
-            // Store the manifest holder information locally in global store
-            {
-                let mut store = get_manifest_holder_store().lock().unwrap();
-                store.announce_manifest_holder(manifest_id.clone(), version);
-            }
 
-            info!(
-                "Announcing manifest holder: manifest_id={}, version={}",
-                manifest_id, version
-            );
-            let _ = reply_tx.send(Ok(()));
-        }
-        Libp2pControl::FindManifestHoldersWithVersion {
-            manifest_id,
-            version,
-            reply_tx,
-        } => {
-            // Query connected peers for manifest holders using the announcement protocol
-            let query = crate::libp2p_beemesh::manifest_announcement::ManifestHolderQuery {
-                manifest_id: manifest_id.clone(),
-                version,
-            };
 
-            let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
-            if connected_peers.is_empty() {
-                warn!("No connected peers to query for manifest holders");
-                let _ = reply_tx.send(vec![]);
-                return;
-            }
-
-            info!(
-                "Querying {} peers for manifest holders of {} (version: {:?})",
-                connected_peers.len(),
-                manifest_id,
-                version
-            );
-
-            // Serialize the query to JSON for transmission
-            let query_bytes = match serde_json::to_vec(&query) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    warn!("Failed to serialize manifest holder query: {}", e);
-                    let _ = reply_tx.send(vec![]);
-                    return;
-                }
-            };
-
-            // Send query to all connected peers and collect them for tracking
-            let mut queried_peers = Vec::new();
-            for peer in connected_peers {
-                let request_id = swarm
-                    .behaviour_mut()
-                    .manifest_announcement_rr
-                    .send_request(&peer, query_bytes.clone());
-                info!(
-                    "Sent manifest holder query to peer={} request_id={:?}",
-                    peer, request_id
-                );
-                queried_peers.push(peer);
-            }
-
-            // If no queries were sent successfully, return empty result
-            if queried_peers.is_empty() {
-                let _ = reply_tx.send(vec![]);
-                return;
-            }
-
-            // Create a unique query key for tracking responses
-            let query_key = format!(
-                "{}:{}",
-                manifest_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            );
-
-            // Store the pending query to collect responses
-            insert_pending_manifest_query(query_key.clone(), queried_peers, reply_tx);
-
-            // Set up a timeout to cleanup if not all peers respond
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                cleanup_expired_manifest_queries();
-            });
-        }
 
         Libp2pControl::BootstrapDht { reply_tx } => {
             // Bootstrap the Kademlia DHT
@@ -505,18 +416,7 @@ pub fn take_pending_providers_query(
     map.remove(&key)
 }
 
-/// Global manifest holder store
-static MANIFEST_HOLDER_STORE: Lazy<
-    Mutex<crate::libp2p_beemesh::manifest_announcement::ManifestHolderStore>,
-> = Lazy::new(|| {
-    Mutex::new(crate::libp2p_beemesh::manifest_announcement::ManifestHolderStore::new())
-});
 
-/// Get reference to the global manifest holder store
-pub fn get_manifest_holder_store(
-) -> &'static Mutex<crate::libp2p_beemesh::manifest_announcement::ManifestHolderStore> {
-    &MANIFEST_HOLDER_STORE
-}
 
 /// Global store for tracking pending manifest distribution requests
 static PENDING_MANIFEST_REQUESTS: Lazy<
@@ -553,65 +453,7 @@ pub fn cleanup_timed_out_manifest_requests() {
     }
 }
 
-/// Pending manifest holder queries: query_key -> (peers, reply_sender)
-static PENDING_MANIFEST_QUERIES: Lazy<
-    Mutex<
-        std::collections::HashMap<
-            String,
-            (
-                Vec<libp2p::PeerId>,
-                mpsc::UnboundedSender<
-                    Vec<crate::libp2p_beemesh::manifest_announcement::ManifestHolderInfo>,
-                >,
-            ),
-        >,
-    >,
-> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
-/// Insert a pending manifest holder query
-pub fn insert_pending_manifest_query(
-    query_key: String,
-    peers: Vec<libp2p::PeerId>,
-    sender: mpsc::UnboundedSender<
-        Vec<crate::libp2p_beemesh::manifest_announcement::ManifestHolderInfo>,
-    >,
-) {
-    let mut map = PENDING_MANIFEST_QUERIES.lock().unwrap();
-    map.insert(query_key, (peers, sender));
-}
-
-/// Process a manifest holder response and check if we have enough responses
-pub fn handle_manifest_holder_response(
-    peer: &libp2p::PeerId,
-    response: &crate::libp2p_beemesh::manifest_announcement::ManifestHolderResponse,
-) {
-    let mut map = PENDING_MANIFEST_QUERIES.lock().unwrap();
-    let mut completed_queries = Vec::new();
-
-    // Check all pending queries to see if this response completes any
-    for (query_key, (expected_peers, _)) in map.iter() {
-        if expected_peers.contains(peer) {
-            // This response is for this query
-            completed_queries.push(query_key.clone());
-        }
-    }
-
-    // For now, send the first response to complete any pending queries
-    // In a full implementation, we'd collect multiple responses
-    for query_key in completed_queries {
-        if let Some((_, sender)) = map.remove(&query_key) {
-            let _ = sender.send(response.holders.clone());
-            break; // Only complete one query per response for simplicity
-        }
-    }
-}
-
-/// Clean up expired manifest queries
-pub fn cleanup_expired_manifest_queries() {
-    let mut map = PENDING_MANIFEST_QUERIES.lock().unwrap();
-    // For now, just clear all - in production we'd track timestamps
-    map.clear();
-}
 
 /// Insert a pending kad query sender for the given QueryId
 pub fn insert_pending_kad_query(
@@ -713,20 +555,7 @@ pub enum Libp2pControl {
         manifest_id: String,
         reply_tx: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
     },
-    /// Announce that this node holds a specific manifest version
-    AnnounceManifestHolder {
-        manifest_id: String,
-        version: u64,
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
-    /// Find peers that hold a specific manifest using the announcement protocol
-    FindManifestHoldersWithVersion {
-        manifest_id: String,
-        version: Option<u64>,
-        reply_tx: mpsc::UnboundedSender<
-            Vec<crate::libp2p_beemesh::manifest_announcement::ManifestHolderInfo>,
-        >,
-    },
+
 
     /// Store an applied manifest in the DHT after successful deployment
     StoreAppliedManifest {
