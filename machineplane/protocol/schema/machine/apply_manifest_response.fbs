@@ -1,0 +1,11 @@
+namespace beemesh.machine;
+
+table ApplyManifestResponse {
+    ok: bool;
+    tenant: string;
+    replicas_requested: uint32;
+    assigned_peers: [string];
+    per_peer_results_json: string;
+}
+
+root_type ApplyManifestResponse;

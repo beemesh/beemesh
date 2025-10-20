@@ -1,0 +1,11 @@
+namespace beemesh.machine;
+
+table TaskStatusResponse {
+    task_id: string;
+    state: string;
+    assigned_peers: [string];
+    shares_distributed: [string];
+    manifest_cid: string;
+}
+
+root_type TaskStatusResponse;

@@ -1,0 +1,8 @@
+namespace beemesh.machine;
+
+table ApplyManifestRequest {
+    manifest_envelope_json: string;
+    shares_envelope_json: string;
+}
+
+root_type ApplyManifestRequest;

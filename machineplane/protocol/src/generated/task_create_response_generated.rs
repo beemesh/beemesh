@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for TaskCreateResponse<'a> {
   type Inner = TaskCreateResponse<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: flatbuffers::Table::new(buf, loc) }
+    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
   }
 }
 
@@ -242,14 +242,14 @@ pub fn size_prefixed_root_as_task_create_response_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `TaskCreateResponse`.
 pub unsafe fn root_as_task_create_response_unchecked(buf: &[u8]) -> TaskCreateResponse {
-  flatbuffers::root_unchecked::<TaskCreateResponse>(buf)
+  unsafe { flatbuffers::root_unchecked::<TaskCreateResponse>(buf) }
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed TaskCreateResponse and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `TaskCreateResponse`.
 pub unsafe fn size_prefixed_root_as_task_create_response_unchecked(buf: &[u8]) -> TaskCreateResponse {
-  flatbuffers::size_prefixed_root_unchecked::<TaskCreateResponse>(buf)
+  unsafe { flatbuffers::size_prefixed_root_unchecked::<TaskCreateResponse>(buf) }
 }
 #[inline]
 pub fn finish_task_create_response_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

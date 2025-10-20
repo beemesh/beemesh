@@ -1,0 +1,7 @@
+namespace beemesh.machine;
+
+table AssignRequest {
+    chosen_peers: [string];
+}
+
+root_type AssignRequest;
