@@ -37,7 +37,7 @@ impl<'a> flatbuffers::Follow<'a> for EncryptedManifest<'a> {
   type Inner = EncryptedManifest<'a>;
   #[inline]
   unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-    Self { _tab: flatbuffers::Table::new(buf, loc) }
+    Self { _tab: unsafe { flatbuffers::Table::new(buf, loc) } }
   }
 }
 
@@ -327,14 +327,14 @@ pub fn size_prefixed_root_as_encrypted_manifest_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `EncryptedManifest`.
 pub unsafe fn root_as_encrypted_manifest_unchecked(buf: &[u8]) -> EncryptedManifest {
-  flatbuffers::root_unchecked::<EncryptedManifest>(buf)
+  unsafe { flatbuffers::root_unchecked::<EncryptedManifest>(buf) }
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed EncryptedManifest and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `EncryptedManifest`.
 pub unsafe fn size_prefixed_root_as_encrypted_manifest_unchecked(buf: &[u8]) -> EncryptedManifest {
-  flatbuffers::size_prefixed_root_unchecked::<EncryptedManifest>(buf)
+  unsafe { flatbuffers::size_prefixed_root_unchecked::<EncryptedManifest>(buf) }
 }
 #[inline]
 pub fn finish_encrypted_manifest_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

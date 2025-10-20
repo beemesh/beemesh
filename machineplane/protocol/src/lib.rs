@@ -104,21 +104,6 @@ mod generated {
         ));
     }
 
-    pub mod generated_distribute_manifests_request {
-        #![allow(
-            dead_code,
-            non_camel_case_types,
-            non_snake_case,
-            unused_imports,
-            unused_variables,
-            mismatched_lifetime_syntaxes
-        )]
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/generated/distribute_manifests_request_generated.rs"
-        ));
-    }
-
     pub mod generated_assign_request {
         #![allow(
             dead_code,
@@ -206,21 +191,6 @@ mod generated {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/generated/task_status_response_generated.rs"
-        ));
-    }
-
-    pub mod generated_distribute_manifests_response {
-        #![allow(
-            dead_code,
-            non_camel_case_types,
-            non_snake_case,
-            unused_imports,
-            unused_variables,
-            mismatched_lifetime_syntaxes
-        )]
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/generated/distribute_manifests_response_generated.rs"
         ));
     }
 
@@ -321,12 +291,6 @@ pub mod machine {
         finish_envelope_buffer, EnvelopeArgs,
     };
 
-    // Distribute manifests types
-    pub use crate::generated::generated_distribute_manifests_request::beemesh::machine::{
-        DistributeManifestsRequest, ManifestTarget, ManifestTargetArgs,
-    };
-    pub use crate::generated::generated_distribute_manifests_response::beemesh::machine::DistributeManifestsResponse;
-
     // Assign types
     pub use crate::generated::generated_assign_request::beemesh::machine::{
         AssignRequest, AssignRequestArgs,
@@ -379,10 +343,6 @@ pub mod machine {
 
     use base64::Engine;
     use flatbuffers::FlatBufferBuilder;
-
-    // Re-export generated imports to reduce direct usage of generated modules
-    pub use crate::generated::generated_distribute_manifests_request::beemesh::machine::DistributeManifestsRequestArgs;
-    pub use crate::generated::generated_distribute_manifests_response::beemesh::machine::DistributeManifestsResponseArgs;
 
     // Health
     pub fn build_health(ok: bool, status: &str) -> Vec<u8> {
@@ -826,45 +786,6 @@ pub mod machine {
         fbb.finished_data().to_vec()
     }
 
-    // Builder function for DistributeManifestsRequest
-    pub fn build_distribute_manifests_request(
-        manifest_id: &str,
-        manifest_envelope_json: &str,
-        targets: &[(String, String)], // (peer_id, payload_json)
-    ) -> Vec<u8> {
-        let mut fbb = FlatBufferBuilder::with_capacity(1024);
-
-        let manifest_id_offset = fbb.create_string(manifest_id);
-        let manifest_env_offset = fbb.create_string(manifest_envelope_json);
-
-        // Create ManifestTarget vector
-        let target_offsets: Vec<_> = targets
-            .iter()
-            .map(|(peer_id, payload_json)| {
-                let peer_id_offset = fbb.create_string(peer_id);
-                let payload_offset = fbb.create_string(payload_json);
-                ManifestTarget::create(
-                    &mut fbb,
-                    &ManifestTargetArgs {
-                        peer_id: Some(peer_id_offset),
-                        payload_json: Some(payload_offset),
-                    },
-                )
-            })
-            .collect();
-        let targets_offset = fbb.create_vector(&target_offsets);
-
-        let args = DistributeManifestsRequestArgs {
-            manifest_id: Some(manifest_id_offset),
-            manifest_envelope_json: Some(manifest_env_offset),
-            targets: Some(targets_offset),
-        };
-
-        let request = DistributeManifestsRequest::create(&mut fbb, &args);
-        fbb.finish(request, None);
-        fbb.finished_data().to_vec()
-    }
-
     // Helper function to build a ManifestTarget (returns the tuple for the builder)
     pub fn build_manifest_target(peer_id: &str, payload_json: &str) -> (String, String) {
         (peer_id.to_string(), payload_json.to_string())
@@ -1048,37 +969,6 @@ pub mod machine {
             },
         );
         fbb.finish(status_response, None);
-        fbb.finished_data().to_vec()
-    }
-
-    // Builder for DistributeManifestsResponse
-    pub fn build_distribute_manifests_response(ok: bool, results: &[(String, String)]) -> Vec<u8> {
-        let mut fbb = FlatBufferBuilder::with_capacity(512);
-
-        let _result_strings: Vec<_> = results
-            .iter()
-            .map(|(peer, result)| {
-                let peer_off = fbb.create_string(peer);
-                let result_off = fbb.create_string(result);
-                (peer_off, result_off)
-            })
-            .collect();
-
-        // For simplicity, we'll encode results as a JSON string for now
-        let results_json = serde_json::to_string(
-            &results
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect::<std::collections::HashMap<_, _>>(),
-        )
-        .unwrap_or_default();
-        let results_off = fbb.create_string(&results_json);
-
-        let manifests_response = crate::generated::generated_distribute_manifests_response::beemesh::machine::DistributeManifestsResponse::create(&mut fbb, &crate::generated::generated_distribute_manifests_response::beemesh::machine::DistributeManifestsResponseArgs {
-            ok,
-            results_json: Some(results_off),
-        });
-        fbb.finish(manifests_response, None);
         fbb.finished_data().to_vec()
     }
 

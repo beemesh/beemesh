@@ -1,9 +1,0 @@
-namespace beemesh.machine;
-
-// DistributeManifestsResponse contains the results of distributing manifests to target nodes
-table DistributeManifestsResponse {
-  ok: bool; // Whether the distribution operation was successful overall
-  results_json: string; // JSON string containing results per peer_id
-}
-
-root_type DistributeManifestsResponse;
