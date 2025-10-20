@@ -350,13 +350,12 @@ async fn decrypt_manifest_content(
     debug!("Envelope payload type: {}", payload_type);
 
     if payload_type == "manifest" {
-        // Extract encrypted manifest from envelope payload
+        // Extract encrypted payload from envelope and decrypt directly
         if let Some(payload_vector) = envelope.payload() {
             let payload_bytes = payload_vector.bytes();
-            let encrypted_manifest = machine::root_as_encrypted_manifest(payload_bytes)?;
 
-            // Attempt to decrypt the manifest
-            match decrypt_encrypted_manifest_with_id(manifest_id, &encrypted_manifest).await {
+            // Attempt to decrypt the manifest using KEM decryption
+            match decrypt_manifest_from_envelope(manifest_id, payload_bytes).await {
                 Ok(decrypted_content) => {
                     info!(
                         "Successfully decrypted manifest for manifest_id: {}",
@@ -404,72 +403,38 @@ fn create_deployment_config(apply_req: &machine::ApplyRequest) -> DeploymentConf
     config
 }
 
-/// Decrypt encrypted manifest using key reconstruction
-async fn decrypt_encrypted_manifest_with_id(
+/// Decrypt manifest directly from envelope payload using KEM
+async fn decrypt_manifest_from_envelope(
     manifest_id: &str,
-    encrypted_manifest: &machine::EncryptedManifest<'_>,
+    payload_bytes: &[u8],
 ) -> Result<String, Box<dyn std::error::Error>> {
     debug!(
-        "Attempting to decrypt manifest using key reconstruction for manifest_id: {}",
+        "Attempting to decrypt manifest from envelope payload for manifest_id: {}",
         manifest_id
     );
 
-    // This is a simplified version - in the real implementation, you would:
-    // 1. Find key shares for this manifest_id
-    // 2. Reconstruct the decryption key from shares
-    // 3. Decrypt the manifest content
-
-    // For now, return a placeholder implementation
-    let payload = encrypted_manifest.payload().unwrap_or("");
-    if let Ok(decoded_payload) = base64::engine::general_purpose::STANDARD.decode(payload) {
-        // Try to decrypt using available key shares
-        match attempt_key_reconstruction_and_decrypt(manifest_id, &decoded_payload).await {
-            Ok(decrypted) => Ok(decrypted),
-            Err(_) => {
-                // Fallback: assume it's already decrypted YAML
-                String::from_utf8(decoded_payload)
-                    .map_err(|e| format!("Failed to decode as UTF-8: {}", e).into())
-            }
-        }
-    } else {
-        Err("Failed to decode base64 payload".into())
+    // Validate recipient-blob version byte
+    if payload_bytes.is_empty() || payload_bytes[0] != 0x02 {
+        return Err("unsupported payload format: expected recipient-blob (version byte 0x02)".into());
     }
-}
 
-/// Attempt key reconstruction and decryption
-async fn attempt_key_reconstruction_and_decrypt(
-    manifest_id: &str,
-    _encrypted_payload: &[u8],
-) -> Result<String, Box<dyn std::error::Error>> {
+    // Use the node's KEM private key to decapsulate and decrypt the recipient-blob
+    let (_pub_bytes, priv_bytes) = crypto::ensure_kem_keypair_on_disk()
+        .map_err(|e| format!("failed to load KEM keypair: {}", e))?;
+
+    let plaintext = crypto::decrypt_payload_from_recipient_blob(payload_bytes, &priv_bytes)
+        .map_err(|e| format!("recipient-blob decryption failed: {}", e))?;
+
+    // Interpret plaintext as UTF-8 manifest content (YAML/JSON)
+    let manifest_str = String::from_utf8(plaintext)
+        .map_err(|e| format!("decrypted manifest is not valid UTF-8: {}", e))?;
+
     debug!(
-        "Attempting key reconstruction for manifest_id: {}",
-        manifest_id
+        "Successfully decrypted manifest from envelope (len={})",
+        manifest_str.len()
     );
 
-    // This would involve:
-    // 1. Query local keystore for shares related to this manifest_id
-    // 2. Request additional shares from other peers if needed
-    // 3. Reconstruct the encryption key using Shamir's Secret Sharing
-    // 4. Decrypt the payload using the reconstructed key
-
-    // For now, return a mock YAML manifest
-    Ok(format!(
-        r#"apiVersion: v1
-kind: Pod
-metadata:
-  name: beemesh-workload-{}
-  labels:
-    beemesh.io/manifest-id: "{}"
-spec:
-  containers:
-  - name: app
-    image: nginx:latest
-    ports:
-    - containerPort: 80
-"#,
-        manifest_id.chars().take(8).collect::<String>(),
-        manifest_id
-    ))
+    Ok(manifest_str)
 }
 
 

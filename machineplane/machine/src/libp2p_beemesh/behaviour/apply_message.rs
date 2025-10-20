@@ -4,33 +4,18 @@ use log::{debug, error, info, warn};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Decrypt an encrypted manifest using a specific manifest ID and encrypted manifest
-/// This implementation supports direct delivery only: the EncryptedManifest.payload MUST
-/// be a base64-encoded recipient-blob (versioned recipient blob starting with 0x02)
-/// produced by `crypto::encrypt_payload_for_recipient`. No share-based reconstruction
-/// or legacy fallback is supported; any other payload format is treated as an error.
-async fn decrypt_encrypted_manifest_with_id(
+/// Decrypt an encrypted manifest directly from envelope payload bytes
+/// This implementation expects the payload to be a recipient-blob (versioned blob starting with 0x02)
+/// produced by `crypto::encrypt_payload_for_recipient`.
+async fn decrypt_manifest_from_envelope_payload(
     _manifest_id: &str,
-    encrypted_manifest: &protocol::machine::EncryptedManifest<'_>,
+    payload_bytes: &[u8],
     _local_peer_id: &libp2p::PeerId,
 ) -> Result<String, anyhow::Error> {
-    log::info!("libp2p: DECRYPT ENTRY - direct recipient-blob only path");
-
-    // Extract payload (base64-encoded recipient blob)
-    let payload_b64 = encrypted_manifest.payload().unwrap_or("");
-    if payload_b64.is_empty() {
-        return Err(anyhow::anyhow!(
-            "missing payload in encrypted manifest (expected recipient-blob)"
-        ));
-    }
-
-    // Decode the base64 recipient-blob
-    let decoded_blob = base64::engine::general_purpose::STANDARD
-        .decode(payload_b64)
-        .map_err(|e| anyhow::anyhow!("failed to base64-decode payload: {}", e))?;
+    log::info!("libp2p: decrypting manifest from envelope payload (len={})", payload_bytes.len());
 
     // Validate recipient-blob version byte
-    if decoded_blob.is_empty() || decoded_blob[0] != 0x02 {
+    if payload_bytes.is_empty() || payload_bytes[0] != 0x02 {
         return Err(anyhow::anyhow!(
             "unsupported payload format: expected recipient-blob (version byte 0x02)"
         ));
@@ -40,7 +25,7 @@ async fn decrypt_encrypted_manifest_with_id(
     let (_pub_bytes, priv_bytes) = crypto::ensure_kem_keypair_on_disk()
         .map_err(|e| anyhow::anyhow!("failed to load KEM keypair: {}", e))?;
 
-    let plaintext = crypto::decrypt_payload_from_recipient_blob(&decoded_blob, &priv_bytes)
+    let plaintext = crypto::decrypt_payload_from_recipient_blob(payload_bytes, &priv_bytes)
         .map_err(|e| anyhow::anyhow!("recipient-blob decryption failed: {}", e))?;
 
     // Interpret plaintext as UTF-8 manifest content (YAML/JSON)
@@ -48,7 +33,7 @@ async fn decrypt_encrypted_manifest_with_id(
         .map_err(|e| anyhow::anyhow!("decrypted manifest is not valid UTF-8: {}", e))?;
 
     log::info!(
-        "libp2p: direct recipient-blob decryption succeeded (len={})",
+        "libp2p: envelope payload decryption succeeded (len={})",
         manifest_str.len()
     );
 
@@ -75,10 +60,9 @@ mod tests {
         });
     }
 
-    /// Verify that an EncryptedManifest whose payload is a recipient-blob (ml-kem) can be
-    /// decrypted by `decrypt_encrypted_manifest_with_id`.
+    /// Verify that a recipient-blob (ml-kem) can be decrypted from envelope payload.
     #[tokio::test]
-    async fn test_recipient_blob_encrypted_manifest_decrypts() {
+    async fn test_recipient_blob_envelope_payload_decrypts() {
         test_init();
 
         // Prepare a simple manifest YAML payload
@@ -93,40 +77,14 @@ mod tests {
             crypto::encrypt_payload_for_recipient(&kem_pub, manifest_yaml.as_bytes())
                 .expect("encrypt_payload_for_recipient");
 
-        // Base64-encode the recipient blob for storage inside EncryptedManifest.payload()
-        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&recipient_blob);
-
-        // Build an EncryptedManifest flatbuffer with the recipient-blob as payload
-        let nonce = "test-recipient-blob-nonce";
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let encrypted_manifest_fb = protocol::machine::build_encrypted_manifest(
-            nonce,
-            &payload_b64,
-            "ml-kem-512", // encryption algorithm marker for recipient-blob
-            1,            // threshold
-            1,            // total_shares
-            Some("kubernetes"),
-            &[],
-            ts,
-            None,
-        );
-
-        // Parse back into EncryptedManifest view
-        let encrypted_manifest =
-            protocol::machine::root_as_encrypted_manifest(&encrypted_manifest_fb)
-                .expect("root_as_encrypted_manifest");
-
         // Use a dummy local_peer id for the call; the decryption path uses the KEM privkey on disk
         let fake_peer = libp2p::PeerId::random();
 
-        // Attempt decryption via the function under test
+        // Attempt decryption via the function under test with the recipient blob directly
         let decrypted =
-            decrypt_encrypted_manifest_with_id("test-manifest", &encrypted_manifest, &fake_peer)
+            decrypt_manifest_from_envelope_payload("test-manifest", &recipient_blob, &fake_peer)
                 .await
-                .expect("decrypt_encrypted_manifest_with_id");
+                .expect("decrypt_manifest_from_envelope_payload");
 
         // The decrypted string should match our original manifest YAML
         assert_eq!(decrypted, manifest_yaml);
@@ -392,54 +350,47 @@ pub fn process_self_apply_request(
                             if payload_type == "manifest" {
                                 log::debug!("libp2p: self-apply detected encrypted manifest envelope - attempting decryption");
 
-                                // Extract the encrypted manifest from the envelope payload
+                                // Extract the encrypted payload from the envelope
                                 if let Some(payload_vector) = envelope.payload() {
                                     // Convert Vector<u8> to &[u8]
                                     let payload_bytes = payload_vector.bytes();
-                                    if let Ok(encrypted_manifest) =
-                                        protocol::machine::root_as_encrypted_manifest(payload_bytes)
+                                    match decrypt_manifest_from_envelope_payload(
+                                        &manifest_id,
+                                        payload_bytes,
+                                        &local_peer_id_copy,
+                                    )
+                                    .await
                                     {
-                                        match decrypt_encrypted_manifest_with_id(
-                                            &manifest_id,
-                                            &encrypted_manifest,
-                                            &local_peer_id_copy,
-                                        )
-                                        .await
-                                        {
-                                            Ok(decrypted_yaml) => {
-                                                log::debug!(
-                                                "libp2p: self-apply successfully decrypted FlatBuffer manifest"
+                                        Ok(decrypted_yaml) => {
+                                            log::debug!(
+                                                "libp2p: self-apply successfully decrypted envelope manifest"
                                             );
-                                                // Parse the decrypted YAML content
-                                                match serde_yaml::from_str::<serde_json::Value>(
-                                                    &decrypted_yaml,
-                                                ) {
-                                                    Ok(v) => {
-                                                        log::debug!(
+                                            // Parse the decrypted YAML content
+                                            match serde_yaml::from_str::<serde_json::Value>(
+                                                &decrypted_yaml,
+                                            ) {
+                                                Ok(v) => {
+                                                    log::debug!(
                                                         "libp2p: self-apply parsed decrypted YAML successfully"
                                                     );
-                                                        v
-                                                    }
-                                                    Err(_) => {
-                                                        log::warn!(
+                                                    v
+                                                }
+                                                Err(_) => {
+                                                    log::warn!(
                                                         "libp2p: self-apply treating decrypted content as raw"
                                                     );
-                                                        serde_json::json!({ "raw": decrypted_yaml })
-                                                    }
+                                                    serde_json::json!({ "raw": decrypted_yaml })
                                                 }
                                             }
-                                            Err(e) => {
-                                                log::warn!(
-                                                "libp2p: self-apply failed to decrypt FlatBuffer manifest: {}",
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "libp2p: self-apply failed to decrypt envelope manifest: {}",
                                                 e
                                             );
-                                                // Return empty object for failed decryption
-                                                serde_json::json!({})
-                                            }
+                                            // Return empty object for failed decryption
+                                            serde_json::json!({})
                                         }
-                                    } else {
-                                        log::error!("libp2p: self-apply failed to parse payload as EncryptedManifest");
-                                        serde_json::json!({})
                                     }
                                 } else {
                                     log::error!("libp2p: self-apply envelope missing payload");
@@ -602,13 +553,10 @@ async fn deploy_manifest_from_apply_request(
         .ok_or_else(|| anyhow::anyhow!("Envelope missing payload"))?
         .bytes();
 
-    let encrypted_manifest = protocol::machine::root_as_encrypted_manifest(payload_bytes)
-        .map_err(|e| anyhow::anyhow!("Failed to parse encrypted manifest: {}", e))?;
-
-    // Decrypt the manifest
+    // Decrypt the manifest directly from envelope payload
     let local_peer_id = libp2p::PeerId::random(); // This should be the actual local peer ID
     let decrypted_yaml =
-        decrypt_encrypted_manifest_with_id(manifest_id, &encrypted_manifest, &local_peer_id)
+        decrypt_manifest_from_envelope_payload(manifest_id, payload_bytes, &local_peer_id)
             .await?;
 
     // Parse the decrypted YAML content

@@ -210,21 +210,19 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
                 anyhow::anyhow!("Failed to decode node public key for {}: {}", node_id, e)
             })?;
 
+        // Encrypt the manifest for the recipient using KEM
         let encrypted_blob =
             encrypt_payload_for_recipient(&node_pubkey_bytes, node_manifest_str.as_bytes())?;
 
-        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&encrypted_blob);
-
-        let encrypted_manifest_bytes = protocol::machine::build_encrypted_manifest(
-            "",
-            &payload_b64,
-            "ml-kem-512",
-            1,
-            1,
-            Some("kubernetes"),
-            &[],
-            ts,
-            Some(node_id),
+        // Create a simple envelope containing the encrypted payload
+        let encrypted_manifest_bytes = protocol::machine::build_envelope_canonical_with_peer(
+            &encrypted_blob,
+            "manifest", // payload_type
+            "",         // nonce (empty for now)
+            ts,         // timestamp
+            "ml-kem-512", // algorithm
+            "", // peer_id (empty for now)
+            None, // pubkey
         );
 
         // 4) Create task with base manifest_id so nodes announce the same ID to DHT

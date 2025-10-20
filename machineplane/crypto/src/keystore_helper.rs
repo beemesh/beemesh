@@ -178,14 +178,6 @@ impl KeystoreHelper {
         }
     }
 
-    /// Store manifest with encryption
-    pub fn store_encrypted_manifest(
-        manifest_data: &[u8],
-        manifest_id: &str,
-    ) -> KeystoreResult<String> {
-        Self::store_encrypted_share(manifest_data, manifest_id, Some("type=manifest"))
-    }
-
     /// Batch operation: store multiple shares for the same manifest
     pub fn store_multiple_shares(
         shares: &[(Vec<u8>, String)], // (share_data, share_id)

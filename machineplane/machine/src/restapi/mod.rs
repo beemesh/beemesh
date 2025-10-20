@@ -321,11 +321,10 @@ pub async fn apply_manifest(
                 std::time::Duration::from_secs(300),
             ) {
                 Ok((payload_bytes, _pub, _sig)) => {
-                    // Try to parse payload as EncryptedManifest flatbuffer
-                    if let Ok(_encrypted_manifest) =
-                        protocol::machine::root_as_encrypted_manifest(&payload_bytes)
-                    {
-                        // For now, return empty manifest - decryption logic should be handled elsewhere
+                    // Check if payload appears to be an encrypted manifest (starts with recipient-blob version byte)
+                    if !payload_bytes.is_empty() && payload_bytes[0] == 0x02 {
+                        // Encrypted manifest - decryption logic should be handled elsewhere
+                        log::debug!("apply_manifest: detected encrypted manifest payload");
                         serde_json::json!({})
                     } else {
                         log::warn!(
@@ -610,46 +609,31 @@ pub async fn create_task(
         &payload_bytes_for_parsing[..std::cmp::min(20, payload_bytes_for_parsing.len())]
     );
 
-    // Validate that we can parse the flatbuffer and create proper envelope for storage
-    let manifest_bytes_to_store =
-        match protocol::machine::root_as_encrypted_manifest(&payload_bytes_for_parsing) {
-            Ok(encrypted_manifest) => {
-                log::info!("create_task: successfully parsed EncryptedManifest flatbuffer");
-                log::info!(
-                    "create_task: nonce={}, threshold={}, total_shares={}",
-                    encrypted_manifest.nonce().unwrap_or(""),
-                    encrypted_manifest.threshold(),
-                    encrypted_manifest.total_shares()
-                );
+    // Create envelope for the encrypted payload - no longer need to parse as EncryptedManifest
+    let manifest_bytes_to_store = if !payload_bytes_for_parsing.is_empty() && payload_bytes_for_parsing[0] == 0x02 {
+        log::info!("create_task: detected encrypted manifest payload (recipient-blob format)");
+        
+        // Create a proper envelope containing the encrypted payload for decryption
+        // The decryption process expects an envelope with payload_type="manifest"
+        let envelope_nonce: [u8; 16] = rand::random();
+        let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
-                // Create a proper envelope containing the EncryptedManifest for decryption
-                // The decryption process expects an envelope with payload_type="manifest"
-                let envelope_nonce: [u8; 16] = rand::random();
-                let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-
-                protocol::machine::build_envelope_canonical(
-                    &payload_bytes_for_parsing,
-                    "manifest",
-                    &nonce_str,
-                    ts,
-                    "ml-dsa-65",
-                    None,
-                )
-            }
-            Err(e) => {
-                log::warn!(
-                "create_task: failed to parse EncryptedManifest flatbuffer (payload_len={}): {}",
-                payload_bytes_for_parsing.len(),
-                e
-            );
-                log::warn!("create_task: proceeding with raw flatbuffer bytes anyway");
-                payload_bytes_for_parsing
-            }
-        };
+        protocol::machine::build_envelope_canonical(
+            &payload_bytes_for_parsing,
+            "manifest",
+            &nonce_str,
+            ts,
+            "ml-kem-512",
+            None,
+        )
+    } else {
+        log::info!("create_task: payload appears to be plain manifest or other format");
+        payload_bytes_for_parsing
+    };
 
     let rec = TaskRecord {
         manifest_bytes: manifest_bytes_to_store,
@@ -1104,17 +1088,9 @@ pub async fn assign_task(
     };
 
     // Build capacity request and collect responders (reuse existing logic from apply_manifest)
-    // Extract replicas from the flatbuffer manifest
-    let replicas = match protocol::machine::root_as_encrypted_manifest(&task.manifest_bytes) {
-        Ok(_encrypted_manifest) => {
-            // For encrypted manifests, default to 1 replica
-            1
-        }
-        Err(_) => {
-            // If it's not an encrypted manifest, default to 1
-            1
-        }
-    } as usize;
+    // For now, default to 1 replica for all manifests
+    // TODO: Parse actual replicas from decrypted manifest if needed
+    let replicas = 1usize;
 
     let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
     let capacity_fb = protocol::machine::build_capacity_request(

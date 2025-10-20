@@ -119,21 +119,6 @@ mod generated {
         ));
     }
 
-    pub mod generated_encrypted_manifest {
-        #![allow(
-            dead_code,
-            non_camel_case_types,
-            non_snake_case,
-            unused_imports,
-            unused_variables,
-            mismatched_lifetime_syntaxes
-        )]
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/generated/encrypted_manifest_generated.rs"
-        ));
-    }
-
     pub mod generated_nodes_response {
         #![allow(
             dead_code,
@@ -277,7 +262,6 @@ pub mod machine {
     pub use crate::generated::generated_candidates_response::beemesh::machine::root_as_candidates_response;
     pub use crate::generated::generated_capacity_reply::beemesh::machine::CapacityReplyArgs;
     pub use crate::generated::generated_capacity_request::beemesh::machine::CapacityRequestArgs;
-    pub use crate::generated::generated_encrypted_manifest::beemesh::machine::root_as_encrypted_manifest;
     pub use crate::generated::generated_envelope::beemesh::machine::{
         root_as_envelope, Envelope as FbEnvelope,
     };
@@ -297,11 +281,6 @@ pub mod machine {
     };
     pub use crate::generated::generated_assign_response::beemesh::machine::{
         AssignResponse, AssignResponseArgs,
-    };
-
-    // EncryptedManifest
-    pub use crate::generated::generated_encrypted_manifest::beemesh::machine::{
-        EncryptedManifest, EncryptedManifestArgs,
     };
 
     // Nodes response
@@ -807,50 +786,6 @@ pub mod machine {
 
         let request = AssignRequest::create(&mut fbb, &args);
         fbb.finish(request, None);
-        fbb.finished_data().to_vec()
-    }
-
-    pub fn build_encrypted_manifest(
-        nonce: &str,
-        payload: &str,
-        encryption_algorithm: &str,
-        threshold: u32,
-        total_shares: u32,
-        manifest_type: Option<&str>,
-        labels: &[&str],
-        encrypted_at: u64,
-        content_hash: Option<&str>,
-    ) -> Vec<u8> {
-        let mut fbb = FlatBufferBuilder::with_capacity(1024);
-
-        let nonce_offset = fbb.create_string(nonce);
-        let payload_offset = fbb.create_string(payload);
-        let algorithm_offset = fbb.create_string(encryption_algorithm);
-
-        let manifest_type_offset = manifest_type.map(|s| fbb.create_string(s));
-        let content_hash_offset = content_hash.map(|s| fbb.create_string(s));
-
-        // Create labels vector
-        let label_offsets: Vec<_> = labels
-            .iter()
-            .map(|label| fbb.create_string(label))
-            .collect();
-        let labels_offset = fbb.create_vector(&label_offsets);
-
-        let mut args = crate::generated::generated_encrypted_manifest::beemesh::machine::EncryptedManifestArgs::default();
-        args.nonce = Some(nonce_offset);
-        args.payload = Some(payload_offset);
-        args.encryption_algorithm = Some(algorithm_offset);
-        args.threshold = threshold;
-        args.total_shares = total_shares;
-        args.manifest_type = manifest_type_offset;
-        args.labels = Some(labels_offset);
-        args.encrypted_at = encrypted_at;
-        args.content_hash = content_hash_offset;
-        args.version = 1;
-
-        let manifest = crate::generated::generated_encrypted_manifest::beemesh::machine::EncryptedManifest::create(&mut fbb, &args);
-        fbb.finish(manifest, None);
         fbb.finished_data().to_vec()
     }
 

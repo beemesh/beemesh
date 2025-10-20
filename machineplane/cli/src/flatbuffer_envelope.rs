@@ -26,52 +26,16 @@ impl FlatbufferEnvelopeBuilder {
     pub fn build_manifest_envelope(
         &mut self,
         ciphertext: &[u8],
-        nonce_bytes: &[u8],
-        n: usize,
-        k: usize,
+        _nonce_bytes: &[u8],
+        _n: usize,
+        _k: usize,
         _count: usize,
         sk_bytes: &[u8],
         pk_bytes: &[u8],
     ) -> Result<Vec<u8>> {
-        // Create an EncryptedManifest flatbuffer instead of JSON
-        let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
-        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(ciphertext);
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let encrypted_manifest_fb = protocol::machine::build_encrypted_manifest(
-            &nonce_b64,
-            &payload_b64,
-            "aes-256-gcm",      // encryption algorithm
-            k as u32,           // threshold (k)
-            n as u32,           // total_shares (n)
-            Some("kubernetes"), // manifest_type
-            &[],                // labels (empty)
-            ts,                 // encrypted_at
-            None,               // content_hash
-        );
-        eprintln!(
-            "CLI: Created EncryptedManifest flatbuffer len={}, first_20_bytes={:02x?}",
-            encrypted_manifest_fb.len(),
-            &encrypted_manifest_fb[..std::cmp::min(20, encrypted_manifest_fb.len())]
-        );
-
-        // Test if the created flatbuffer is valid
-        match protocol::machine::root_as_encrypted_manifest(&encrypted_manifest_fb) {
-            Ok(test_manifest) => {
-                eprintln!(
-                    "CLI: EncryptedManifest validation PASSED - nonce={}, payload_len={}",
-                    test_manifest.nonce().unwrap_or(""),
-                    test_manifest.payload().unwrap_or("").len()
-                );
-            }
-            Err(e) => {
-                eprintln!("CLI: EncryptedManifest validation FAILED: {}", e);
-            }
-        }
-
-        let payload_bytes = encrypted_manifest_fb;
+        // Simply use the ciphertext directly in an envelope
+        // No need for EncryptedManifest flatbuffer structure
+        let payload_bytes = ciphertext;
 
         let envelope_nonce: [u8; 16] = rand::random();
         let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
