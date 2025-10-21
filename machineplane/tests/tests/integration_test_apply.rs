@@ -81,18 +81,18 @@ async fn get_peer_ids(
     port_to_peer_id
 }
 
-async fn wait_for_mesh_formation(client: &reqwest::Client, ports: &[u16], timeout: Duration) -> bool {
+async fn wait_for_mesh_formation(
+    client: &reqwest::Client,
+    ports: &[u16],
+    timeout: Duration,
+) -> bool {
     let start = tokio::time::Instant::now();
     loop {
         // Check if we have at least 2 peers in the mesh
         let mut total_peers = 0;
         for &port in ports {
             let base = format!("http://127.0.0.1:{}", port);
-            if let Ok(resp) = client
-                .get(format!("{}/debug/peers", base))
-                .send()
-                .await
-            {
+            if let Ok(resp) = client.get(format!("{}/debug/peers", base)).send().await {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                     if let Some(peers_array) = json.get("peers").and_then(|p| p.as_array()) {
                         total_peers += peers_array.len();
@@ -100,18 +100,25 @@ async fn wait_for_mesh_formation(client: &reqwest::Client, ports: &[u16], timeou
                 }
             }
         }
-        
+
         // We need at least some peer connections for the mesh to work
         if total_peers >= 2 {
-            log::info!("Mesh formation successful: {} total peer connections", total_peers);
+            log::info!(
+                "Mesh formation successful: {} total peer connections",
+                total_peers
+            );
             return true;
         }
-        
+
         if start.elapsed() > timeout {
-            log::warn!("Mesh formation timed out after {:?}, only {} peer connections", timeout, total_peers);
+            log::warn!(
+                "Mesh formation timed out after {:?}, only {} peer connections",
+                timeout,
+                total_peers
+            );
             return false;
         }
-        
+
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
@@ -321,8 +328,9 @@ async fn test_apply_with_real_podman() {
     sleep(Duration::from_secs(5)).await;
 
     // Verify actual Podman deployment
-    let podman_verification_successful = verify_podman_deployment(&task_id, &original_content).await;
-    
+    let podman_verification_successful =
+        verify_podman_deployment(&task_id, &original_content).await;
+
     assert!(
         podman_verification_successful,
         "Podman deployment verification failed - no matching pods found"
@@ -331,7 +339,8 @@ async fn test_apply_with_real_podman() {
     let _delete_result = cli::delete_file(manifest_path, true).await;
     sleep(Duration::from_secs(5)).await;
 
-    let podman_verification_successful = verify_podman_deployment(&task_id, &original_content).await;
+    let podman_verification_successful =
+        verify_podman_deployment(&task_id, &original_content).await;
     assert!(
         !podman_verification_successful,
         "Podman deployment still exists after deletion attempt"
@@ -350,7 +359,7 @@ async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_test_nodes().await;
 
-    // Wait for libp2p mesh to form before proceeding  
+    // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
     let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(5)).await;
     if !mesh_formed {
@@ -490,7 +499,7 @@ async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> boo
     match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            
+
             // Parse JSON output to find our pod
             if let Ok(pods) = serde_json::from_str::<serde_json::Value>(&stdout) {
                 if let Some(pods_array) = pods.as_array() {
@@ -515,14 +524,21 @@ async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> boo
             if let Ok(container_output) = container_output {
                 if container_output.status.success() {
                     let container_stdout = String::from_utf8_lossy(&container_output.stdout);
-                    if let Ok(containers) = serde_json::from_str::<serde_json::Value>(&container_stdout) {
+                    if let Ok(containers) =
+                        serde_json::from_str::<serde_json::Value>(&container_stdout)
+                    {
                         if let Some(containers_array) = containers.as_array() {
                             for container in containers_array {
-                                if let Some(names) = container.get("Names").and_then(|n| n.as_array()) {
+                                if let Some(names) =
+                                    container.get("Names").and_then(|n| n.as_array())
+                                {
                                     for name in names {
                                         if let Some(name_str) = name.as_str() {
                                             if name_str.contains(&format!("beemesh-{}", task_id)) {
-                                                log::info!("Found matching Podman container: {}", name_str);
+                                                log::info!(
+                                                    "Found matching Podman container: {}",
+                                                    name_str
+                                                );
                                                 return true;
                                             }
                                         }
@@ -533,7 +549,7 @@ async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> boo
                     }
                 }
             }
-            
+
             false
         }
         _ => {
@@ -560,7 +576,10 @@ async fn cleanup_podman_resources(task_id: &str) {
         .args(&["pod", "rm", "-f", &expected_pod_name_alt])
         .output()
         .await;
-    log::info!("Attempted to clean up Podman pod: {}", expected_pod_name_alt);
+    log::info!(
+        "Attempted to clean up Podman pod: {}",
+        expected_pod_name_alt
+    );
 
     // Also try to remove pods by name pattern (fallback)
     let output = tokio::process::Command::new("podman")
@@ -606,5 +625,3 @@ async fn cleanup_podman_resources(task_id: &str) {
         }
     }
 }
-
-

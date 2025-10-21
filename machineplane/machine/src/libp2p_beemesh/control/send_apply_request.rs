@@ -1,13 +1,11 @@
+use crate::libp2p_beemesh::envelope::{sign_with_node_keys, SignEnvelopeConfig};
 use libp2p::{PeerId, Swarm};
-use log::{debug, info};
+use log::{debug, info, warn};
 use tokio::sync::mpsc;
 
+use crate::libp2p_beemesh::behaviour::MyBehaviour;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use crate::libp2p_beemesh::behaviour::MyBehaviour;
-use crypto;
 
 /// Handle SendApplyRequest control message
 pub async fn handle_send_apply_request(
@@ -26,10 +24,7 @@ pub async fn handle_send_apply_request(
         debug!("libp2p: handling self-apply locally for peer {}", peer_id);
 
         // Use the new workload manager integration for self-apply as well
-        crate::workload_integration::process_enhanced_self_apply_request(
-            &manifest,
-            swarm,
-        ).await;
+        crate::workload_integration::process_enhanced_self_apply_request(&manifest, swarm).await;
 
         let _ = reply_tx.send(Ok(format!("Apply request handled locally for {}", peer_id)));
         return;
@@ -65,52 +60,14 @@ pub async fn handle_send_apply_request(
     // No capability token needed - direct manifest application
 
     // Sign the apply request in an envelope before sending
-    let signed_apply_request = if let Ok((pubb, privb)) = crypto::ensure_keypair_on_disk() {
-        let nonce = uuid::Uuid::new_v4().to_string();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0u64);
-        let payload_type = "apply_request";
-        let alg = "ml-dsa-65";
-
-        // Create canonical bytes and sign
-        let canonical_bytes = protocol::machine::build_envelope_canonical(
-            &manifest,
-            payload_type,
-            &nonce,
-            timestamp,
-            alg,
-            None,
-        );
-
-        match crypto::sign_envelope(&privb, &pubb, &canonical_bytes) {
-            Ok((sig_b64, pub_b64)) => {
-                // Build signed envelope
-                protocol::machine::build_envelope_signed(
-                    &manifest,
-                    payload_type,
-                    &nonce,
-                    timestamp,
-                    alg,
-                    "ml-dsa-65",
-                    &sig_b64,
-                    &pub_b64,
-                    None,
-                )
-            }
+    let signed_apply_request =
+        match sign_with_node_keys(&manifest, "apply_request", SignEnvelopeConfig::default()) {
+            Ok(envelope) => envelope.bytes,
             Err(e) => {
-                log::warn!("failed to sign apply request for peer {}: {:?}", peer_id, e);
-                manifest // fallback to unsigned
+                warn!("failed to sign apply request for peer {}: {:?}", peer_id, e);
+                manifest
             }
-        }
-    } else {
-        log::warn!(
-            "failed to load keypair for signing apply request to peer {}",
-            peer_id
-        );
-        manifest // fallback to unsigned
-    };
+        };
 
     // Finally send the (now signed) apply request
     let request_id = swarm

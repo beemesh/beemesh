@@ -26,8 +26,6 @@ fn extract_manifest_name_from_json(manifest_json: &serde_json::Value) -> Option<
         .map(|s| s.to_string())
 }
 
-
-
 pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     debug!("apply_file called for path: {:?}", path);
 
@@ -75,21 +73,27 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
-        
+
         // Hash owning public key for security
         pk_bytes.hash(&mut hasher);
-        
+
         // Extract and hash manifest name - this is the stable identifier
         if let Some(name) = extract_manifest_name_from_json(&manifest_json) {
             debug!("CLI: Using manifest name '{}' for manifest_id", name);
             name.hash(&mut hasher);
         } else {
-            return Err(anyhow::anyhow!("Manifest must have a name field in metadata for deployment"));
+            return Err(anyhow::anyhow!(
+                "Manifest must have a name field in metadata for deployment"
+            ));
         }
-        
+
         format!("{:016x}", hasher.finish())[..16].to_string()
     };
-    debug!("CLI: Computed manifest_id: {} with pubkey: {:02x?}", manifest_id, &pk_bytes[..8]);
+    debug!(
+        "CLI: Computed manifest_id: {} with pubkey: {:02x?}",
+        manifest_id,
+        &pk_bytes[..8]
+    );
 
     // API base URL can be overridden with BEEMESH_API env var
     let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
@@ -242,12 +246,12 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
         // Create a simple envelope containing the encrypted payload
         let encrypted_manifest_bytes = protocol::machine::build_envelope_canonical_with_peer(
             &encrypted_blob,
-            "manifest", // payload_type
-            "",         // nonce (empty for now)
-            ts,         // timestamp
+            "manifest",   // payload_type
+            "",           // nonce (empty for now)
+            ts,           // timestamp
             "ml-kem-512", // algorithm
-            "", // peer_id (empty for now)
-            None, // pubkey
+            "",           // peer_id (empty for now)
+            None,         // pubkey
         );
 
         // 4) Send ApplyRequest directly to the target peer via the forwarding endpoint
@@ -255,11 +259,12 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
             "Sending ApplyRequest directly to node {} with manifest_id {}",
             node_id, manifest_id
         );
-        
+
         // Build ApplyRequest with the encrypted manifest
         let operation_id = Uuid::new_v4().to_string();
-        let manifest_json_b64 = base64::engine::general_purpose::STANDARD.encode(&encrypted_manifest_bytes);
-        
+        let manifest_json_b64 =
+            base64::engine::general_purpose::STANDARD.encode(&encrypted_manifest_bytes);
+
         let apply_request_bytes = protocol::machine::build_apply_request(
             1, // replicas (1 per target peer)
             tenant,
@@ -268,7 +273,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
             "", // origin_peer (CLI doesn't have peer ID)
             &manifest_id,
         );
-        
+
         // Send via the apply_direct endpoint which forwards to the peer
         let url = format!(
             "{}/tenant/{}/apply_direct/{}",
@@ -276,19 +281,23 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
             tenant,
             node_id
         );
-        
+
         let response_bytes = fb_client
             .send_encrypted_request(&url, &apply_request_bytes, "apply_request")
             .await?;
-            
+
         // Parse response as ApplyResponse
         let apply_response = protocol::machine::root_as_apply_response(&response_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to parse ApplyResponse: {}", e))?;
-            
+
         if !apply_response.ok() {
-            anyhow::bail!("Direct apply failed for node {}: {}", node_id, apply_response.message().unwrap_or("unknown error"));
+            anyhow::bail!(
+                "Direct apply failed for node {}: {}",
+                node_id,
+                apply_response.message().unwrap_or("unknown error")
+            );
         }
-        
+
         debug!("Direct apply successful for node {}", node_id);
 
         created_task_ids.push(manifest_id.clone());
@@ -348,21 +357,27 @@ pub async fn delete_file(path: PathBuf, force: bool) -> anyhow::Result<String> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
-        
+
         // Hash owning public key for security
         pk_bytes.hash(&mut hasher);
-        
+
         // Extract and hash manifest name - this is the stable identifier
         if let Some(name) = extract_manifest_name_from_json(&manifest_json) {
             debug!("CLI: Using manifest name '{}' for manifest_id", name);
             name.hash(&mut hasher);
         } else {
-            return Err(anyhow::anyhow!("Manifest must have a name field in metadata for deletion"));
+            return Err(anyhow::anyhow!(
+                "Manifest must have a name field in metadata for deletion"
+            ));
         }
-        
+
         format!("{:016x}", hasher.finish())[..16].to_string()
     };
-    debug!("CLI: Computed manifest_id for deletion: {} with pubkey: {:02x?}", manifest_id, &pk_bytes[..8]);
+    debug!(
+        "CLI: Computed manifest_id for deletion: {} with pubkey: {:02x?}",
+        manifest_id,
+        &pk_bytes[..8]
+    );
 
     // API base URL can be overridden with BEEMESH_API env var
     let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
@@ -393,20 +408,21 @@ pub async fn delete_file(path: PathBuf, force: bool) -> anyhow::Result<String> {
     );
 
     debug!("Sending delete request to: {}", url);
-    
+
     let body = if force { "force=true" } else { "" };
-    let response_bytes = fb_client
-        .send_delete_request(&url, body.as_bytes())
-        .await?;
-    
+    let response_bytes = fb_client.send_delete_request(&url, body.as_bytes()).await?;
+
     // Parse response as DeleteResponse
     let delete_response = protocol::machine::root_as_delete_response(&response_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to parse DeleteResponse: {}", e))?;
-    
+
     if !delete_response.ok() {
-        anyhow::bail!("Delete failed: {}", delete_response.message().unwrap_or("unknown error"));
+        anyhow::bail!(
+            "Delete failed: {}",
+            delete_response.message().unwrap_or("unknown error")
+        );
     }
-    
+
     info!(
         "Delete completed for manifest_id {}: {}",
         manifest_id,

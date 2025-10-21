@@ -11,7 +11,10 @@ pub async fn handle_send_delete_request(
     reply_tx: mpsc::UnboundedSender<Result<String, String>>,
     swarm: &mut Swarm<MyBehaviour>,
 ) {
-    info!("handle_send_delete_request: sending delete request to peer {}", peer_id);
+    info!(
+        "handle_send_delete_request: sending delete request to peer {}",
+        peer_id
+    );
 
     // Send the delete request via request-response protocol
     let request_id = swarm
@@ -19,7 +22,10 @@ pub async fn handle_send_delete_request(
         .delete_rr
         .send_request(&peer_id, delete_request);
 
-    info!("handle_send_delete_request: delete request sent to peer {} with request_id {:?}", peer_id, request_id);
+    info!(
+        "handle_send_delete_request: delete request sent to peer {} with request_id {:?}",
+        peer_id, request_id
+    );
 
     // For now, send immediate success response
     // In a complete implementation, we would track the request_id and wait for the actual response

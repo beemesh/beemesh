@@ -80,8 +80,6 @@ impl MockEngine {
         self.workloads.lock().unwrap().len()
     }
 
-
-
     /// Get workloads deployed by a specific local peer ID (for testing)
     pub fn get_workloads_by_peer(&self, local_peer_id: &str) -> Vec<MockWorkload> {
         self.workloads
@@ -104,8 +102,6 @@ impl MockEngine {
     pub fn clear_workloads(&self) {
         self.workloads.lock().unwrap().clear();
     }
-
-
 
     /// Get the deployment config for a workload (for testing verification)
     pub fn get_workload_config(&self, workload_id: &str) -> Option<DeploymentConfig> {
@@ -176,17 +172,17 @@ impl MockEngine {
             if let Some(kind) = json_val.get("kind").and_then(|v| v.as_str()) {
                 metadata.insert("kind".to_string(), kind.to_string());
             }
-            
+
             if let Some(api_version) = json_val.get("apiVersion").and_then(|v| v.as_str()) {
                 metadata.insert("apiVersion".to_string(), api_version.to_string());
             }
-            
+
             // Extract name from metadata object
             if let Some(meta_obj) = json_val.get("metadata").and_then(|v| v.as_object()) {
                 if let Some(name) = meta_obj.get("name").and_then(|v| v.as_str()) {
                     metadata.insert("name".to_string(), name.to_string());
                 }
-                
+
                 if let Some(namespace) = meta_obj.get("namespace").and_then(|v| v.as_str()) {
                     metadata.insert("namespace".to_string(), namespace.to_string());
                 }
@@ -242,7 +238,8 @@ impl MockEngine {
         }
 
         // Generate unique workload ID with peer ID for uniqueness
-        let workload_id = self.generate_workload_id_with_peer(manifest_id, manifest_content, local_peer_id);
+        let workload_id =
+            self.generate_workload_id_with_peer(manifest_id, manifest_content, local_peer_id);
 
         // Parse manifest metadata
         let mut metadata = self.parse_manifest_metadata(manifest_content);
@@ -488,7 +485,10 @@ impl RuntimeEngine for MockEngine {
     }
 
     async fn export_manifest(&self, workload_id: &str) -> RuntimeResult<Vec<u8>> {
-        debug!("Mock engine: exporting manifest for workload: {}", workload_id);
+        debug!(
+            "Mock engine: exporting manifest for workload: {}",
+            workload_id
+        );
 
         let workloads = self.workloads.lock().unwrap();
         match workloads.get(workload_id) {
@@ -496,9 +496,18 @@ impl RuntimeEngine for MockEngine {
                 // Generate a mock Kubernetes manifest based on stored metadata
                 let metadata = &workload.info.metadata;
                 let name = metadata.get("name").unwrap_or(&workload.info.id);
-                let kind = metadata.get("kind").map(|s| s.as_str()).unwrap_or("Deployment");
-                let api_version = metadata.get("apiVersion").map(|s| s.as_str()).unwrap_or("apps/v1");
-                let namespace = metadata.get("namespace").map(|s| s.as_str()).unwrap_or("default");
+                let kind = metadata
+                    .get("kind")
+                    .map(|s| s.as_str())
+                    .unwrap_or("Deployment");
+                let api_version = metadata
+                    .get("apiVersion")
+                    .map(|s| s.as_str())
+                    .unwrap_or("apps/v1");
+                let namespace = metadata
+                    .get("namespace")
+                    .map(|s| s.as_str())
+                    .unwrap_or("default");
 
                 // Create a reconstructed manifest based on the workload info
                 let mock_manifest = format!(
@@ -548,7 +557,8 @@ spec:
                         ));
                     }
                 } else {
-                    manifest_with_ports.push_str("\n        - containerPort: 80\n          protocol: TCP");
+                    manifest_with_ports
+                        .push_str("\n        - containerPort: 80\n          protocol: TCP");
                 }
 
                 // Add environment variables if available
@@ -569,10 +579,12 @@ spec:
                     if resources.cpu.is_some() || resources.memory.is_some() {
                         manifest_with_ports.push_str("\n          limits:");
                         if let Some(cpu) = resources.cpu {
-                            manifest_with_ports.push_str(&format!("\n            cpu: \"{}\"", cpu));
+                            manifest_with_ports
+                                .push_str(&format!("\n            cpu: \"{}\"", cpu));
                         }
                         if let Some(memory) = resources.memory {
-                            manifest_with_ports.push_str(&format!("\n            memory: \"{}\"", memory));
+                            manifest_with_ports
+                                .push_str(&format!("\n            memory: \"{}\"", memory));
                         }
                     }
                 }

@@ -93,7 +93,7 @@ impl PodmanEngine {
     async fn extract_port_mappings(&self, pod_name: &str) -> RuntimeResult<Vec<PortMapping>> {
         // Try the pod name with -pod suffix first (most common)
         let pod_name_with_suffix = format!("{}-pod", pod_name);
-        
+
         match self
             .execute_command(&["pod", "inspect", &pod_name_with_suffix, "--format", "json"])
             .await
@@ -110,7 +110,10 @@ impl PodmanEngine {
                 return Ok(ports);
             }
             Err(_) => {
-                debug!("Failed to inspect pod with suffix: {}", pod_name_with_suffix);
+                debug!(
+                    "Failed to inspect pod with suffix: {}",
+                    pod_name_with_suffix
+                );
             }
         }
 
@@ -193,7 +196,10 @@ impl PodmanEngine {
         file.write_all(modified_manifest.as_bytes()).await?;
         file.flush().await?;
 
-        debug!("Created temporary manifest file: {:?} with pod name: {}", temp_file, pod_name);
+        debug!(
+            "Created temporary manifest file: {:?} with pod name: {}",
+            temp_file, pod_name
+        );
         Ok(temp_file)
     }
 
@@ -282,7 +288,9 @@ impl RuntimeEngine for PodmanEngine {
         let workload_id = self.generate_workload_id(manifest_id, manifest_content);
 
         // Create temporary manifest file with modified pod name
-        let temp_file = self.create_temp_manifest_file(manifest_content, manifest_id).await?;
+        let temp_file = self
+            .create_temp_manifest_file(manifest_content, manifest_id)
+            .await?;
 
         // Build podman kube play command
         let mut args = vec!["kube", "play"];
@@ -403,7 +411,9 @@ impl RuntimeEngine for PodmanEngine {
         let workload_id = self.generate_workload_id(manifest_id, manifest_content);
 
         // Create temporary manifest file with modified pod name
-        let temp_file = self.create_temp_manifest_file(manifest_content, manifest_id).await?;
+        let temp_file = self
+            .create_temp_manifest_file(manifest_content, manifest_id)
+            .await?;
 
         // Prepare podman command
         let mut args = vec!["kube", "play"];
@@ -529,24 +539,30 @@ impl RuntimeEngine for PodmanEngine {
                                     // Extract manifest_id from pod name
                                     let manifest_id = if pod_name.ends_with("-pod") {
                                         // Remove both "beemesh-" prefix and "-pod" suffix
-                                        pod_name.strip_prefix("beemesh-")
-                                                .unwrap_or(pod_name)
-                                                .strip_suffix("-pod")
-                                                .unwrap_or(pod_name)
-                                                .to_string()
+                                        pod_name
+                                            .strip_prefix("beemesh-")
+                                            .unwrap_or(pod_name)
+                                            .strip_suffix("-pod")
+                                            .unwrap_or(pod_name)
+                                            .to_string()
                                     } else {
                                         // Remove "beemesh-" prefix only
-                                        pod_name.strip_prefix("beemesh-")
-                                                .unwrap_or(pod_name)
-                                                .to_string()
+                                        pod_name
+                                            .strip_prefix("beemesh-")
+                                            .unwrap_or(pod_name)
+                                            .to_string()
                                     };
 
                                     // Parse pod status
                                     let status = match pod.get("Status").and_then(|s| s.as_str()) {
                                         Some("Running") => WorkloadStatus::Running,
                                         Some("Stopped") | Some("Exited") => WorkloadStatus::Stopped,
-                                        Some("Error") => WorkloadStatus::Failed("Pod in error state".to_string()),
-                                        Some("Failed") => WorkloadStatus::Failed("Pod failed".to_string()),
+                                        Some("Error") => {
+                                            WorkloadStatus::Failed("Pod in error state".to_string())
+                                        }
+                                        Some("Failed") => {
+                                            WorkloadStatus::Failed("Pod failed".to_string())
+                                        }
                                         _ => WorkloadStatus::Unknown,
                                     };
 
@@ -556,21 +572,23 @@ impl RuntimeEngine for PodmanEngine {
                                         if let Some(labels_obj) = labels.as_object() {
                                             for (key, value) in labels_obj {
                                                 if let Some(value_str) = value.as_str() {
-                                                    metadata.insert(key.clone(), value_str.to_string());
+                                                    metadata
+                                                        .insert(key.clone(), value_str.to_string());
                                                 }
                                             }
                                         }
                                     }
 
                                     // Parse created timestamp
-                                    let created_at = pod.get("Created")
+                                    let created_at = pod
+                                        .get("Created")
                                         .and_then(|c| c.as_str())
                                         .and_then(|created_str| {
                                             // Try to parse RFC3339 timestamp
                                             std::time::SystemTime::UNIX_EPOCH.checked_add(
                                                 std::time::Duration::from_secs(
-                                                    created_str.parse::<u64>().unwrap_or(0)
-                                                )
+                                                    created_str.parse::<u64>().unwrap_or(0),
+                                                ),
                                             )
                                         })
                                         .unwrap_or_else(std::time::SystemTime::now);
@@ -585,7 +603,10 @@ impl RuntimeEngine for PodmanEngine {
                                         ports: Vec::new(), // Port mappings would need separate inspection
                                     };
 
-                                    debug!("Found beemesh workload: {} (pod: {})", workload_info.id, pod_name);
+                                    debug!(
+                                        "Found beemesh workload: {} (pod: {})",
+                                        workload_info.id, pod_name
+                                    );
                                     workloads.push(workload_info);
                                 }
                             }
@@ -624,7 +645,10 @@ impl RuntimeEngine for PodmanEngine {
                 return Ok(());
             }
             Err(e) => {
-                debug!("Failed to remove pod with suffix {}: {}", pod_name_with_suffix, e);
+                debug!(
+                    "Failed to remove pod with suffix {}: {}",
+                    pod_name_with_suffix, e
+                );
             }
         }
 
@@ -647,7 +671,10 @@ impl RuntimeEngine for PodmanEngine {
         }
 
         // If both specific removals fail, try to find and remove by pattern
-        warn!("Specific removals failed, trying pattern match for: {}", workload_id);
+        warn!(
+            "Specific removals failed, trying pattern match for: {}",
+            workload_id
+        );
 
         // List pods and find ones that match our naming pattern
         let output = self
@@ -717,8 +744,8 @@ impl RuntimeEngine for PodmanEngine {
         //    - Other variations based on the original manifest
 
         let pod_name_variations = vec![
-            format!("{}-pod", workload_id),  // Most common pattern
-            workload_id.to_string(),         // Exact match
+            format!("{}-pod", workload_id), // Most common pattern
+            workload_id.to_string(),        // Exact match
         ];
 
         let mut last_error = None;
@@ -726,10 +753,7 @@ impl RuntimeEngine for PodmanEngine {
         for pod_name in &pod_name_variations {
             debug!("Trying to export manifest for pod: {}", pod_name);
 
-            match self
-                .execute_command(&["generate", "kube", pod_name])
-                .await
-            {
+            match self.execute_command(&["generate", "kube", pod_name]).await {
                 Ok(manifest_yaml) => {
                     info!(
                         "Successfully exported manifest for workload {} (pod: {})",
@@ -754,8 +778,12 @@ impl RuntimeEngine for PodmanEngine {
 
         match self
             .execute_command(&[
-                "pod", "ls", "--format", "{{.Name}}", "--filter", 
-                &format!("name={}", workload_id)
+                "pod",
+                "ls",
+                "--format",
+                "{{.Name}}",
+                "--filter",
+                &format!("name={}", workload_id),
             ])
             .await
         {
@@ -764,7 +792,7 @@ impl RuntimeEngine for PodmanEngine {
                     let actual_pod_name = line.trim();
                     if !actual_pod_name.is_empty() && actual_pod_name.contains(workload_id) {
                         debug!("Found actual pod name: {}", actual_pod_name);
-                        
+
                         match self
                             .execute_command(&["generate", "kube", actual_pod_name])
                             .await
@@ -777,7 +805,10 @@ impl RuntimeEngine for PodmanEngine {
                                 return Ok(manifest_yaml.into_bytes());
                             }
                             Err(e) => {
-                                debug!("Failed to export manifest for actual pod {}: {}", actual_pod_name, e);
+                                debug!(
+                                    "Failed to export manifest for actual pod {}: {}",
+                                    actual_pod_name, e
+                                );
                                 last_error = Some(e);
                             }
                         }
@@ -792,7 +823,10 @@ impl RuntimeEngine for PodmanEngine {
 
         // All attempts failed
         let error_msg = match last_error {
-            Some(e) => format!("Failed to export manifest for workload {}: {}", workload_id, e),
+            Some(e) => format!(
+                "Failed to export manifest for workload {}: {}",
+                workload_id, e
+            ),
             None => format!("No running pod found for workload {}", workload_id),
         };
 

@@ -21,7 +21,7 @@ use protocol::libp2p_constants::BEEMESH_CLUSTER;
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
 
 mod request_response_codec;
-pub use request_response_codec::{ApplyCodec, HandshakeCodec, DeleteCodec};
+pub use request_response_codec::{ApplyCodec, DeleteCodec, HandshakeCodec};
 
 use crate::libp2p_beemesh::{
     behaviour::{MyBehaviour, MyBehaviourEvent},

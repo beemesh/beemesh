@@ -5,6 +5,7 @@ use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
+use crate::libp2p_beemesh::envelope::{sign_with_existing_keypair, SignEnvelopeConfig};
 
 /// Handle QueryCapacityWithPayload control message
 pub async fn handle_query_capacity_with_payload(
@@ -53,10 +54,7 @@ pub async fn handle_query_capacity_with_payload(
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-                    // Send the capacity request as a request-response to all known peers.
-                    // Use the scheduler request-response behaviour we wired as `/beemesh/scheduler-tasks/1.0.0`.
                     let mut sent = 0usize;
-                    // Collect peers first to avoid simultaneous immutable + mutable borrows of swarm
                     let peers: Vec<libp2p::PeerId> = swarm
                         .behaviour()
                         .gossipsub
@@ -64,38 +62,21 @@ pub async fn handle_query_capacity_with_payload(
                         .map(|(p, _)| p.clone())
                         .collect();
                     for peer in peers.iter() {
-                        // Generate unique nonce for each peer to prevent replay detection
                         let nonce = format!("capacity_query_{}_{}", peer, rand::random::<u32>());
+                        let sign_cfg = SignEnvelopeConfig {
+                            nonce: Some(&nonce),
+                            timestamp: Some(timestamp),
+                            ..Default::default()
+                        };
 
-                        // Build canonical envelope bytes (include optional kem_pub arg)
-                        let canonical_bytes = protocol::machine::build_envelope_canonical(
-                            &finished,
-                            "capacity",
-                            &nonce,
-                            timestamp,
-                            "ml-dsa-65",
-                            None,
-                        );
-
-                        match crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
-                            Ok((sig_b64, pub_b64)) => {
-                                // Create signed envelope (include optional kem_pub arg)
-                                let signed_envelope = protocol::machine::build_envelope_signed(
-                                    &finished,
-                                    "capacity",
-                                    &nonce,
-                                    timestamp,
-                                    "ml-dsa-65",
-                                    "ml-dsa-65",
-                                    &sig_b64,
-                                    &pub_b64,
-                                    None,
-                                );
-
+                        match sign_with_existing_keypair(
+                            &finished, "capacity", sign_cfg, &pub_bytes, &sk_bytes,
+                        ) {
+                            Ok(signed) => {
                                 let req_id = swarm
                                     .behaviour_mut()
                                     .scheduler_rr
-                                    .send_request(&peer, signed_envelope);
+                                    .send_request(&peer, signed.bytes);
                                 log::debug!(
                                     "libp2p: sent scheduler request to peer={} request_id={:?} nonce={}",
                                     peer,

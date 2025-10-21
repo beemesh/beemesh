@@ -11,7 +11,11 @@ pub fn wrap_send_error<E: Display>(op: &str, e: E) -> Error {
 }
 
 pub fn insufficient_key_shares(have: usize, need: usize) -> Error {
-    anyhow!("insufficient key shares after distributed retrieval: have {} need {}", have, need)
+    anyhow!(
+        "insufficient key shares after distributed retrieval: have {} need {}",
+        have,
+        need
+    )
 }
 
 pub fn not_enough_local_key_shares(more_needed: usize) -> Error {

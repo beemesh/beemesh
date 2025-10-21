@@ -559,7 +559,14 @@ impl RuntimeEngine for DockerEngine {
 
         // Fallback: inspect containers and generate a basic Docker Compose manifest
         match self
-            .execute_command(&["ps", "-a", "--filter", &format!("name={}", workload_id), "--format", "json"])
+            .execute_command(&[
+                "ps",
+                "-a",
+                "--filter",
+                &format!("name={}", workload_id),
+                "--format",
+                "json",
+            ])
             .await
         {
             Ok(containers_output) => {
@@ -580,7 +587,7 @@ impl RuntimeEngine for DockerEngine {
                     if let Ok(container_info) = serde_json::from_str::<Value>(line) {
                         if let (Some(names), Some(image)) = (
                             container_info.get("Names").and_then(|n| n.as_str()),
-                            container_info.get("Image").and_then(|i| i.as_str())
+                            container_info.get("Image").and_then(|i| i.as_str()),
                         ) {
                             // Extract service name from container name
                             let service_name = names.split('/').last().unwrap_or(names);

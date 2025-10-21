@@ -22,7 +22,7 @@ impl NodeGuard {
         if self.cleaned_up {
             return; // Already cleaned up
         }
-        
+
         // best-effort abort all handles
         for h in self.handles.drain(..) {
             let _ = h.abort();
@@ -32,7 +32,7 @@ impl NodeGuard {
         for mut process in self.processes.drain(..) {
             let _ = process.kill().await;
         }
-        
+
         self.cleaned_up = true;
     }
 }
@@ -42,7 +42,7 @@ impl Drop for NodeGuard {
         if self.cleaned_up {
             return; // Already cleaned up properly
         }
-        
+
         eprintln!("NodeGuard::drop() - Running emergency cleanup");
 
         // Abort async handles (synchronous)
@@ -221,8 +221,6 @@ pub fn global_cleanup() {
         }
         Err(e) => eprintln!("pkill command failed: {}", e),
     }
-
-
 
     eprintln!("Global cleanup completed");
 }

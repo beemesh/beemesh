@@ -73,8 +73,6 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
     // initialize PQC once at process startup; fail early if it doesn't initialize
     crypto::ensure_pqc_init().map_err(|e| anyhow::anyhow!("pqc initialization failed: {}", e))?;
 
-
-
     let _keypair = if cli.ephemeral {
         let kp = crypto::ensure_keypair_ephemeral().ok();
         // also set global
@@ -194,14 +192,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
     let libp2p_handle = tokio::spawn(async move {
         // hold on to the sender for the lifetime of this task
         let _keeper = control_tx_for_libp2p;
-        if let Err(e) = libp2p_beemesh::start_libp2p_node(
-            swarm,
-            topic,
-            peer_tx,
-            control_rx,
-        )
-        .await
-        {
+        if let Err(e) = libp2p_beemesh::start_libp2p_node(swarm, topic, peer_tx, control_rx).await {
             log::error!("libp2p node error: {}", e);
         }
     });
@@ -221,11 +212,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // rest api server
     if !cli.disable_rest_api {
-        let app = restapi::build_router(
-            peer_rx,
-            control_tx.clone(),
-            envelope_handler.clone(),
-        );
+        let app = restapi::build_router(peer_rx, control_tx.clone(), envelope_handler.clone());
 
         // Public TCP server
         let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);

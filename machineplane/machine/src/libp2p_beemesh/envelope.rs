@@ -1,33 +1,153 @@
 use anyhow::Context;
 use base64::Engine;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
-static NONCE_STORE: OnceLock<Mutex<HashMap<String, HashMap<String, Instant>>>> = OnceLock::new();
+/// Signed envelope bytes alongside the generated nonce/timestamp.
+pub struct SignedEnvelope {
+    pub bytes: Vec<u8>,
+    pub nonce: String,
+    pub timestamp: u64,
+}
 
-fn nonce_store() -> &'static Mutex<HashMap<String, HashMap<String, Instant>>> {
-    NONCE_STORE.get_or_init(|| Mutex::new(HashMap::new()))
+/// Configuration options for signing envelopes.
+pub struct SignEnvelopeConfig<'a> {
+    pub nonce: Option<&'a str>,
+    pub timestamp: Option<u64>,
+    pub peer_id: Option<&'a str>,
+    pub kem_pub_b64: Option<&'a str>,
+    pub algorithm: &'a str,
+    pub signature_prefix: &'a str,
+}
+
+impl<'a> Default for SignEnvelopeConfig<'a> {
+    fn default() -> Self {
+        Self {
+            nonce: None,
+            timestamp: None,
+            peer_id: None,
+            kem_pub_b64: None,
+            algorithm: "ml-dsa-65",
+            signature_prefix: "ml-dsa-65",
+        }
+    }
+}
+
+/// Sign `payload` using the node's persisted signing keypair.
+pub fn sign_with_node_keys(
+    payload: &[u8],
+    payload_type: &str,
+    config: SignEnvelopeConfig<'_>,
+) -> anyhow::Result<SignedEnvelope> {
+    let (pub_bytes, sk_bytes) = crypto::ensure_keypair_on_disk()?;
+    sign_with_existing_keypair(payload, payload_type, config, &pub_bytes, &sk_bytes)
+}
+
+/// Sign `payload` using a provided `(pub, secret)` keypair byte slices.
+pub fn sign_with_existing_keypair(
+    payload: &[u8],
+    payload_type: &str,
+    config: SignEnvelopeConfig<'_>,
+    pub_bytes: &[u8],
+    sk_bytes: &[u8],
+) -> anyhow::Result<SignedEnvelope> {
+    sign_internal(payload, payload_type, config, pub_bytes, sk_bytes)
+}
+
+fn sign_internal(
+    payload: &[u8],
+    payload_type: &str,
+    config: SignEnvelopeConfig<'_>,
+    pub_bytes: &[u8],
+    sk_bytes: &[u8],
+) -> anyhow::Result<SignedEnvelope> {
+    let SignEnvelopeConfig {
+        nonce,
+        timestamp,
+        peer_id,
+        kem_pub_b64,
+        algorithm,
+        signature_prefix,
+    } = config;
+
+    let nonce_owned = nonce
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let timestamp = timestamp.unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0u64)
+    });
+
+    let canonical = if let Some(peer) = peer_id {
+        protocol::machine::build_envelope_canonical_with_peer(
+            payload,
+            payload_type,
+            &nonce_owned,
+            timestamp,
+            algorithm,
+            peer,
+            kem_pub_b64,
+        )
+    } else {
+        protocol::machine::build_envelope_canonical(
+            payload,
+            payload_type,
+            &nonce_owned,
+            timestamp,
+            algorithm,
+            kem_pub_b64,
+        )
+    };
+
+    let (sig_b64, pub_b64) = crypto::sign_envelope(sk_bytes, pub_bytes, &canonical)?;
+
+    let bytes = if let Some(peer) = peer_id {
+        protocol::machine::build_envelope_signed_with_peer(
+            payload,
+            payload_type,
+            &nonce_owned,
+            timestamp,
+            algorithm,
+            signature_prefix,
+            &sig_b64,
+            &pub_b64,
+            peer,
+            kem_pub_b64,
+        )
+    } else {
+        protocol::machine::build_envelope_signed(
+            payload,
+            payload_type,
+            &nonce_owned,
+            timestamp,
+            algorithm,
+            signature_prefix,
+            &sig_b64,
+            &pub_b64,
+            kem_pub_b64,
+        )
+    };
+
+    Ok(SignedEnvelope {
+        bytes,
+        nonce: nonce_owned,
+        timestamp,
+    })
 }
 
 /// Accept a signature string potentially prefixed (e.g. "ml-dsa-65:<b64>") and return decoded bytes.
 /// Keeps prefix-handling logic centralized.
 pub fn normalize_and_decode_signature(sig_opt: Option<&str>) -> anyhow::Result<Vec<u8>> {
-    let sig_str = sig_opt.unwrap_or("");
-    let b64_part = if let Some(idx) = sig_str.find(':') {
-        &sig_str[idx + 1..]
-    } else {
-        sig_str
-    };
-    base64::engine::general_purpose::STANDARD
-        .decode(b64_part)
-        .context("failed to base64-decode signature")
+    crypto::flatbuffer_envelope::normalize_and_decode_signature(sig_opt)
 }
 
 /// Check replay protection: ensure nonce is not seen in `nonce_window` and insert it.
 /// Returns Err if duplicate or invalid.
 pub fn check_and_insert_nonce(nonce_str: &str, nonce_window: Duration) -> anyhow::Result<()> {
-    check_and_insert_nonce_for_peer(nonce_str, nonce_window, "global")
+    crypto::flatbuffer_envelope::check_and_insert_nonce(nonce_str, nonce_window)
 }
 
 /// Check replay protection for a specific peer: ensure nonce is not seen in `nonce_window` and insert it.
@@ -37,26 +157,7 @@ pub fn check_and_insert_nonce_for_peer(
     nonce_window: Duration,
     peer_id: &str,
 ) -> anyhow::Result<()> {
-    if nonce_str.is_empty() {
-        return Err(anyhow::anyhow!("nonce cannot be empty"));
-    }
-
-    let now = Instant::now();
-    let mut store = nonce_store().lock().unwrap();
-
-    // Get or create peer-specific nonce store
-    let peer_store = store
-        .entry(peer_id.to_string())
-        .or_insert_with(HashMap::new);
-
-    // prune old nonces for this peer
-    peer_store.retain(|_, &mut t| now.duration_since(t) <= nonce_window);
-
-    if peer_store.contains_key(nonce_str) {
-        return Err(anyhow::anyhow!("replay detected: nonce already seen"));
-    }
-    peer_store.insert(nonce_str.to_string(), now);
-    Ok(())
+    crypto::flatbuffer_envelope::check_and_insert_nonce_for_peer(nonce_str, nonce_window, peer_id)
 }
 
 /// Verify a flatbuffer envelope. Reconstructs canonical bytes and verifies signature.
@@ -171,7 +272,7 @@ pub fn verify_flatbuffer_envelope_skip_nonce_check(
         None,
     );
 
-    // Skip nonce replay check - this is intentional for token extraction
+    // Skip nonce replay check intentionally
 
     crypto::verify_envelope(&pub_bytes, &canonical, &sig_bytes)
         .context("flatbuffer signature verification failed")?;
@@ -183,7 +284,6 @@ pub fn verify_flatbuffer_envelope_skip_nonce_check(
 mod tests {
     use super::*;
     use crypto::{ensure_keypair_ephemeral, ensure_pqc_init, sign_envelope};
-    use std::time::Duration;
 
     #[test]
     fn test_build_and_verify_flatbuffer_envelope_roundtrip() {

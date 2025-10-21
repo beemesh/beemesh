@@ -53,20 +53,23 @@ async fn test_delete_task_endpoint() {
         "{}/sample_manifests/nginx.yml",
         env!("CARGO_MANIFEST_DIR")
     ));
-    
+
     // First apply the manifest to have something to delete
     let task_id_result = cli::apply_file(manifest_path.clone()).await;
     println!("Apply result: {:?}", task_id_result);
-    
+
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
-    
+
     // Now try to delete it using CLI
     let delete_result = cli::delete_file(manifest_path, false).await;
-    
+
     match delete_result {
         Ok(manifest_id) => {
-            println!("Delete CLI command succeeded with manifest_id: {}", manifest_id);
+            println!(
+                "Delete CLI command succeeded with manifest_id: {}",
+                manifest_id
+            );
             assert!(!manifest_id.is_empty());
         }
         Err(e) => {
@@ -95,20 +98,23 @@ async fn test_delete_task_with_force() {
         "{}/sample_manifests/nginx.yml",
         env!("CARGO_MANIFEST_DIR")
     ));
-    
+
     // First apply the manifest to have something to delete
     let task_id_result = cli::apply_file(manifest_path.clone()).await;
     println!("Apply result: {:?}", task_id_result);
-    
+
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
-    
+
     // Now try to delete it with force flag using CLI
     let delete_result = cli::delete_file(manifest_path, true).await;
-    
+
     match delete_result {
         Ok(manifest_id) => {
-            println!("Force delete CLI command succeeded with manifest_id: {}", manifest_id);
+            println!(
+                "Force delete CLI command succeeded with manifest_id: {}",
+                manifest_id
+            );
             assert!(!manifest_id.is_empty());
         }
         Err(e) => {
@@ -137,13 +143,16 @@ async fn test_delete_nonexistent_task() {
         "{}/sample_manifests/nginx.yml",
         env!("CARGO_MANIFEST_DIR")
     ));
-    
+
     // Try to delete without applying first (should find no providers)
     let delete_result = cli::delete_file(manifest_path, false).await;
-    
+
     match delete_result {
         Ok(manifest_id) => {
-            println!("Delete nonexistent task CLI command succeeded with manifest_id: {}", manifest_id);
+            println!(
+                "Delete nonexistent task CLI command succeeded with manifest_id: {}",
+                manifest_id
+            );
             assert!(!manifest_id.is_empty());
             // This is expected since the REST API returns success for "no providers found"
         }

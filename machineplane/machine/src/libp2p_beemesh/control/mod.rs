@@ -244,8 +244,6 @@ pub async fn handle_control_message(
             );
         }
 
-
-
         Libp2pControl::BootstrapDht { reply_tx } => {
             // Bootstrap the Kademlia DHT
             let _ = swarm.behaviour_mut().kademlia.bootstrap();
@@ -425,8 +423,6 @@ pub fn take_pending_providers_query(
     map.remove(&key)
 }
 
-
-
 /// Global store for tracking pending manifest distribution requests
 static PENDING_MANIFEST_REQUESTS: Lazy<
     Mutex<HashMap<libp2p::request_response::OutboundRequestId, (ManifestRequestSender, Instant)>>,
@@ -461,8 +457,6 @@ pub fn cleanup_timed_out_manifest_requests() {
         }
     }
 }
-
-
 
 /// Insert a pending kad query sender for the given QueryId
 pub fn insert_pending_kad_query(
@@ -570,7 +564,6 @@ pub enum Libp2pControl {
         manifest_id: String,
         reply_tx: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
     },
-
 
     /// Store an applied manifest in the DHT after successful deployment
     StoreAppliedManifest {

@@ -3,22 +3,20 @@ use axum::{
     extract::{Extension, Path, Query, State},
     http::HeaderMap,
     middleware,
-    routing::{get, post, delete},
+    routing::{delete, get, post},
     Router,
 };
 use base64::Engine;
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
-use protocol::libp2p_constants::{
-    FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS,
-};
+use protocol::libp2p_constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS};
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::{sync::watch, time::Duration};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod envelope_handler;
 use crate::runtime::RuntimeEngine;
@@ -148,7 +146,10 @@ pub fn build_router(
             "/tenant/{tenant}/tasks/{task_id}/candidates",
             post(get_candidates),
         )
-        .route("/tenant/{tenant}/apply_direct/{peer_id}", post(apply_direct))
+        .route(
+            "/tenant/{tenant}/apply_direct/{peer_id}",
+            post(apply_direct),
+        )
         .route("/tenant/{tenant}/nodes", get(get_nodes))
         // Add envelope middleware to decrypt incoming requests and extract peer keys
         .layer(middleware::from_fn_with_state(
@@ -218,7 +219,10 @@ pub async fn get_candidates(
                 break;
             }
             Err(_) => {
-                log::info!("get_candidates: reached timeout waiting for responses, got {} responders", responders.len());
+                log::info!(
+                    "get_candidates: reached timeout waiting for responses, got {} responders",
+                    responders.len()
+                );
                 break;
             }
         }
@@ -256,7 +260,7 @@ pub async fn get_candidates(
     }
 
     let response_data = protocol::machine::build_candidates_response_with_keys(true, &candidates);
-    
+
     // Use KEM key from envelope metadata for secure response encryption if available
     if !envelope_metadata.kem_pubkey.is_empty() {
         create_encrypted_response_with_key(
@@ -323,7 +327,7 @@ pub async fn create_task(
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         tenant.hash(&mut hasher);
-        
+
         // Use stable manifest name instead of operation_id for consistent hashing
         if let Some(name) = protocol::machine::extract_manifest_name(&payload_bytes_for_parsing) {
             name.hash(&mut hasher);
@@ -340,7 +344,7 @@ pub async fn create_task(
         let operation_id = uuid::Uuid::new_v4().to_string();
         let mut hasher = DefaultHasher::new();
         tenant.hash(&mut hasher);
-        
+
         // Use stable manifest name instead of operation_id for consistent hashing
         if let Some(name) = protocol::machine::extract_manifest_name(&payload_bytes_for_parsing) {
             name.hash(&mut hasher);
@@ -383,30 +387,31 @@ pub async fn create_task(
     );
 
     // Create envelope for the encrypted payload - no longer need to parse as EncryptedManifest
-    let manifest_bytes_to_store = if !payload_bytes_for_parsing.is_empty() && payload_bytes_for_parsing[0] == 0x02 {
-        log::info!("create_task: detected encrypted manifest payload (recipient-blob format)");
-        
-        // Create a proper envelope containing the encrypted payload for decryption
-        // The decryption process expects an envelope with payload_type="manifest"
-        let envelope_nonce: [u8; 16] = rand::random();
-        let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+    let manifest_bytes_to_store =
+        if !payload_bytes_for_parsing.is_empty() && payload_bytes_for_parsing[0] == 0x02 {
+            log::info!("create_task: detected encrypted manifest payload (recipient-blob format)");
 
-        protocol::machine::build_envelope_canonical(
-            &payload_bytes_for_parsing,
-            "manifest",
-            &nonce_str,
-            ts,
-            "ml-kem-512",
-            None,
-        )
-    } else {
-        log::info!("create_task: payload appears to be plain manifest or other format");
-        payload_bytes_for_parsing
-    };
+            // Create a proper envelope containing the encrypted payload for decryption
+            // The decryption process expects an envelope with payload_type="manifest"
+            let envelope_nonce: [u8; 16] = rand::random();
+            let nonce_str = base64::engine::general_purpose::STANDARD.encode(&envelope_nonce);
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+
+            protocol::machine::build_envelope_canonical(
+                &payload_bytes_for_parsing,
+                "manifest",
+                &nonce_str,
+                ts,
+                "ml-kem-512",
+                None,
+            )
+        } else {
+            log::info!("create_task: payload appears to be plain manifest or other format");
+            payload_bytes_for_parsing
+        };
 
     let rec = TaskRecord {
         manifest_bytes: manifest_bytes_to_store,
@@ -477,8 +482,6 @@ async fn debug_active_announces(State(_state): State<RestState>) -> axum::Json<s
     axum::Json(serde_json::json!({"ok": true, "cids": cids}))
 }
 
-
-
 /// Debug endpoint to get local peer ID
 async fn debug_local_peer_id(State(state): State<RestState>) -> axum::Json<serde_json::Value> {
     // Get the local peer ID from the control channel
@@ -529,7 +532,10 @@ async fn debug_workloads_by_peer(
                     let mut workloads_json = serde_json::Map::new();
 
                     for workload in &peer_workloads {
-                        let exported_manifest = match mock_engine.export_manifest(&workload.info.id).await {
+                        let exported_manifest = match mock_engine
+                            .export_manifest(&workload.info.id)
+                            .await
+                        {
                             Ok(manifest_bytes) => {
                                 // Convert bytes to string for consistency with other endpoints
                                 match String::from_utf8(manifest_bytes) {
@@ -539,9 +545,13 @@ async fn debug_workloads_by_peer(
                                         None
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
-                                log::warn!("Failed to export manifest for workload {}: {}", workload.info.id, e);
+                                log::warn!(
+                                    "Failed to export manifest for workload {}: {}",
+                                    workload.info.id,
+                                    e
+                                );
                                 None
                             }
                         };
@@ -711,7 +721,6 @@ async fn get_task_manifest_id(
     create_response_with_fallback(response_str.as_bytes()).await
 }
 
-
 pub async fn get_task_status(
     Path((_tenant, task_id)): Path<(String, String)>,
     State(state): State<RestState>,
@@ -758,7 +767,9 @@ pub async fn delete_task(
     let operation_id = format!("delete-{}-{}", task_id, timestamp);
 
     // Extract requesting peer info from envelope metadata
-    let origin_peer = envelope_metadata.peer_id.unwrap_or_else(|| "unknown".to_string());
+    let origin_peer = envelope_metadata
+        .peer_id
+        .unwrap_or_else(|| "unknown".to_string());
 
     // Parse query parameters for force flag
     let force = String::from_utf8_lossy(&body).contains("force=true");
@@ -767,7 +778,10 @@ pub async fn delete_task(
     let providers = match find_manifest_providers(&task_id, &state).await {
         Ok(providers) => providers,
         Err(e) => {
-            error!("Failed to discover providers for task_id {}: {}", task_id, e);
+            error!(
+                "Failed to discover providers for task_id {}: {}",
+                task_id, e
+            );
             let error_response = protocol::machine::build_delete_response(
                 false,
                 &operation_id,
@@ -791,7 +805,12 @@ pub async fn delete_task(
         return create_response_with_fallback(&response).await;
     }
 
-    info!("Found {} providers for task_id {}: {:?}", providers.len(), task_id, providers);
+    info!(
+        "Found {} providers for task_id {}: {:?}",
+        providers.len(),
+        task_id,
+        providers
+    );
 
     // Step 2: Create delete request
     let delete_request = protocol::machine::build_delete_request(
@@ -825,20 +844,21 @@ pub async fn delete_task(
         return create_response_with_fallback(&error_response).await;
     }
 
-    let local_peer_id = match tokio::time::timeout(Duration::from_secs(2), local_peer_rx.recv()).await {
-        Ok(Some(peer_id)) => peer_id,
-        _ => {
-            error!("Timeout getting local peer ID");
-            let error_response = protocol::machine::build_delete_response(
-                false,
-                &operation_id,
-                "Timeout getting local peer ID",
-                &task_id,
-                &[],
-            );
-            return create_response_with_fallback(&error_response).await;
-        }
-    };
+    let local_peer_id =
+        match tokio::time::timeout(Duration::from_secs(2), local_peer_rx.recv()).await {
+            Ok(Some(peer_id)) => peer_id,
+            _ => {
+                error!("Timeout getting local peer ID");
+                let error_response = protocol::machine::build_delete_response(
+                    false,
+                    &operation_id,
+                    "Timeout getting local peer ID",
+                    &task_id,
+                    &[],
+                );
+                return create_response_with_fallback(&error_response).await;
+            }
+        };
 
     for provider_peer_id_str in providers {
         // Parse provider peer ID
@@ -854,28 +874,40 @@ pub async fn delete_task(
         // Check if this is a self-delete (local peer)
         if provider_peer_id == local_peer_id {
             info!("Performing self-delete for manifest_id: {}", task_id);
-            
+
             // Handle local workload deletion directly
             match handle_local_delete(&task_id, force).await {
                 Ok(local_removed_workloads) => {
-                    info!("Self-delete successful for manifest_id {}: removed {} workloads", task_id, local_removed_workloads.len());
+                    info!(
+                        "Self-delete successful for manifest_id {}: removed {} workloads",
+                        task_id,
+                        local_removed_workloads.len()
+                    );
                     successful_deletes.push(provider_peer_id_str);
                     removed_workloads.extend(local_removed_workloads);
                 }
                 Err(e) => {
                     error!("Self-delete failed for manifest_id {}: {}", task_id, e);
-                    failed_deletes.push(format!("{}:self_delete_failed:{}", provider_peer_id_str, e));
+                    failed_deletes
+                        .push(format!("{}:self_delete_failed:{}", provider_peer_id_str, e));
                 }
             }
         } else {
             // Send delete request to remote peer
-            match send_delete_request_to_peer(&state, &provider_peer_id_str, &delete_request).await {
+            match send_delete_request_to_peer(&state, &provider_peer_id_str, &delete_request).await
+            {
                 Ok(result) => {
-                    info!("Delete request sent to peer {}: {:?}", provider_peer_id_str, result);
+                    info!(
+                        "Delete request sent to peer {}: {:?}",
+                        provider_peer_id_str, result
+                    );
                     successful_deletes.push(provider_peer_id_str);
                 }
                 Err(e) => {
-                    error!("Failed to send delete request to peer {}: {}", provider_peer_id_str, e);
+                    error!(
+                        "Failed to send delete request to peer {}: {}",
+                        provider_peer_id_str, e
+                    );
                     failed_deletes.push(format!("{}:{}", provider_peer_id_str, e));
                 }
             }
@@ -886,7 +918,10 @@ pub async fn delete_task(
     let success = !successful_deletes.is_empty();
     let message = if success {
         if failed_deletes.is_empty() {
-            format!("Delete requests sent to {} providers", successful_deletes.len())
+            format!(
+                "Delete requests sent to {} providers",
+                successful_deletes.len()
+            )
         } else {
             format!(
                 "Delete requests sent to {}/{} providers. Failures: {:?}",
@@ -896,7 +931,10 @@ pub async fn delete_task(
             )
         }
     } else {
-        format!("Failed to send delete requests to any providers: {:?}", failed_deletes)
+        format!(
+            "Failed to send delete requests to any providers: {:?}",
+            failed_deletes
+        )
     };
 
     let response = protocol::machine::build_delete_response(
@@ -911,58 +949,75 @@ pub async fn delete_task(
 }
 
 /// Handle local workload deletion when the provider is the same machine
-async fn handle_local_delete(
-    manifest_id: &str,
-    _force: bool,
-) -> Result<Vec<String>, String> {
-    info!("handle_local_delete: processing manifest_id={}", manifest_id);
-    
+async fn handle_local_delete(manifest_id: &str, _force: bool) -> Result<Vec<String>, String> {
+    info!(
+        "handle_local_delete: processing manifest_id={}",
+        manifest_id
+    );
+
     // Use the workload integration module to remove workloads by manifest ID
     match crate::workload_integration::remove_workloads_by_manifest_id(manifest_id).await {
         Ok(removed_workloads) => {
-            info!("handle_local_delete: successfully removed {} workloads for manifest_id '{}'", removed_workloads.len(), manifest_id);
+            info!(
+                "handle_local_delete: successfully removed {} workloads for manifest_id '{}'",
+                removed_workloads.len(),
+                manifest_id
+            );
             Ok(removed_workloads)
         }
         Err(e) => {
-            error!("handle_local_delete: failed to remove workloads for manifest_id '{}': {}", manifest_id, e);
+            error!(
+                "handle_local_delete: failed to remove workloads for manifest_id '{}': {}",
+                manifest_id, e
+            );
             Err(format!("local deletion failed: {}", e))
         }
     }
 }
 
 /// Find providers for a task using DHT discovery
-async fn find_manifest_providers(
-    task_id: &str,
-    state: &RestState,
-) -> Result<Vec<String>, String> {
+async fn find_manifest_providers(task_id: &str, state: &RestState) -> Result<Vec<String>, String> {
     info!("find_manifest_providers: searching for task_id={}", task_id);
-    
+
     // Use the libp2p control system to find providers for this manifest
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    
+
     // Send request to find providers via DHT
     let control_msg = crate::libp2p_beemesh::control::Libp2pControl::FindManifestHolders {
         manifest_id: task_id.to_string(),
         reply_tx: tx,
     };
-    
+
     if let Err(e) = state.control_tx.send(control_msg) {
         warn!("Failed to send find providers request: {}", e);
         return Ok(vec![]);
     }
-    
+
     // Wait for response with timeout
     match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
         Ok(Some(providers)) => {
-            info!("find_manifest_providers: found {} providers for task_id={}", providers.len(), task_id);
-            Ok(providers.into_iter().map(|peer_id| peer_id.to_string()).collect())
+            info!(
+                "find_manifest_providers: found {} providers for task_id={}",
+                providers.len(),
+                task_id
+            );
+            Ok(providers
+                .into_iter()
+                .map(|peer_id| peer_id.to_string())
+                .collect())
         }
         Ok(None) => {
-            warn!("find_manifest_providers: channel closed for task_id={}", task_id);
+            warn!(
+                "find_manifest_providers: channel closed for task_id={}",
+                task_id
+            );
             Ok(vec![])
         }
         Err(_) => {
-            warn!("find_manifest_providers: timeout waiting for providers for task_id={}", task_id);
+            warn!(
+                "find_manifest_providers: timeout waiting for providers for task_id={}",
+                task_id
+            );
             Ok(vec![])
         }
     }
@@ -977,31 +1032,38 @@ async fn send_delete_request_to_peer(
     info!("send_delete_request_to_peer: sending to peer={}", peer_id);
 
     // Parse the peer string into a PeerId
-    let target_peer_id: libp2p::PeerId = peer_id.parse()
+    let target_peer_id: libp2p::PeerId = peer_id
+        .parse()
         .map_err(|e| format!("Invalid peer ID '{}': {}", peer_id, e))?;
 
     // Send the delete request via libp2p control message
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
-    
+
     let control_msg = crate::libp2p_beemesh::control::Libp2pControl::SendDeleteRequest {
         peer_id: target_peer_id,
         delete_request: delete_request.to_vec(),
         reply_tx,
     };
-    
+
     if let Err(e) = state.control_tx.send(control_msg) {
-        return Err(format!("Failed to send delete request to libp2p control: {}", e));
+        return Err(format!(
+            "Failed to send delete request to libp2p control: {}",
+            e
+        ));
     }
 
     // Wait for response with timeout
     match tokio::time::timeout(Duration::from_secs(10), reply_rx.recv()).await {
         Ok(Some(Ok(result))) => {
-            info!("Delete request to peer {} completed successfully: {}", peer_id, result);
+            info!(
+                "Delete request to peer {} completed successfully: {}",
+                peer_id, result
+            );
             Ok(result)
         }
         Ok(Some(Err(e))) => {
             error!("Delete request to peer {} failed: {}", peer_id, e);
-            Err(e) 
+            Err(e)
         }
         Ok(None) => {
             error!("Delete request to peer {} - reply channel closed", peer_id);
@@ -1064,15 +1126,27 @@ pub async fn apply_direct(
     let result = match tokio::time::timeout(Duration::from_secs(30), reply_rx.recv()).await {
         Ok(Some(Ok(_msg))) => {
             debug!("apply_direct: success for peer {}", peer_id);
-            protocol::machine::build_apply_response(true, "forwarded", "Request forwarded successfully")
+            protocol::machine::build_apply_response(
+                true,
+                "forwarded",
+                "Request forwarded successfully",
+            )
         }
         Ok(Some(Err(e))) => {
             log::warn!("apply_direct: error for peer {}: {}", peer_id, e);
-            protocol::machine::build_apply_response(false, "forwarded", &format!("Forward failed: {}", e))
+            protocol::machine::build_apply_response(
+                false,
+                "forwarded",
+                &format!("Forward failed: {}", e),
+            )
         }
         _ => {
             log::warn!("apply_direct: timeout for peer {}", peer_id);
-            protocol::machine::build_apply_response(false, "forwarded", "Timeout waiting for peer response")
+            protocol::machine::build_apply_response(
+                false,
+                "forwarded",
+                "Timeout waiting for peer response",
+            )
         }
     };
 

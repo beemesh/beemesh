@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::path::Path;
+use std::process::Command;
 
 fn main() {
     // Where the .fbs schema files live
@@ -7,16 +7,27 @@ fn main() {
 
     // Ensure schema dir exists
     if !schema_dir.exists() {
-        println!("cargo:warning=No schema directory found at {:?}, skipping flatc generation", schema_dir);
+        println!(
+            "cargo:warning=No schema directory found at {:?}, skipping flatc generation",
+            schema_dir
+        );
         return;
     }
 
     // Check flatc availability
     let mut flatc_path = "flatc";
-    let mut flatc_ok = Command::new("flatc").arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
+    let mut flatc_ok = Command::new("flatc")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
     if !flatc_ok {
         flatc_path = "../flatc";
-        flatc_ok = Command::new(flatc_path).arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
+        flatc_ok = Command::new(flatc_path)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
     }
 
     if !flatc_ok {
@@ -30,7 +41,10 @@ fn main() {
     for entry in std::fs::read_dir(schema_dir).expect("read schema dir") {
         let entry = match entry {
             Ok(e) => e,
-            Err(e) => { println!("cargo:warning=failed to read schema entry: {}", e); continue; }
+            Err(e) => {
+                println!("cargo:warning=failed to read schema entry: {}", e);
+                continue;
+            }
         };
         let path = entry.path();
         if path.extension().map(|s| s == "fbs").unwrap_or(false) {
@@ -51,7 +65,10 @@ fn main() {
                     generated_any = true;
                 }
                 Ok(s) => {
-                    println!("cargo:warning=flatc failed for {:?} with status: {}", path, s);
+                    println!(
+                        "cargo:warning=flatc failed for {:?} with status: {}",
+                        path, s
+                    );
                 }
                 Err(e) => {
                     println!("cargo:warning=failed to run flatc for {:?}: {}", path, e);

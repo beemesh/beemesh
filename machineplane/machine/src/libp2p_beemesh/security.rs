@@ -1,15 +1,62 @@
-use std::time::Duration;
+use crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope_for_peer;
+use anyhow::Error;
+use libp2p::PeerId;
+use thiserror::Error;
 
-/// Keep nonces for a short window to mitigate replay attacks.
-/// Simple in-memory map: nonce_str -> Instant inserted_at.
-///
-/// This is intentionally small and simple. In production you may want an
-/// LRU cache, sharded maps, or a persistent store for high-throughput nodes.
+/// Outcome of verifying an incoming payload. Either it was fully verified,
+/// or signature validation failed but we can fall back to the raw payload when
+/// signatures are optional.
+#[derive(Debug)]
+pub enum PayloadVerification {
+    Verified(VerifiedEnvelope),
+    Unsigned { payload: Vec<u8>, reason: String },
+}
 
-/// Signature verification is required unconditionally to ensure messages
-/// are always authenticated and cannot be silently accepted.
+impl PayloadVerification {
+    /// Returns the verification failure reason if the payload was accepted
+    /// without a signature.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            PayloadVerification::Unsigned { reason, .. } => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Consume the verification result and return the payload bytes.
+    pub fn into_payload(self) -> Vec<u8> {
+        match self {
+            PayloadVerification::Verified(envelope) => envelope.payload,
+            PayloadVerification::Unsigned { payload, .. } => payload,
+        }
+    }
+
+    /// Consume the verification result and return payload bytes alongside the
+    /// signer public key when present.
+    pub fn into_payload_and_pubkey(self) -> (Vec<u8>, Option<Vec<u8>>) {
+        match self {
+            PayloadVerification::Verified(envelope) => (envelope.payload, Some(envelope.pubkey)),
+            PayloadVerification::Unsigned { payload, .. } => (payload, None),
+        }
+    }
+}
+
+/// Verified envelope metadata captured during signature validation.
+#[derive(Debug)]
+pub struct VerifiedEnvelope {
+    pub payload: Vec<u8>,
+    pub pubkey: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+/// Signature enforcement failure when signed messages are required.
+#[derive(Debug, Error)]
+pub enum EnvelopeRejection {
+    #[error("signed message required: {0}")]
+    SignatureRequired(#[from] Error),
+}
+/// Determine whether the node must enforce signed messages.
 pub fn require_signed_messages() -> bool {
-    true
+    crypto::envelope_validator::EnvelopeValidator::require_signed_messages()
 }
 
 /// Verify a FlatBuffer envelope and check nonce for replay protection.
@@ -26,69 +73,36 @@ pub fn verify_envelope_and_check_nonce_for_peer(
     envelope_bytes: &[u8],
     peer_id: &str,
 ) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    // Use standard 5 minute nonce window for backward compatibility
-    let nonce_window = Duration::from_secs(300);
-
-    // All envelopes must be FlatBuffers now
     crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope_for_peer(
         envelope_bytes,
-        nonce_window,
+        std::time::Duration::from_secs(300),
         peer_id,
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crypto::{ensure_keypair_ephemeral, ensure_pqc_init, sign_envelope};
-
-    #[test]
-    fn test_verify_and_replay() {
-        ensure_pqc_init().expect("pqc init");
-        let (pubb, privb) = ensure_keypair_ephemeral().expect("keygen");
-
-        let payload = b"test payload";
-        let payload_type = "test";
-        let nonce = format!(
-            "test-nonce-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let timestamp = 1234567890u64;
-        let alg = "ml-dsa-65";
-
-        // Create canonical bytes for signing
-        let canonical = protocol::machine::build_envelope_canonical(
+/// Attempt to verify the supplied bytes as a signed envelope originating from `peer`.
+/// When signatures are optional, verification failures degrade gracefully by
+/// returning the raw payload along with an explanatory reason. If signatures
+/// are required, the failure is promoted to an `EnvelopeRejection`.
+pub fn verify_or_passthrough_for_peer(
+    message_bytes: &[u8],
+    peer: &PeerId,
+) -> Result<PayloadVerification, EnvelopeRejection> {
+    match verify_envelope_and_check_nonce_for_peer(message_bytes, &peer.to_string()) {
+        Ok((payload, pubkey, signature)) => Ok(PayloadVerification::Verified(VerifiedEnvelope {
             payload,
-            payload_type,
-            &nonce,
-            timestamp,
-            alg,
-            None,
-        );
-        let (sig_b64, pub_b64) = sign_envelope(&privb, &pubb, &canonical).expect("sign");
-
-        // Build signed envelope
-        let envelope_bytes = protocol::machine::build_envelope_signed(
-            payload,
-            payload_type,
-            &nonce,
-            timestamp,
-            alg,
-            "ml-dsa-65",
-            &sig_b64,
-            &pub_b64,
-            None,
-        );
-
-        // First verification should succeed
-        let (decoded, _pub, _sig) =
-            verify_envelope_and_check_nonce(&envelope_bytes).expect("verify");
-        assert_eq!(decoded, payload);
-
-        // Replay should be rejected
-        assert!(verify_envelope_and_check_nonce(&envelope_bytes).is_err());
+            pubkey,
+            signature,
+        })),
+        Err(err) => {
+            if require_signed_messages() {
+                Err(EnvelopeRejection::SignatureRequired(err))
+            } else {
+                Ok(PayloadVerification::Unsigned {
+                    payload: message_bytes.to_vec(),
+                    reason: format!("{:?}", err),
+                })
+            }
+        }
     }
 }

@@ -1,3 +1,5 @@
+use crate::libp2p_beemesh::envelope::{sign_with_node_keys, SignEnvelopeConfig};
+use crate::libp2p_beemesh::security::{verify_or_passthrough_for_peer, PayloadVerification};
 use libp2p::request_response;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -13,23 +15,25 @@ pub fn handshake_request<F>(
     //log::info!("libp2p: received handshake request from peer={}", peer);
 
     // Handshakes should be wrapped in signed envelopes for consistency
-    let effective_request =
-        match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
-            &request,
-            &peer.to_string(),
-        ) {
-            Ok((payload_bytes, _pub, _sig)) => payload_bytes,
-            Err(e) => {
-                if crate::libp2p_beemesh::security::require_signed_messages() {
-                    log::error!("rejecting unsigned/invalid handshake request: {:?}", e);
-                    // Send an empty error response
-                    let error_response = protocol::machine::build_handshake(0, 0, "", "");
-                    send_response(error_response);
-                    return;
-                }
-                request.clone()
-            }
-        };
+    let verification = match verify_or_passthrough_for_peer(&request, &peer) {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("rejecting unsigned/invalid handshake request: {}", err);
+            let error_response = protocol::machine::build_handshake(0, 0, "", "");
+            send_response(error_response);
+            return;
+        }
+    };
+
+    if let Some(reason) = verification.reason() {
+        log::warn!(
+            "handshake request from {} accepted without signature: {}",
+            peer,
+            reason
+        );
+    }
+
+    let effective_request = verification.into_payload();
 
     // Parse the FlatBuffer handshake request
     match protocol::machine::root_as_handshake(&effective_request) {
@@ -61,41 +65,16 @@ pub fn handshake_request<F>(
             );
 
             // Wrap in signed envelope
-            match crypto::ensure_keypair_on_disk() {
-                Ok((pub_bytes, sk_bytes)) => {
-                    let canonical_bytes = protocol::machine::build_envelope_canonical(
-                        &handshake_response,
-                        "handshake",
-                        &nonce,
-                        timestamp,
-                        "ml-dsa-65",
-                        None,
-                    );
+            let sign_cfg = SignEnvelopeConfig {
+                nonce: Some(&nonce),
+                timestamp: Some(timestamp),
+                ..Default::default()
+            };
 
-                    match crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
-                        Ok((sig_b64, pub_b64)) => {
-                            let signed_envelope = protocol::machine::build_envelope_signed(
-                                &handshake_response,
-                                "handshake",
-                                &nonce,
-                                timestamp,
-                                "ml-dsa-65",
-                                "ml-dsa-65",
-                                &sig_b64,
-                                &pub_b64,
-                                None,
-                            );
-                            send_response(signed_envelope);
-                        }
-                        Err(e) => {
-                            log::error!("failed to sign handshake response: {:?}", e);
-                            let error_response = protocol::machine::build_handshake(0, 0, "", "");
-                            send_response(error_response);
-                        }
-                    }
-                }
+            match sign_with_node_keys(&handshake_response, "handshake", sign_cfg) {
+                Ok(signed) => send_response(signed.bytes),
                 Err(e) => {
-                    log::error!("failed to load keypair for handshake response: {:?}", e);
+                    log::error!("failed to sign handshake response: {:?}", e);
                     let error_response = protocol::machine::build_handshake(0, 0, "", "");
                     send_response(error_response);
                 }
@@ -119,17 +98,23 @@ pub fn handshake_response(
     //log::info!("libp2p: received handshake response from peer={}", peer);
 
     // Verify the signed envelope for handshake response
-    let effective_response =
-        match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
-            &response,
-            &peer.to_string(),
-        ) {
-            Ok((payload_bytes, _pub, _sig)) => payload_bytes,
-            Err(e) => {
-                log::error!("rejecting unsigned/invalid handshake response: {:?}", e);
-                return;
-            }
-        };
+    let verification = match verify_or_passthrough_for_peer(&response, &peer) {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("rejecting unsigned/invalid handshake response: {}", err);
+            return;
+        }
+    };
+
+    let effective_response = match verification {
+        PayloadVerification::Verified(envelope) => envelope.payload,
+        PayloadVerification::Unsigned { .. } => {
+            log::error!(
+                "rejecting unsigned/invalid handshake response: signature missing or invalid"
+            );
+            return;
+        }
+    };
 
     // Parse the response
     match protocol::machine::root_as_handshake(&effective_response) {

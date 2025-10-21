@@ -138,7 +138,7 @@ impl EnvelopeValidator {
 
     /// Check if signed messages are required based on environment variable
     pub fn require_signed_messages() -> bool {
-        std::env::var("BEEMESH_REQUIRE_SIGNED_MESSAGES").is_ok()
+        true
     }
 
     /// Validate envelope with custom error handler
@@ -181,13 +181,7 @@ mod tests {
 
     #[test]
     fn test_require_signed_messages() {
-        // Test without environment variable
-        assert!(!EnvelopeValidator::require_signed_messages());
-
-        // Test with environment variable set
-        std::env::set_var("BEEMESH_REQUIRE_SIGNED_MESSAGES", "1");
         assert!(EnvelopeValidator::require_signed_messages());
-        std::env::remove_var("BEEMESH_REQUIRE_SIGNED_MESSAGES");
     }
 
     #[test]

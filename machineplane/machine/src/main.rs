@@ -1,5 +1,5 @@
-use machine::{Cli, start_machine};
 use clap::Parser;
+use machine::{start_machine, Cli};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

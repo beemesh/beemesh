@@ -1,8 +1,9 @@
+use crate::libp2p_beemesh::envelope::{sign_with_existing_keypair, SignEnvelopeConfig};
 use crate::libp2p_beemesh::NODE_KEYPAIR;
 use base64::Engine;
 use libp2p::gossipsub;
 use log::warn;
-use protocol::machine::{build_envelope_signed, fb_envelope_extract_sig_pub};
+use protocol::machine::fb_envelope_extract_sig_pub;
 
 pub fn gossipsub_message(
     peer_id: libp2p::PeerId,
@@ -44,28 +45,26 @@ pub fn gossipsub_message(
 
         // Wrap the reply into a signed FlatBuffer Envelope and publish
         let envelope_bytes =
-            if let Some((pk_bytes, sk_bytes)) = NODE_KEYPAIR.get().and_then(|o| o.as_ref()) {
-                match crypto::sign_envelope(sk_bytes, pk_bytes, &finished) {
-                    Ok((sig_b64, pub_b64)) => {
-                        // Build a flatbuffer Envelope signed helper
-                        let nonce = uuid::Uuid::new_v4().to_string();
-                        let ts = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0u64);
-                        let fb = build_envelope_signed(
-                            &finished,
-                            "capacity_reply",
-                            &nonce,
-                            ts,
-                            "ml-dsa-65",
-                            "ml-dsa-65",
-                            &sig_b64,
-                            &pub_b64,
-                            None,
-                        );
-                        Some(fb)
-                    }
+            if let Some((pub_bytes, sk_bytes)) = NODE_KEYPAIR.get().and_then(|o| o.as_ref()) {
+                let nonce = uuid::Uuid::new_v4().to_string();
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0u64);
+                let sign_cfg = SignEnvelopeConfig {
+                    nonce: Some(&nonce),
+                    timestamp: Some(ts),
+                    ..Default::default()
+                };
+
+                match sign_with_existing_keypair(
+                    &finished,
+                    "capacity_reply",
+                    sign_cfg,
+                    pub_bytes,
+                    sk_bytes,
+                ) {
+                    Ok(signed) => Some(signed.bytes),
                     Err(e) => {
                         warn!("failed to sign finished message: {:?}", e);
                         None

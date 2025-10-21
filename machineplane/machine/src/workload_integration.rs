@@ -194,15 +194,13 @@ async fn process_manifest_deployment(
     apply_req: &machine::ApplyRequest<'_>,
     manifest_json: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    info!(
-        "Processing manifest deployment with encrypted envelope"
-    );
+    info!("Processing manifest deployment with encrypted envelope");
 
     // Decrypt the manifest content first
     let manifest_content = decrypt_manifest_content(manifest_json, "temp").await?;
-    
+
     // Use the manifest_id from the apply request for provider announcements
-    // This ensures consistency between apply and delete operations  
+    // This ensures consistency between apply and delete operations
     let manifest_id = apply_req.manifest_id().unwrap_or("unknown").to_string();
 
     info!(
@@ -234,21 +232,30 @@ async fn process_manifest_deployment(
     // Deploy the workload - use peer-aware deployment for mock engine
     let workload_info = if engine_name == "mock" {
         // For mock engine, use the peer-aware deployment method if available
-        if let Some(mock_engine) = engine.as_any().downcast_ref::<crate::runtime::mock::MockEngine>() {
+        if let Some(mock_engine) = engine
+            .as_any()
+            .downcast_ref::<crate::runtime::mock::MockEngine>()
+        {
             debug!("Using peer-aware deployment for mock engine");
-            mock_engine.deploy_workload_with_peer(
-                &manifest_id, 
-                &manifest_content, 
-                &deployment_config,
-                *swarm.local_peer_id()
-            ).await?
+            mock_engine
+                .deploy_workload_with_peer(
+                    &manifest_id,
+                    &manifest_content,
+                    &deployment_config,
+                    *swarm.local_peer_id(),
+                )
+                .await?
         } else {
             // Fallback to regular deployment
-            engine.deploy_workload(&manifest_id, &manifest_content, &deployment_config).await?
+            engine
+                .deploy_workload(&manifest_id, &manifest_content, &deployment_config)
+                .await?
         }
     } else {
         // For other engines, use regular deployment
-        engine.deploy_workload(&manifest_id, &manifest_content, &deployment_config).await?
+        engine
+            .deploy_workload(&manifest_id, &manifest_content, &deployment_config)
+            .await?
     };
 
     info!(
@@ -420,7 +427,9 @@ async fn decrypt_manifest_from_envelope(
 
     // Validate recipient-blob version byte
     if payload_bytes.is_empty() || payload_bytes[0] != 0x02 {
-        return Err("unsupported payload format: expected recipient-blob (version byte 0x02)".into());
+        return Err(
+            "unsupported payload format: expected recipient-blob (version byte 0x02)".into(),
+        );
     }
 
     // Use the node's KEM private key to decapsulate and decrypt the recipient-blob
@@ -441,8 +450,6 @@ async fn decrypt_manifest_from_envelope(
 
     Ok(manifest_str)
 }
-
-
 
 /// Enhanced self-apply processing with workload manager
 pub async fn process_enhanced_self_apply_request(manifest: &[u8], swarm: &mut Swarm<MyBehaviour>) {
@@ -530,8 +537,11 @@ pub async fn remove_workload_by_id(
 pub async fn remove_workloads_by_manifest_id(
     manifest_id: &str,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    info!("remove_workloads_by_manifest_id: manifest_id={}", manifest_id);
-    
+    info!(
+        "remove_workloads_by_manifest_id: manifest_id={}",
+        manifest_id
+    );
+
     let registry_guard = RUNTIME_REGISTRY.read().await;
     let registry = registry_guard
         .as_ref()
@@ -542,31 +552,46 @@ pub async fn remove_workloads_by_manifest_id(
 
     for engine_name in &engine_names {
         if let Some(engine) = registry.get_engine(engine_name) {
-            info!("Checking engine '{}' for workloads with manifest_id '{}'", engine_name, manifest_id);
-            
+            info!(
+                "Checking engine '{}' for workloads with manifest_id '{}'",
+                engine_name, manifest_id
+            );
+
             // List workloads from this engine
             match engine.list_workloads().await {
                 Ok(workloads) => {
                     // Find workloads that match the manifest_id
                     for workload in workloads {
                         if workload.manifest_id == manifest_id {
-                            info!("Found matching workload: {} in engine '{}'", workload.id, engine_name);
-                            
+                            info!(
+                                "Found matching workload: {} in engine '{}'",
+                                workload.id, engine_name
+                            );
+
                             // Remove the workload
                             match engine.remove_workload(&workload.id).await {
                                 Ok(()) => {
-                                    info!("Successfully removed workload: {} from engine '{}'", workload.id, engine_name);
+                                    info!(
+                                        "Successfully removed workload: {} from engine '{}'",
+                                        workload.id, engine_name
+                                    );
                                     removed_workloads.push(workload.id);
                                 }
                                 Err(e) => {
-                                    error!("Failed to remove workload {} from engine '{}': {}", workload.id, engine_name, e);
+                                    error!(
+                                        "Failed to remove workload {} from engine '{}': {}",
+                                        workload.id, engine_name, e
+                                    );
                                 }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to list workloads from engine '{}': {}", engine_name, e);
+                    warn!(
+                        "Failed to list workloads from engine '{}': {}",
+                        engine_name, e
+                    );
                 }
             }
         }
@@ -575,13 +600,20 @@ pub async fn remove_workloads_by_manifest_id(
     // Also withdraw provider announcement if we were providing this manifest
     if let Some(provider_manager) = PROVIDER_MANAGER.read().await.as_ref() {
         if let Err(e) = provider_manager.stop_providing(manifest_id) {
-            warn!("Failed to stop providing manifest_id {}: {}", manifest_id, e);
+            warn!(
+                "Failed to stop providing manifest_id {}: {}",
+                manifest_id, e
+            );
         } else {
             info!("Stopped providing manifest_id: {}", manifest_id);
         }
     }
 
-    info!("remove_workloads_by_manifest_id completed: removed {} workloads for manifest_id '{}'", removed_workloads.len(), manifest_id);
+    info!(
+        "remove_workloads_by_manifest_id completed: removed {} workloads for manifest_id '{}'",
+        removed_workloads.len(),
+        manifest_id
+    );
     Ok(removed_workloads)
 }
 

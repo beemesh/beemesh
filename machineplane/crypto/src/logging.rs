@@ -118,8 +118,6 @@ impl CryptoLogger {
         }
     }
 
-
-
     /// Log signature verification results
     pub fn log_signature_verification(valid: bool, peer: Option<libp2p::PeerId>) {
         match (valid, peer) {
