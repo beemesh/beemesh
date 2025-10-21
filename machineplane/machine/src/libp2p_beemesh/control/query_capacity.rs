@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 use crate::libp2p_beemesh::envelope::{sign_with_existing_keypair, SignEnvelopeConfig};
-use crate::libp2p_beemesh::reply::{build_capacity_reply, CapacityReplyParams};
+use crate::libp2p_beemesh::reply::{baseline_capacity_params, build_capacity_reply};
 
 /// Handle QueryCapacityWithPayload control message
 pub async fn handle_query_capacity_with_payload(
@@ -112,16 +112,12 @@ pub async fn handle_query_capacity_with_payload(
             // origining host countable when collecting responders.
             // Include the local KEM public key in the same format as remote responses.
             if let Some(senders) = pending_queries.get_mut(&request_id) {
-                let reply = build_capacity_reply(CapacityReplyParams {
-                    ok: true,
-                    cpu_milli: cap_req.cpu_milli(),
-                    memory_bytes: cap_req.memory_bytes(),
-                    storage_bytes: cap_req.storage_bytes(),
-                    request_id: &request_id,
-                    responder_peer: &swarm.local_peer_id().to_string(),
-                    region: "local",
-                    capabilities: &["default"],
-                });
+                let responder_peer = swarm.local_peer_id().to_string();
+                let mut params = baseline_capacity_params(&request_id, &responder_peer);
+                params.cpu_milli = cap_req.cpu_milli();
+                params.memory_bytes = cap_req.memory_bytes();
+                params.storage_bytes = cap_req.storage_bytes();
+                let reply = build_capacity_reply(params);
                 if reply.kem_pub_b64.is_none() {
                     log::warn!("libp2p: local capacity response missing KEM public key");
                 }

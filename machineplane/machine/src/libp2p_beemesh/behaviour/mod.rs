@@ -1,25 +1,24 @@
-pub mod apply_inbound_failure;
-pub mod apply_outbound_failure;
 pub mod delete_message;
 pub mod failure_handlers;
 pub mod gossipsub_message;
 pub mod gossipsub_subscribed;
 pub mod gossipsub_unsubscribed;
-pub mod handshake_inbound_failure;
 pub mod handshake_message;
-pub mod handshake_outbound_failure;
+pub mod message_verifier;
 
 pub mod scheduler_message;
 
-pub use apply_inbound_failure::apply_inbound_failure;
-pub use apply_outbound_failure::apply_outbound_failure;
 pub use delete_message::{delete_inbound_failure, delete_message, delete_outbound_failure};
+pub use failure_handlers::{
+    handle_apply_inbound_failure as apply_inbound_failure,
+    handle_apply_outbound_failure as apply_outbound_failure,
+    handle_handshake_inbound_failure as handshake_inbound_failure,
+    handle_handshake_outbound_failure as handshake_outbound_failure,
+};
 pub use gossipsub_message::gossipsub_message;
 pub use gossipsub_subscribed::gossipsub_subscribed;
 pub use gossipsub_unsubscribed::gossipsub_unsubscribed;
-pub use handshake_inbound_failure::handshake_inbound_failure;
 pub use handshake_message::handshake_message_event;
-pub use handshake_outbound_failure::handshake_outbound_failure;
 use libp2p::{gossipsub, kad, request_response, swarm::NetworkBehaviour};
 
 pub use scheduler_message::scheduler_message;

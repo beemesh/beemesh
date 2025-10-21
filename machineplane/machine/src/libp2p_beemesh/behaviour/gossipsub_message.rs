@@ -1,5 +1,5 @@
 use crate::libp2p_beemesh::reply::{
-    build_capacity_reply, sign_capacity_reply, CapacityReplyParams,
+    baseline_capacity_params, build_capacity_reply, sign_capacity_reply,
 };
 use libp2p::gossipsub;
 use log::warn;
@@ -19,22 +19,15 @@ pub fn gossipsub_message(
     // First try CapacityRequest
     if let Ok(cap_req) = protocol::machine::root_as_capacity_request(&message.data) {
         let orig_request_id = cap_req.request_id().unwrap_or("").to_string();
+        let responder_peer = swarm.local_peer_id().to_string();
         log::info!(
             "libp2p: received capreq id={} from peer={} payload_bytes={}",
             orig_request_id,
             peer_id,
             message.data.len()
         );
-        let reply = build_capacity_reply(CapacityReplyParams {
-            ok: true,
-            cpu_milli: 1000u32,
-            memory_bytes: 1024u64 * 1024 * 512,
-            storage_bytes: 1024u64 * 1024 * 1024,
-            request_id: &orig_request_id,
-            responder_peer: &peer_id.to_string(),
-            region: "local",
-            capabilities: &["default"],
-        });
+        let reply =
+            build_capacity_reply(baseline_capacity_params(&orig_request_id, &responder_peer));
         let payload_len = reply.payload.len();
         match sign_capacity_reply(&reply.payload) {
             Ok(signed) => {

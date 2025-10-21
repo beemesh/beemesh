@@ -19,6 +19,29 @@ pub struct CapacityReply {
     pub kem_pub_b64: Option<String>,
 }
 
+pub const DEFAULT_CAPACITY_CPU_MILLI: u32 = 1000;
+pub const DEFAULT_CAPACITY_MEMORY_BYTES: u64 = 1024 * 1024 * 512;
+pub const DEFAULT_CAPACITY_STORAGE_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_CAPACITY_REGION: &str = "local";
+static DEFAULT_CAPACITY_CAPABILITIES: [&str; 1] = ["default"];
+
+/// Build baseline capacity parameters shared across request-response paths.
+pub fn baseline_capacity_params<'a>(
+    request_id: &'a str,
+    responder_peer: &'a str,
+) -> CapacityReplyParams<'a> {
+    CapacityReplyParams {
+        ok: true,
+        cpu_milli: DEFAULT_CAPACITY_CPU_MILLI,
+        memory_bytes: DEFAULT_CAPACITY_MEMORY_BYTES,
+        storage_bytes: DEFAULT_CAPACITY_STORAGE_BYTES,
+        request_id,
+        responder_peer,
+        region: DEFAULT_CAPACITY_REGION,
+        capabilities: &DEFAULT_CAPACITY_CAPABILITIES,
+    }
+}
+
 /// Build the flatbuffer payload for a capacity reply and capture the associated KEM public key.
 pub fn build_capacity_reply(params: CapacityReplyParams<'_>) -> CapacityReply {
     let kem_pub_b64 = crypto::ensure_kem_keypair_on_disk()

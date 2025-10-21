@@ -1,5 +1,5 @@
-use crate::libp2p_beemesh::reply::{build_capacity_reply, CapacityReply, CapacityReplyParams};
-use crate::libp2p_beemesh::security::verify_signed_payload_for_peer;
+use super::message_verifier::verify_signed_message;
+use crate::libp2p_beemesh::reply::{baseline_capacity_params, build_capacity_reply, CapacityReply};
 use libp2p::request_response;
 use log::{debug, error, warn};
 use std::collections::HashMap as StdHashMap;
@@ -18,12 +18,11 @@ pub fn scheduler_message(
         } => {
             debug!("libp2p: received scheduler request from peer={}", peer);
             // First, attempt to verify request as an Envelope (JSON or FlatBuffer)
-            let verified = match verify_signed_payload_for_peer(&request, &peer) {
-                Ok(result) => result,
-                Err(err) => {
-                    error!("rejecting invalid scheduler request: {}", err);
-                    return;
-                }
+            let verified = match verify_signed_message(&peer, &request, |err| {
+                error!("rejecting invalid scheduler request: {}", err);
+            }) {
+                Some(envelope) => envelope,
+                None => return,
             };
             let effective_request = verified.payload;
 
@@ -40,16 +39,10 @@ pub fn scheduler_message(
                     let has_capacity = true;
 
                     // build CapacityReply using protocol helper and include local KEM pubkey if available
-                    let reply = build_capacity_reply(CapacityReplyParams {
-                        ok: has_capacity,
-                        cpu_milli: 1000u32,
-                        memory_bytes: 1024u64 * 1024 * 512,
-                        storage_bytes: 1024u64 * 1024 * 1024,
-                        request_id: orig_request_id,
-                        responder_peer: &local_peer.to_string(),
-                        region: "local",
-                        capabilities: &["default"],
-                    });
+                    let responder_peer = local_peer.to_string();
+                    let mut params = baseline_capacity_params(orig_request_id, &responder_peer);
+                    params.ok = has_capacity;
+                    let reply = build_capacity_reply(params);
                     let CapacityReply {
                         payload,
                         kem_pub_b64,

@@ -1,7 +1,21 @@
-use crate::libp2p_beemesh::security::verify_signed_payload_for_peer;
+use super::message_verifier::verify_signed_message;
 use libp2p::request_response;
 use log::{error, info, warn};
 use protocol::machine;
+
+const UNKNOWN_OPERATION: &str = "unknown";
+const UNKNOWN_MANIFEST: &str = "unknown";
+const UNSIGNED_MESSAGE: &str = "unsigned or invalid envelope";
+const INVALID_FORMAT: &str = "invalid delete request format";
+const ACK_MESSAGE: &str = "delete request received and processing";
+
+fn delete_error_response(message: &str) -> Vec<u8> {
+    machine::build_delete_response(false, UNKNOWN_OPERATION, message, UNKNOWN_MANIFEST, &[])
+}
+
+fn delete_ack_response(operation_id: &str, manifest_id: &str) -> Vec<u8> {
+    machine::build_delete_response(true, operation_id, ACK_MESSAGE, manifest_id, &[])
+}
 
 /// Handle a delete message (request or response)
 pub fn delete_message(
@@ -16,17 +30,12 @@ pub fn delete_message(
         } => {
             info!("Received delete request from peer={}", peer);
 
-            let verified = match verify_signed_payload_for_peer(&request, &peer) {
-                Ok(result) => result,
-                Err(err) => {
-                    error!("Rejecting delete request with invalid signature: {}", err);
-                    let error_response = machine::build_delete_response(
-                        false,
-                        "unknown",
-                        "unsigned or invalid envelope",
-                        "unknown",
-                        &[],
-                    );
+            let verified = match verify_signed_message(&peer, &request, |err| {
+                error!("Rejecting delete request with invalid signature: {}", err);
+            }) {
+                Some(envelope) => envelope,
+                None => {
+                    let error_response = delete_error_response(UNSIGNED_MESSAGE);
                     let _ = swarm
                         .behaviour_mut()
                         .delete_rr
@@ -84,12 +93,9 @@ pub fn delete_message(
                     });
 
                     // Send immediate acknowledgment (the actual processing happens async)
-                    let ack_response = machine::build_delete_response(
-                        true,
-                        delete_req.operation_id().unwrap_or("unknown"),
-                        "delete request received and processing",
-                        delete_req.manifest_id().unwrap_or("unknown"),
-                        &[],
+                    let ack_response = delete_ack_response(
+                        delete_req.operation_id().unwrap_or(UNKNOWN_OPERATION),
+                        delete_req.manifest_id().unwrap_or(UNKNOWN_MANIFEST),
                     );
                     let _ = swarm
                         .behaviour_mut()
@@ -98,13 +104,7 @@ pub fn delete_message(
                 }
                 Err(e) => {
                     error!("Failed to parse delete request: {}", e);
-                    let error_response = machine::build_delete_response(
-                        false,
-                        "unknown",
-                        "invalid delete request format",
-                        "unknown",
-                        &[],
-                    );
+                    let error_response = delete_error_response(INVALID_FORMAT);
                     let _ = swarm
                         .behaviour_mut()
                         .delete_rr
