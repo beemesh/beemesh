@@ -1,5 +1,5 @@
-use crate::libp2p_beemesh::security::verify_or_passthrough_for_peer;
-use base64::Engine;
+use crate::libp2p_beemesh::reply::{build_capacity_reply, CapacityReply, CapacityReplyParams};
+use crate::libp2p_beemesh::security::verify_signed_payload_for_peer;
 use libp2p::request_response;
 use log::{debug, error, warn};
 use std::collections::HashMap as StdHashMap;
@@ -18,22 +18,14 @@ pub fn scheduler_message(
         } => {
             debug!("libp2p: received scheduler request from peer={}", peer);
             // First, attempt to verify request as an Envelope (JSON or FlatBuffer)
-            let verification = match verify_or_passthrough_for_peer(&request, &peer) {
+            let verified = match verify_signed_payload_for_peer(&request, &peer) {
                 Ok(result) => result,
                 Err(err) => {
-                    error!("rejecting unsigned/invalid scheduler request: {}", err);
+                    error!("rejecting invalid scheduler request: {}", err);
                     return;
                 }
             };
-
-            if let Some(reason) = verification.reason() {
-                debug!(
-                    "scheduler request from {} accepted without signature: {}",
-                    peer, reason
-                );
-            }
-
-            let effective_request = verification.into_payload();
+            let effective_request = verified.payload;
 
             // Try parse CapacityRequest
             match protocol::machine::root_as_capacity_request(&effective_request) {
@@ -48,40 +40,36 @@ pub fn scheduler_message(
                     let has_capacity = true;
 
                     // build CapacityReply using protocol helper and include local KEM pubkey if available
-                    let kem_b64 = match crypto::ensure_kem_keypair_on_disk() {
-                        Ok((pubb, _priv)) => {
-                            debug!(
-                                "libp2p: scheduler capacity reply including KEM pubkey for peer {}",
-                                local_peer
-                            );
-                            Some(base64::engine::general_purpose::STANDARD.encode(&pubb))
-                        }
-                        Err(e) => {
-                            warn!("libp2p: scheduler capacity reply failed to load KEM keypair for peer {}: {:?}", local_peer, e);
-                            None
-                        }
-                    };
-                    let finished = protocol::machine::build_capacity_reply(
-                        has_capacity,
-                        1000u32,
-                        1024u64 * 1024 * 512,
-                        1024u64 * 1024 * 1024,
-                        orig_request_id,
-                        &local_peer.to_string(),
-                        "local",
-                        kem_b64.as_deref(),
-                        &["default"],
-                    );
+                    let reply = build_capacity_reply(CapacityReplyParams {
+                        ok: has_capacity,
+                        cpu_milli: 1000u32,
+                        memory_bytes: 1024u64 * 1024 * 512,
+                        storage_bytes: 1024u64 * 1024 * 1024,
+                        request_id: orig_request_id,
+                        responder_peer: &local_peer.to_string(),
+                        region: "local",
+                        capabilities: &["default"],
+                    });
+                    let CapacityReply {
+                        payload,
+                        kem_pub_b64,
+                    } = reply;
 
                     // Send response via request-response
                     let _ = swarm
                         .behaviour_mut()
                         .scheduler_rr
-                        .send_response(channel, finished);
+                        .send_response(channel, payload);
                     debug!(
                         "libp2p: sent scheduler capacity reply for id={} to {}",
                         orig_request_id, peer
                     );
+                    if kem_pub_b64.is_none() {
+                        warn!(
+                            "libp2p: scheduler capacity reply missing KEM pubkey for peer {}",
+                            local_peer
+                        );
+                    }
                 }
                 Err(e) => {
                     warn!("libp2p: failed to parse scheduler request: {:?}", e);

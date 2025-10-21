@@ -1,6 +1,6 @@
-use crate::libp2p_beemesh::envelope::{sign_with_existing_keypair, SignEnvelopeConfig};
-use crate::libp2p_beemesh::NODE_KEYPAIR;
-use base64::Engine;
+use crate::libp2p_beemesh::reply::{
+    build_capacity_reply, sign_capacity_reply, CapacityReplyParams,
+};
 use libp2p::gossipsub;
 use log::warn;
 use protocol::machine::fb_envelope_extract_sig_pub;
@@ -25,65 +25,36 @@ pub fn gossipsub_message(
             peer_id,
             message.data.len()
         );
-        // Build a capacity reply and publish it (include request_id inside the reply)
-        // Build capacity reply via helper and include our local KEM pubkey if available
-        let kem_b64 = match crypto::ensure_kem_keypair_on_disk() {
-            Ok((pubb, _)) => Some(base64::engine::general_purpose::STANDARD.encode(&pubb)),
-            Err(_) => None,
-        };
-        let finished = protocol::machine::build_capacity_reply(
-            true,
-            1000u32,
-            1024u64 * 1024 * 512,
-            1024u64 * 1024 * 1024,
-            &orig_request_id,
-            &peer_id.to_string(),
-            "local",
-            kem_b64.as_deref(),
-            &["default"],
-        );
-
-        // Wrap the reply into a signed FlatBuffer Envelope and publish
-        let envelope_bytes =
-            if let Some((pub_bytes, sk_bytes)) = NODE_KEYPAIR.get().and_then(|o| o.as_ref()) {
-                let nonce = uuid::Uuid::new_v4().to_string();
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0u64);
-                let sign_cfg = SignEnvelopeConfig {
-                    nonce: Some(&nonce),
-                    timestamp: Some(ts),
-                    ..Default::default()
-                };
-
-                match sign_with_existing_keypair(
-                    &finished,
-                    "capacity_reply",
-                    sign_cfg,
-                    pub_bytes,
-                    sk_bytes,
-                ) {
-                    Ok(signed) => Some(signed.bytes),
-                    Err(e) => {
-                        warn!("failed to sign finished message: {:?}", e);
-                        None
-                    }
-                }
-            } else {
-                // If no node keypair present, publish plaintext flatbuffer reply
-                Some(finished.clone())
-            };
-        if let Some(env) = envelope_bytes {
-            let _ = swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(topic.clone(), env.as_slice());
+        let reply = build_capacity_reply(CapacityReplyParams {
+            ok: true,
+            cpu_milli: 1000u32,
+            memory_bytes: 1024u64 * 1024 * 512,
+            storage_bytes: 1024u64 * 1024 * 1024,
+            request_id: &orig_request_id,
+            responder_peer: &peer_id.to_string(),
+            region: "local",
+            capabilities: &["default"],
+        });
+        let payload_len = reply.payload.len();
+        match sign_capacity_reply(&reply.payload) {
+            Ok(signed) => {
+                let _ = swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic.clone(), signed.bytes.as_slice());
+            }
+            Err(e) => {
+                warn!("failed to sign capacity reply for {}: {:?}", peer_id, e);
+                let _ = swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic.clone(), reply.payload.as_slice());
+            }
         }
         log::info!(
             "libp2p: published capreply for id={} ({} bytes)",
             orig_request_id,
-            finished.len()
+            payload_len
         );
         return;
     }

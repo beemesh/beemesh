@@ -34,6 +34,7 @@ pub mod dht_helpers;
 pub mod dht_manager;
 pub mod envelope;
 pub mod error_helpers;
+pub mod reply;
 pub mod security;
 
 // Handshake state used by the handshake behaviour handlers

@@ -1,4 +1,3 @@
-use base64::Engine;
 use libp2p::{gossipsub, Swarm};
 
 use std::collections::HashMap as StdHashMap;
@@ -6,6 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 use crate::libp2p_beemesh::envelope::{sign_with_existing_keypair, SignEnvelopeConfig};
+use crate::libp2p_beemesh::reply::{build_capacity_reply, CapacityReplyParams};
 
 /// Handle QueryCapacityWithPayload control message
 pub async fn handle_query_capacity_with_payload(
@@ -112,17 +112,24 @@ pub async fn handle_query_capacity_with_payload(
             // origining host countable when collecting responders.
             // Include the local KEM public key in the same format as remote responses.
             if let Some(senders) = pending_queries.get_mut(&request_id) {
-                let local_kem_b64 = match crypto::ensure_kem_keypair_on_disk() {
-                    Ok((pubb, _priv)) => base64::engine::general_purpose::STANDARD.encode(&pubb),
-                    Err(e) => {
-                        log::warn!(
-                            "libp2p: local capacity response failed to load KEM keypair: {:?}",
-                            e
-                        );
-                        String::new()
-                    }
-                };
-                let local_response = format!("{}:{}", swarm.local_peer_id(), local_kem_b64);
+                let reply = build_capacity_reply(CapacityReplyParams {
+                    ok: true,
+                    cpu_milli: cap_req.cpu_milli(),
+                    memory_bytes: cap_req.memory_bytes(),
+                    storage_bytes: cap_req.storage_bytes(),
+                    request_id: &request_id,
+                    responder_peer: &swarm.local_peer_id().to_string(),
+                    region: "local",
+                    capabilities: &["default"],
+                });
+                if reply.kem_pub_b64.is_none() {
+                    log::warn!("libp2p: local capacity response missing KEM public key");
+                }
+                let local_response = format!(
+                    "{}:{}",
+                    swarm.local_peer_id(),
+                    reply.kem_pub_b64.unwrap_or_default()
+                );
                 for tx in senders.iter() {
                     let _ = tx.send(local_response.clone());
                 }

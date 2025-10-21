@@ -1,4 +1,4 @@
-use crate::libp2p_beemesh::security::verify_or_passthrough_for_peer;
+use crate::libp2p_beemesh::security::verify_signed_payload_for_peer;
 use libp2p::request_response;
 use log::{error, info, warn};
 use protocol::machine;
@@ -16,10 +16,10 @@ pub fn delete_message(
         } => {
             info!("Received delete request from peer={}", peer);
 
-            let verification = match verify_or_passthrough_for_peer(&request, &peer) {
+            let verified = match verify_signed_payload_for_peer(&request, &peer) {
                 Ok(result) => result,
                 Err(err) => {
-                    error!("Rejecting unsigned/invalid delete request: {}", err);
+                    error!("Rejecting delete request with invalid signature: {}", err);
                     let error_response = machine::build_delete_response(
                         false,
                         "unknown",
@@ -35,14 +35,8 @@ pub fn delete_message(
                 }
             };
 
-            if let Some(reason) = verification.reason() {
-                warn!(
-                    "Delete request from {} accepted without signature: {}",
-                    peer, reason
-                );
-            }
-
-            let (effective_request, signer_pubkey_opt) = verification.into_payload_and_pubkey();
+            let envelope_pubkey = verified.pubkey.clone();
+            let effective_request = verified.payload;
 
             // Parse the FlatBuffer delete request
             match machine::root_as_delete_request(&effective_request) {
@@ -55,32 +49,15 @@ pub fn delete_message(
                         delete_req.force()
                     );
 
-                    if signer_pubkey_opt.is_none() && !delete_req.force() {
-                        let error_response = machine::build_delete_response(
-                            false,
-                            delete_req.operation_id().unwrap_or("unknown"),
-                            "delete request must be signed by manifest owner",
-                            delete_req.manifest_id().unwrap_or("unknown"),
-                            &[],
-                        );
-                        let _ = swarm
-                            .behaviour_mut()
-                            .delete_rr
-                            .send_response(channel, error_response);
-                        return;
-                    }
-
-                    let envelope_pubkey = signer_pubkey_opt.clone().unwrap_or_default();
-
                     // Process the delete request asynchronously
                     let manifest_id = delete_req.manifest_id().unwrap_or("").to_string();
                     let tenant = delete_req.tenant().unwrap_or("").to_string();
                     let operation_id = delete_req.operation_id().unwrap_or("").to_string();
                     let force = delete_req.force();
                     let requesting_peer = peer.to_string();
+                    let envelope_pubkey_inner = envelope_pubkey.clone();
 
                     tokio::spawn(async move {
-                        let envelope_pubkey_inner = envelope_pubkey.clone();
                         let (success, message, removed_workloads) = process_delete_request(
                             &manifest_id,
                             &tenant,
