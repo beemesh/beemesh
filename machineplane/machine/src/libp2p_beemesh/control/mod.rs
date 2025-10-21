@@ -1,13 +1,12 @@
-use libp2p::kad::{store::RecordStore, Record, RecordKey};
+use libp2p::kad::RecordKey;
 use libp2p::{gossipsub, PeerId, Swarm};
-use log::{info, warn};
+use log::info;
 use once_cell::sync::Lazy;
 use std::collections::HashMap as StdHashMap;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-type KadQuerySender = mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>;
 type ManifestRequestSender = mpsc::UnboundedSender<Result<(), String>>;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
@@ -20,21 +19,6 @@ mod send_delete_request;
 pub use query_capacity::handle_query_capacity_with_payload;
 pub use send_apply_request::handle_send_apply_request;
 pub use send_delete_request::handle_send_delete_request;
-
-/// Calculate a simple CID for manifest data
-/// For now, use a basic hash - this should be replaced with proper CID calculation
-fn calculate_manifest_cid(data: &[u8]) -> Option<String> {
-    // Use a stable cryptographic hash (blake3) so that the same bytes produce the
-    // same CID across different processes and runs. DefaultHasher is randomized
-    // per-process and therefore unsuitable for cross-process identifiers.
-
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    data.hash(&mut hasher);
-    let hash_value = hasher.finish();
-    Some(format!("{:x}", hash_value))
-}
 
 /// Handle incoming control messages from other parts of the host (REST handlers)
 pub async fn handle_control_message(
@@ -74,157 +58,6 @@ pub async fn handle_control_message(
             handle_send_delete_request(peer_id, delete_request, reply_tx, swarm).await;
         }
 
-        Libp2pControl::StoreAppliedManifest {
-            manifest_data,
-            reply_tx,
-        } => {
-            // Store the manifest content in the DHT
-            if let Some(cid) = calculate_manifest_cid(&manifest_data) {
-                let record_key = RecordKey::new(&format!("manifest:{}", cid));
-                let record = Record {
-                    key: record_key.clone(),
-                    value: manifest_data.clone(),
-                    publisher: Some(swarm.local_peer_id().clone()),
-                    expires: None, // No expiration for manifests
-                };
-
-                // Store locally first (critical for small networks where local node might be closest)
-                match swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .store_mut()
-                    .put(record.clone())
-                {
-                    Ok(()) => {
-                        info!("DHT: stored manifest locally with cid={}", cid);
-                        // Also store the manifest under the logical manifest id (tenant+operation+manifest_json)
-                        // so lookups by manifest id succeed. Parse the AppliedManifest FlatBuffer and
-                        // compute the same manifest_id used by other parts of the system.
-                        // Try to parse AppliedManifest FlatBuffer first; if that fails, attempt to parse
-                        // as JSON to extract tenant/operation_id/manifest_json fields so we can compute
-                        // the logical manifest id and store an alias record under it. This helps
-                        // GetManifestFromDht lookups which use the tenant+operation_id+manifest_json hash.
-                        let mut maybe_tenant: Option<String> = None;
-                        let mut maybe_operation: Option<String> = None;
-                        let mut maybe_manifest_json: Option<String> = None;
-
-                        if let Ok(applied) =
-                            protocol::machine::root_as_applied_manifest(&manifest_data)
-                        {
-                            maybe_tenant = applied.tenant().map(|s| s.to_string());
-                            maybe_operation = applied.operation_id().map(|s| s.to_string());
-                            maybe_manifest_json = applied.manifest_json().map(|s| s.to_string());
-                        } else if let Ok(val) =
-                            serde_json::from_slice::<serde_json::Value>(&manifest_data)
-                        {
-                            // Try common JSON shapes used when storing raw manifests
-                            if let Some(t) = val.get("tenant").and_then(|v| v.as_str()) {
-                                maybe_tenant = Some(t.to_string());
-                            }
-                            if let Some(op) = val.get("operation_id").and_then(|v| v.as_str()) {
-                                maybe_operation = Some(op.to_string());
-                            }
-                            // If the JSON itself is the manifest, serialize it back to string
-                            maybe_manifest_json = Some(val.to_string());
-                        }
-
-                        if let (Some(tenant_s), Some(operation_id_s), Some(manifest_json_s)) = (
-                            maybe_tenant.clone(),
-                            maybe_operation.clone(),
-                            maybe_manifest_json.clone(),
-                        ) {
-                            // Compute a stable manifest id deterministically from the
-                            // tenant, operation_id and manifest_json. Use a
-                            // cryptographic hash (blake3) so different processes
-                            // compute the same id for the same inputs.
-                            let mut buf = Vec::new();
-                            buf.extend_from_slice(tenant_s.as_bytes());
-                            buf.push(0);
-                            buf.extend_from_slice(operation_id_s.as_bytes());
-                            buf.push(0);
-                            buf.extend_from_slice(manifest_json_s.as_bytes());
-                            use std::collections::hash_map::DefaultHasher;
-                            use std::hash::{Hash, Hasher};
-                            let mut hasher = DefaultHasher::new();
-                            buf.hash(&mut hasher);
-                            let mid = hasher.finish();
-                            let manifest_id = mid.to_be().to_string();
-
-                            // store an alias record keyed by manifest_id so GetManifestFromDht can find it
-                            let manifest_key = RecordKey::new(&format!("manifest:{}", manifest_id));
-                            let alias_record = Record {
-                                key: manifest_key.clone(),
-                                value: manifest_data.clone(),
-                                publisher: Some(swarm.local_peer_id().clone()),
-                                expires: None,
-                            };
-                            match swarm.behaviour_mut().kademlia.store_mut().put(alias_record) {
-                                Ok(()) => info!(
-                                    "DHT: stored manifest locally under manifest_id={}",
-                                    manifest_id
-                                ),
-                                Err(e) => {
-                                    warn!("DHT: failed to store alias manifest_id locally: {:?}", e)
-                                }
-                            }
-
-                            // Fire-and-forget spawning helper: attempt decryption based on tenant/opid/manifest_json
-                            // TODO: implement spawn_decrypt_task function
-                            // let _ = crate::libp2p_beemesh::behaviour::apply_message::spawn_decrypt_task(Some(tenant_s), Some(operation_id_s), Some(manifest_json_s)).await;
-                        } else if maybe_tenant.is_some()
-                            || maybe_operation.is_some()
-                            || maybe_manifest_json.is_some()
-                        {
-                            // We have partial info; still attempt to spawn decrypt task with whatever we found
-                            // TODO: implement spawn_decrypt_task function
-                            // let _ = crate::libp2p_beemesh::behaviour::apply_message::spawn_decrypt_task(maybe_tenant, maybe_operation, maybe_manifest_json).await;
-                        }
-                    }
-                    Err(e) => warn!("DHT: failed to store manifest locally: {:?}", e),
-                }
-
-                // Also try to store on network
-                match swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .put_record(record, libp2p::kad::Quorum::One)
-                {
-                    Ok(_query_id) => {
-                        info!(
-                            "DHT: initiated network storage for manifest with cid={}",
-                            cid
-                        );
-                        let _ = reply_tx.send(Ok(()));
-                    }
-                    Err(e) => {
-                        warn!(
-                            "DHT: failed to initiate network storage for manifest: {:?}",
-                            e
-                        );
-                        // Still return success since we stored it locally
-                        let _ = reply_tx.send(Ok(()));
-                    }
-                }
-            } else {
-                warn!("DHT: failed to calculate manifest CID");
-                let _ = reply_tx.send(Err("Failed to calculate manifest CID".to_string()));
-            }
-        }
-        Libp2pControl::GetManifestFromDht {
-            manifest_id,
-            reply_tx,
-        } => {
-            // Create the record key used by manifests
-            let record_key = RecordKey::new(&format!("manifest:{}", manifest_id));
-            // Initiate kademlia get_record query
-            let query_id = swarm.behaviour_mut().kademlia.get_record(record_key);
-            // Register pending sender so the kademlia_event handler can reply when results arrive
-            insert_pending_kad_query(query_id, reply_tx);
-            info!(
-                "DHT: initiated get_record for manifest (query_id={:?})",
-                query_id
-            );
-        }
         Libp2pControl::FindManifestHolders {
             manifest_id,
             reply_tx,
@@ -395,10 +228,6 @@ static ACTIVE_ANNOUNCES: Lazy<Mutex<HashMap<String, AnnounceEntry>>> =
 static ENQUEUED_CONTROLS: Lazy<Mutex<std::collections::VecDeque<Libp2pControl>>> =
     Lazy::new(|| Mutex::new(std::collections::VecDeque::new()));
 
-/// Pending Kademlia GetRecord queries: query_id debug string -> reply sender
-static PENDING_KAD_QUERIES: Lazy<Mutex<std::collections::HashMap<String, KadQuerySender>>> =
-    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
-
 /// Pending provider lookup queries: QueryId string -> reply sender (Vec<PeerId>)
 static PENDING_PROVIDERS_QUERIES: Lazy<
     Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Vec<libp2p::PeerId>>>>,
@@ -456,25 +285,6 @@ pub fn cleanup_timed_out_manifest_requests() {
             let _ = reply_tx.send(Err("Request timeout".to_string()));
         }
     }
-}
-
-/// Insert a pending kad query sender for the given QueryId
-pub fn insert_pending_kad_query(
-    id: QueryId,
-    sender: mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>,
-) {
-    let key = format!("{:?}", id);
-    let mut map = PENDING_KAD_QUERIES.lock().unwrap();
-    map.insert(key, sender);
-}
-
-/// Take and remove a pending kad query sender by QueryId
-pub fn take_pending_kad_query(
-    id: &QueryId,
-) -> Option<mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>> {
-    let key = format!("{:?}", id);
-    let mut map = PENDING_KAD_QUERIES.lock().unwrap();
-    map.remove(&key)
 }
 
 /// Enqueue a control message from inside a behaviour handler. This is synchronous and cheap.
@@ -563,17 +373,6 @@ pub enum Libp2pControl {
     FindManifestHolders {
         manifest_id: String,
         reply_tx: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
-    },
-
-    /// Store an applied manifest in the DHT after successful deployment
-    StoreAppliedManifest {
-        manifest_data: Vec<u8>,
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
-    /// Retrieve a manifest from the DHT by its ID
-    GetManifestFromDht {
-        manifest_id: String,
-        reply_tx: mpsc::UnboundedSender<Result<Option<Vec<u8>>, String>>,
     },
     /// Bootstrap the DHT by connecting to known peers
     BootstrapDht {

@@ -19,10 +19,6 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
                     "DHT: Retrieved record with key: {:?} from query: {:?}",
                     record.key, id
                 );
-                // If there is a pending control query waiting for this kademlia QueryId, reply with bytes
-                if let Some(tx) = control::take_pending_kad_query(&id) {
-                    let _ = tx.send(Ok(Some(record.value.clone())));
-                }
             }
             kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
                 key: _key,
@@ -41,9 +37,6 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
             }
             kad::QueryResult::GetRecord(Err(e)) => {
                 warn!("DHT: Failed to get record for query {:?}: {:?}", id, e);
-                if let Some(tx) = control::take_pending_kad_query(&id) {
-                    let _ = tx.send(Err(format!("kademlia get_record error: {:?}", e)));
-                }
             }
             kad::QueryResult::PutRecord(Ok(kad::PutRecordOk { key })) => {
                 info!("DHT: Successfully stored record with key: {:?}", key);
