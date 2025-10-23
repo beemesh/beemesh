@@ -31,15 +31,7 @@ pub fn handshake_request<F>(
     match protocol::machine::root_as_handshake(&effective_request) {
         Ok(_handshake_req) => {
             // Mark this peer as confirmed
-            let state =
-                handshake_states
-                    .entry(peer.clone())
-                    .or_insert(super::super::HandshakeState {
-                        attempts: 0,
-                        last_attempt: Instant::now() - Duration::from_secs(3),
-                        confirmed: false,
-                    });
-            state.confirmed = true;
+            ensure_handshake_state(&peer, handshake_states).confirmed = true;
 
             // Create a handshake response wrapped in a signed envelope
             let timestamp = std::time::SystemTime::now()
@@ -104,15 +96,7 @@ pub fn handshake_response(
             //log::debug!("libp2p: handshake response - signature={:?}", handshake_resp.signature());
 
             // Mark this peer as confirmed
-            let state =
-                handshake_states
-                    .entry(peer.clone())
-                    .or_insert(super::super::HandshakeState {
-                        attempts: 0,
-                        last_attempt: Instant::now() - Duration::from_secs(3),
-                        confirmed: false,
-                    });
-            state.confirmed = true;
+            ensure_handshake_state(&peer, handshake_states).confirmed = true;
         }
         Err(e) => {
             log::error!("libp2p: failed to parse handshake response: {:?}", e);
@@ -154,4 +138,20 @@ pub fn handshake_message_event(
             handshake_response(response.clone(), peer, handshake_states);
         }
     }
+}
+
+fn ensure_handshake_state<'a>(
+    peer: &libp2p::PeerId,
+    handshake_states: &'a mut std::collections::HashMap<
+        libp2p::PeerId,
+        super::super::HandshakeState,
+    >,
+) -> &'a mut super::super::HandshakeState {
+    handshake_states
+        .entry(peer.clone())
+        .or_insert(super::super::HandshakeState {
+            attempts: 0,
+            last_attempt: Instant::now() - Duration::from_secs(3),
+            confirmed: false,
+        })
 }

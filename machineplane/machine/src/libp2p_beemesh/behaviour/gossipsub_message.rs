@@ -1,9 +1,9 @@
+use super::message_verifier::verify_signed_message;
 use crate::libp2p_beemesh::reply::{
-    baseline_capacity_params, build_capacity_reply, sign_capacity_reply,
+    build_capacity_reply_with, sign_capacity_reply, warn_missing_kem,
 };
 use libp2p::gossipsub;
-use log::warn;
-use protocol::machine::fb_envelope_extract_sig_pub;
+use log::{debug, error, info, warn};
 
 pub fn gossipsub_message(
     peer_id: libp2p::PeerId,
@@ -15,101 +15,62 @@ pub fn gossipsub_message(
         Vec<tokio::sync::mpsc::UnboundedSender<String>>,
     >,
 ) {
-    log::debug!("received message");
-    // First try CapacityRequest
-    if let Ok(cap_req) = protocol::machine::root_as_capacity_request(&message.data) {
+    debug!("received message from {}", peer_id);
+
+    let verified = match verify_signed_message(&peer_id, &message.data, |err| {
+        warn!("gossipsub: rejecting message from {}: {}", peer_id, err);
+    }) {
+        Some(envelope) => envelope,
+        None => return,
+    };
+    let payload = verified.payload;
+
+    // Then try CapacityReply
+    if let Ok(cap_req) = protocol::machine::root_as_capacity_request(payload.as_slice()) {
         let orig_request_id = cap_req.request_id().unwrap_or("").to_string();
         let responder_peer = swarm.local_peer_id().to_string();
-        log::info!(
+        info!(
             "libp2p: received capreq id={} from peer={} payload_bytes={}",
             orig_request_id,
             peer_id,
-            message.data.len()
+            payload.len()
         );
-        let reply =
-            build_capacity_reply(baseline_capacity_params(&orig_request_id, &responder_peer));
+        let reply = build_capacity_reply_with(&orig_request_id, &responder_peer, |_| {});
+        warn_missing_kem("gossipsub", &responder_peer, reply.kem_pub_b64.as_deref());
         let payload_len = reply.payload.len();
         match sign_capacity_reply(&reply.payload) {
             Ok(signed) => {
-                let _ = swarm
+                if let Err(e) = swarm
                     .behaviour_mut()
                     .gossipsub
-                    .publish(topic.clone(), signed.bytes.as_slice());
+                    .publish(topic.clone(), signed.bytes.as_slice())
+                {
+                    error!(
+                        "libp2p: failed to publish signed capacity reply id={} to {}: {:?}",
+                        orig_request_id, peer_id, e
+                    );
+                } else {
+                    info!(
+                        "libp2p: published capreply for id={} ({} bytes)",
+                        orig_request_id, payload_len
+                    );
+                }
             }
             Err(e) => {
-                warn!("failed to sign capacity reply for {}: {:?}", peer_id, e);
-                let _ = swarm
-                    .behaviour_mut()
-                    .gossipsub
-                    .publish(topic.clone(), reply.payload.as_slice());
+                error!(
+                    "libp2p: failed to sign capacity reply for peer {} id={}: {:?}",
+                    peer_id, orig_request_id, e
+                );
             }
         }
-        log::info!(
-            "libp2p: published capreply for id={} ({} bytes)",
-            orig_request_id,
-            payload_len
-        );
         return;
     }
 
-    // Prepare payload holder
-    let mut owned_payload: Option<Vec<u8>> = None;
-
-    // Only accept flatbuffer Envelope payloads now. Reject JSON envelopes.
-    if let Ok(fb_env) = protocol::machine::root_as_envelope(&message.data) {
-        if let Some((sig_bytes, pub_bytes)) = fb_envelope_extract_sig_pub(&message.data) {
-            // Extract payload from envelope
-            let inner_bytes: Vec<u8> = fb_env
-                .payload()
-                .map(|p| p.iter().collect())
-                .unwrap_or_default();
-
-            // Verify signature via crypto helper
-            if let Err(e) = crypto::verify_envelope(&pub_bytes, &inner_bytes, &sig_bytes) {
-                log::warn!(
-                    "gossipsub: envelope verification failed from {}: {:?}",
-                    peer_id,
-                    e
-                );
-                return;
-            }
-            // Check nonce replay protection
-            if let Some(nonce) = fb_env.nonce() {
-                if let Err(e) = crate::libp2p_beemesh::envelope::check_and_insert_nonce(
-                    nonce,
-                    std::time::Duration::from_secs(300),
-                ) {
-                    log::warn!(
-                        "gossipsub: envelope nonce rejected from {}: {:?}",
-                        peer_id,
-                        e
-                    );
-                    return;
-                }
-            }
-            owned_payload = Some(inner_bytes);
-        } else {
-            log::warn!(
-                "gossipsub: flatbuffer envelope signature extraction failed from {}",
-                peer_id
-            );
-            return;
-        }
-    }
-
-    // Determine effective data (inner payload if envelope present)
-    let effective_data: &[u8] = match owned_payload.as_ref() {
-        Some(b) => b.as_slice(),
-        None => &message.data,
-    };
-
-    // Then try CapacityReply
-    if let Ok(cap_reply) = protocol::machine::root_as_capacity_reply(effective_data) {
+    if let Ok(cap_reply) = protocol::machine::root_as_capacity_reply(payload.as_slice()) {
         let request_part = cap_reply.request_id().unwrap_or("").to_string();
-        log::info!(
+        info!(
             "libp2p: received capreply for id={} from peer={}",
-            request_part,
-            peer_id
+            request_part, peer_id
         );
         // KEM pubkey caching has been removed - keys are now extracted directly from envelopes
         if let Some(senders) = pending_queries.get_mut(&request_part) {
@@ -120,9 +81,9 @@ pub fn gossipsub_message(
         return;
     }
 
-    log::warn!(
-        "Received non-savvy message ({} bytes) from peer {} — ignoring",
-        message.data.len(),
+    warn!(
+        "gossipsub: Received unsupported message ({} bytes) from peer {}",
+        payload.len(),
         peer_id
     );
 }

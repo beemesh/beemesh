@@ -1,5 +1,6 @@
 use crate::libp2p_beemesh::envelope::{sign_with_node_keys, SignEnvelopeConfig, SignedEnvelope};
 use base64::Engine;
+use log::warn;
 
 /// Input parameters for building a capacity reply.
 pub struct CapacityReplyParams<'a> {
@@ -66,7 +67,31 @@ pub fn build_capacity_reply(params: CapacityReplyParams<'_>) -> CapacityReply {
     }
 }
 
+/// Convenience helper to build a capacity reply using baseline parameters with overrides.
+pub fn build_capacity_reply_with<'a, F>(
+    request_id: &'a str,
+    responder_peer: &'a str,
+    mut adjust: F,
+) -> CapacityReply
+where
+    F: FnMut(&mut CapacityReplyParams<'a>),
+{
+    let mut params = baseline_capacity_params(request_id, responder_peer);
+    adjust(&mut params);
+    build_capacity_reply(params)
+}
+
 /// Sign a capacity reply payload with the node's key material.
 pub fn sign_capacity_reply(payload: &[u8]) -> anyhow::Result<SignedEnvelope> {
     sign_with_node_keys(payload, "capacity_reply", SignEnvelopeConfig::default())
+}
+
+/// Emit a warning when the KEM public key is missing from a capacity reply payload.
+pub fn warn_missing_kem(context: &str, peer_label: &str, kem_pub_b64: Option<&str>) {
+    if kem_pub_b64.map_or(true, |value| value.is_empty()) {
+        warn!(
+            "libp2p: {} capacity reply missing KEM public key for {}",
+            context, peer_label
+        );
+    }
 }

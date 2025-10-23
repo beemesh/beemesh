@@ -1,5 +1,5 @@
 use super::message_verifier::verify_signed_message;
-use crate::libp2p_beemesh::reply::{baseline_capacity_params, build_capacity_reply, CapacityReply};
+use crate::libp2p_beemesh::reply::{build_capacity_reply_with, warn_missing_kem, CapacityReply};
 use libp2p::request_response;
 use log::{debug, error, warn};
 use std::collections::HashMap as StdHashMap;
@@ -40,13 +40,15 @@ pub fn scheduler_message(
 
                     // build CapacityReply using protocol helper and include local KEM pubkey if available
                     let responder_peer = local_peer.to_string();
-                    let mut params = baseline_capacity_params(orig_request_id, &responder_peer);
-                    params.ok = has_capacity;
-                    let reply = build_capacity_reply(params);
+                    let reply =
+                        build_capacity_reply_with(orig_request_id, &responder_peer, |params| {
+                            params.ok = has_capacity;
+                        });
                     let CapacityReply {
                         payload,
                         kem_pub_b64,
                     } = reply;
+                    warn_missing_kem("scheduler", &responder_peer, kem_pub_b64.as_deref());
 
                     // Send response via request-response
                     let _ = swarm
@@ -57,12 +59,6 @@ pub fn scheduler_message(
                         "libp2p: sent scheduler capacity reply for id={} to {}",
                         orig_request_id, peer
                     );
-                    if kem_pub_b64.is_none() {
-                        warn!(
-                            "libp2p: scheduler capacity reply missing KEM pubkey for peer {}",
-                            local_peer
-                        );
-                    }
                 }
                 Err(e) => {
                     warn!("libp2p: failed to parse scheduler request: {:?}", e);

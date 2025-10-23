@@ -99,9 +99,6 @@ impl FlatbufferEnvelopeBuilder {
         ))
     }
 
-    /// Build a shares envelope containing encrypted share data
-    #[allow(dead_code)]
-
     /// Add signature and pubkey to an existing envelope
     #[allow(dead_code)]
     pub fn sign_envelope(

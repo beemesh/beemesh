@@ -15,8 +15,9 @@ Analyze the codebase for DRY (Don't Repeat Yourself) violations and provide acti
 Examine all behaviour and control files in `machine/src/libp2p_beemesh/` for:
 - **Crypto**: all crypto relevant support functions should be in crypto
 - **protocol**: message definitions in flatbuffer or other formats, constants and protocol route definition in libp2p that are strings and are not part of the protocol crate
+- **scheduler**: scheduling logic and related helper functions
 - **Error Handling**: Duplicate error responses
-- **Validation Logic**: Similar input validation patterns
+- **Validation Logic**: Similar input validation patterns, every envelope must be validated and there are no fallbacks to unsigned envelopes
 - **Response Formatting**: Repeated cloning and formatting of response structures
 
 ## 📊 Analysis Framework
@@ -42,9 +43,9 @@ Create a detailed report containing:
 
 ### **2. Refactoring Plan**
 Provide a prioritized action plan with:
-- **Quick Wins**: Easy refactoring opportunities (< 2 hours)
-- **Medium Efforts**: Moderate refactoring tasks (2-8 hours)
-- **Large Projects**: Comprehensive restructuring (> 8 hours)
+- **Quick Wins**: Easy refactoring opportunities
+- **Medium Efforts**: Moderate refactoring tasks
+- **Large Projects**: Comprehensive restructuring
 
 ### **3. Implementation Suggestions**
 For each violation, provide:
@@ -68,17 +69,3 @@ For each violation, provide:
 3. **Document Findings**: Create violation inventory with severity ratings
 4. **Propose Solutions**: Design generic abstractions and patterns
 5. **Create Examples**: Show practical refactoring implementations
-
-## 📚 Focus Areas for This Codebase
-
-Based on the beemesh architecture:
-
-### **High-Priority Targets:**
-- **REST API Routes**: 8 route files with identical CRUD patterns
-- **Error Handling**: Duplicate 404/error responses across routes
-- **Entity Models**: Similar TypeScript interfaces
-
-### **Secondary Targets:**
-- **React Components**: Product display and form components
-- **API Integration**: Fetch/axios patterns in frontend
-- **Testing Patterns**: Similar test structures across files
