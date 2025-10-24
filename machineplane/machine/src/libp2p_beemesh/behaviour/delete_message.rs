@@ -142,36 +142,55 @@ async fn process_delete_request(
     envelope_pubkey: &[u8],
     _requesting_peer: &str,
 ) -> (bool, String, Vec<String>) {
-    // Step 1: Verify ownership if not force delete
-    if !force {
-        match verify_delete_ownership(manifest_id, tenant, envelope_pubkey).await {
-            Ok(true) => {
-                info!("Delete ownership verified for manifest_id={}", manifest_id);
-            }
-            Ok(false) => {
+    // Step 1: Verify ownership before proceeding
+    let ownership_check = match verify_delete_ownership(manifest_id, tenant, envelope_pubkey).await
+    {
+        Ok(status) => status,
+        Err(e) => {
+            error!(
+                "Delete ownership verification error for manifest_id={}: {}",
+                manifest_id, e
+            );
+            return (
+                false,
+                format!("ownership verification error: {}", e),
+                vec![],
+            );
+        }
+    };
+
+    match ownership_check {
+        OwnershipStatus::Match => {
+            info!(
+                "Delete ownership verified for manifest_id={} (tenant={})",
+                manifest_id, tenant
+            );
+        }
+        OwnershipStatus::Mismatch => {
+            if force {
                 warn!(
-                    "Delete ownership verification failed for manifest_id={}",
+                    "Forced delete proceeding despite ownership mismatch for manifest_id={}",
+                    manifest_id
+                );
+            } else {
+                warn!(
+                    "Delete ownership mismatch for manifest_id={}, denying request",
                     manifest_id
                 );
                 return (false, "ownership verification failed".to_string(), vec![]);
             }
-            Err(e) => {
-                error!(
-                    "Delete ownership verification error for manifest_id={}: {}",
-                    manifest_id, e
-                );
-                return (
-                    false,
-                    format!("ownership verification error: {}", e),
-                    vec![],
-                );
-            }
         }
-    } else {
-        info!(
-            "Forced delete for manifest_id={}, skipping ownership verification",
-            manifest_id
-        );
+        OwnershipStatus::Unknown => {
+            warn!(
+                "Delete ownership unknown for manifest_id={}, denying request",
+                manifest_id
+            );
+            return (
+                false,
+                "ownership unknown for manifest on this node".to_string(),
+                vec![],
+            );
+        }
     }
 
     // Step 2: Remove workloads using the workload manager
@@ -207,28 +226,101 @@ async fn process_delete_request(
     }
 }
 
-/// Verify that the requesting peer is the owner of the manifest
+#[derive(Debug, PartialEq, Eq)]
+enum OwnershipStatus {
+    Match,
+    Mismatch,
+    Unknown,
+}
+
+/// Verify that the requesting peer is the owner of the manifest.
 async fn verify_delete_ownership(
     manifest_id: &str,
     _tenant: &str,
     envelope_pubkey: &[u8],
-) -> Result<bool, anyhow::Error> {
-    // TODO: Implement DHT lookup to get the AppliedManifest record
-    // For now, we'll implement a simplified version that always allows deletion
-    // In the real implementation, this should:
-    // 1. Query DHT for AppliedManifest record using manifest_id
-    // 2. Extract owner_pubkey from the stored manifest
-    // 3. Compare with envelope_pubkey from delete request
-    // 4. Return true if they match, false otherwise
-
+) -> Result<OwnershipStatus, anyhow::Error> {
     info!(
         "verify_delete_ownership: manifest_id={} envelope_pubkey_len={}",
         manifest_id,
         envelope_pubkey.len()
     );
 
-    // For testing purposes, allow deletion if envelope_pubkey is not empty
-    Ok(!envelope_pubkey.is_empty())
+    let stored_owner = crate::workload_integration::get_manifest_owner(manifest_id).await;
+
+    let Some(owner_pubkey) = stored_owner else {
+        warn!(
+            "verify_delete_ownership: manifest_id={} has no recorded owner on this node",
+            manifest_id
+        );
+        return Ok(OwnershipStatus::Unknown);
+    };
+
+    if owner_pubkey.is_empty() {
+        warn!(
+            "verify_delete_ownership: manifest_id={} recorded owner is empty",
+            manifest_id
+        );
+        return Ok(OwnershipStatus::Unknown);
+    }
+
+    if owner_pubkey == envelope_pubkey {
+        Ok(OwnershipStatus::Match)
+    } else {
+        warn!(
+            "verify_delete_ownership: owner mismatch for manifest_id={} (expected len={}, provided len={})",
+            manifest_id,
+            owner_pubkey.len(),
+            envelope_pubkey.len()
+        );
+        Ok(OwnershipStatus::Mismatch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn verify_delete_ownership_unknown_when_unrecorded() {
+        let manifest_id = "test-ownership-unknown";
+        let _ = crate::workload_integration::remove_manifest_owner(manifest_id).await;
+
+        let status = verify_delete_ownership(manifest_id, "tenant", b"any")
+            .await
+            .expect("ownership check to succeed");
+
+        assert_eq!(status, OwnershipStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn verify_delete_ownership_matches_recorded_owner() {
+        let manifest_id = "test-ownership-match";
+        let owner = vec![1u8, 2, 3];
+        crate::workload_integration::record_manifest_owner(manifest_id, &owner).await;
+
+        let status = verify_delete_ownership(manifest_id, "tenant", &owner)
+            .await
+            .expect("ownership check to succeed");
+
+        assert_eq!(status, OwnershipStatus::Match);
+
+        let _ = crate::workload_integration::remove_manifest_owner(manifest_id).await;
+    }
+
+    #[tokio::test]
+    async fn verify_delete_ownership_detects_mismatch() {
+        let manifest_id = "test-ownership-mismatch";
+        let owner = vec![4u8, 5, 6];
+        crate::workload_integration::record_manifest_owner(manifest_id, &owner).await;
+
+        let status = verify_delete_ownership(manifest_id, "tenant", &[9u8, 8, 7])
+            .await
+            .expect("ownership check to succeed");
+
+        assert_eq!(status, OwnershipStatus::Mismatch);
+
+        let _ = crate::workload_integration::remove_manifest_owner(manifest_id).await;
+    }
 }
 
 /// Remove workloads associated with a manifest ID

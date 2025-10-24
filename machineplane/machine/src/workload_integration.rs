@@ -25,6 +25,10 @@ static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
 static PROVIDER_MANAGER: Lazy<Arc<RwLock<Option<ProviderManager>>>> =
     Lazy::new(|| Arc::new(RwLock::new(None)));
 
+/// Node-local cache mapping manifest IDs to owner public keys.
+static MANIFEST_OWNER_MAP: Lazy<RwLock<HashMap<String, Vec<u8>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
 /// Initialize the runtime registry and provider manager
 pub async fn initialize_workload_manager() -> Result<(), Box<dyn std::error::Error>> {
     info!("Initializing runtime registry and provider manager for manifest deployment");
@@ -62,6 +66,29 @@ pub async fn initialize_workload_manager() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// Record the owner public key for a manifest on this node.
+pub async fn record_manifest_owner(manifest_id: &str, owner_pubkey: &[u8]) {
+    let mut map = MANIFEST_OWNER_MAP.write().await;
+    map.insert(manifest_id.to_string(), owner_pubkey.to_vec());
+    info!(
+        "record_manifest_owner: stored owner_pubkey len={} for manifest_id={}",
+        owner_pubkey.len(),
+        manifest_id
+    );
+}
+
+/// Retrieve the owner public key for a manifest if known.
+pub async fn get_manifest_owner(manifest_id: &str) -> Option<Vec<u8>> {
+    let map = MANIFEST_OWNER_MAP.read().await;
+    map.get(manifest_id).cloned()
+}
+
+/// Remove the owner mapping for a manifest.
+pub async fn remove_manifest_owner(manifest_id: &str) -> Option<Vec<u8>> {
+    let mut map = MANIFEST_OWNER_MAP.write().await;
+    map.remove(manifest_id)
+}
+
 /// Get access to the global runtime registry (for testing and debug endpoints)
 pub async fn get_global_runtime_registry(
 ) -> Option<tokio::sync::RwLockReadGuard<'static, Option<RuntimeRegistry>>> {
@@ -87,12 +114,12 @@ pub async fn handle_apply_message_with_workload_manager(
             info!("Received apply request from peer={}", peer);
 
             // Verify request as a FlatBuffer Envelope
-            let effective_request =
+            let (effective_request, owner_pubkey) =
                 match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
                     &request,
                     &peer.to_string(),
                 ) {
-                    Ok((payload_bytes, _pub, _sig)) => payload_bytes,
+                    Ok((payload_bytes, pubkey, _sig)) => (payload_bytes, pubkey),
                     Err(e) => {
                         if crate::libp2p_beemesh::security::require_signed_messages() {
                             error!("Rejecting unsigned/invalid apply request: {:?}", e);
@@ -107,7 +134,11 @@ pub async fn handle_apply_message_with_workload_manager(
                                 .send_response(channel, error_response);
                             return;
                         }
-                        request.clone()
+                        warn!(
+                            "Accepting unsigned apply request from peer={} due to relaxed policy",
+                            peer
+                        );
+                        (request.clone(), Vec::new())
                     }
                 };
 
@@ -123,7 +154,14 @@ pub async fn handle_apply_message_with_workload_manager(
 
                     // Extract and validate manifest
                     if let Some(manifest_json) = apply_req.manifest_json() {
-                        match process_manifest_deployment(swarm, &apply_req, manifest_json).await {
+                        match process_manifest_deployment(
+                            swarm,
+                            &apply_req,
+                            manifest_json,
+                            &owner_pubkey,
+                        )
+                        .await
+                        {
                             Ok(workload_id) => {
                                 info!(
                                     "Successfully deployed workload {} for apply request",
@@ -193,6 +231,7 @@ async fn process_manifest_deployment(
     swarm: &mut Swarm<MyBehaviour>,
     apply_req: &machine::ApplyRequest<'_>,
     manifest_json: &str,
+    owner_pubkey: &[u8],
 ) -> Result<String, Box<dyn std::error::Error>> {
     info!("Processing manifest deployment with encrypted envelope");
 
@@ -207,6 +246,15 @@ async fn process_manifest_deployment(
         "Processing manifest deployment for manifest_id: {} (calculated from decrypted content)",
         manifest_id
     );
+
+    if owner_pubkey.is_empty() {
+        warn!(
+            "process_manifest_deployment: missing owner pubkey for manifest_id={}",
+            manifest_id
+        );
+    } else {
+        record_manifest_owner(&manifest_id, owner_pubkey).await;
+    }
 
     // Create deployment configuration
     let deployment_config = create_deployment_config(apply_req);
@@ -468,7 +516,14 @@ pub async fn process_enhanced_self_apply_request(manifest: &[u8], swarm: &mut Sw
             );
 
             if let Some(manifest_json) = apply_req.manifest_json() {
-                match process_manifest_deployment(swarm, &apply_req, manifest_json).await {
+                let owner_pubkey =
+                    crypto::keypair_manager::KeypairManager::get_default_signing_keypair()
+                        .map(|(pub_bytes, _)| pub_bytes)
+                        .unwrap_or_default();
+
+                match process_manifest_deployment(swarm, &apply_req, manifest_json, &owner_pubkey)
+                    .await
+                {
                     Ok(workload_id) => {
                         info!(
                             "Successfully deployed self-applied workload: {}",
@@ -548,6 +603,7 @@ pub async fn remove_workloads_by_manifest_id(
         .ok_or("Runtime registry not initialized")?;
 
     let mut removed_workloads = Vec::new();
+    let mut errors = Vec::new();
     let engine_names = registry.list_engines();
 
     for engine_name in &engine_names {
@@ -582,6 +638,7 @@ pub async fn remove_workloads_by_manifest_id(
                                         "Failed to remove workload {} from engine '{}': {}",
                                         workload.id, engine_name, e
                                     );
+                                    errors.push(format!("{}:{}", engine_name, workload.id));
                                 }
                             }
                         }
@@ -592,6 +649,7 @@ pub async fn remove_workloads_by_manifest_id(
                         "Failed to list workloads from engine '{}': {}",
                         engine_name, e
                     );
+                    errors.push(format!("list:{}", engine_name));
                 }
             }
         }
@@ -607,6 +665,22 @@ pub async fn remove_workloads_by_manifest_id(
         } else {
             info!("Stopped providing manifest_id: {}", manifest_id);
         }
+    }
+
+    if errors.is_empty() {
+        // Drop the cached owner once the manifest workloads are removed successfully.
+        if remove_manifest_owner(manifest_id).await.is_some() {
+            info!(
+                "remove_workloads_by_manifest_id: cleared owner mapping for manifest_id={}",
+                manifest_id
+            );
+        }
+    } else {
+        warn!(
+            "remove_workloads_by_manifest_id: retaining owner mapping for manifest_id={} due to errors {:?}",
+            manifest_id,
+            errors
+        );
     }
 
     info!(

@@ -289,6 +289,7 @@ pub struct TaskRecord {
     pub manifest_cid: Option<String>,
     // store last generated operation id for manifest id computation
     pub last_operation_id: Option<String>,
+    pub owner_pubkey: Vec<u8>,
 }
 
 pub async fn create_task(
@@ -421,6 +422,7 @@ pub async fn create_task(
         assigned_peers: None,
         manifest_cid: Some(manifest_id.clone()),
         last_operation_id: Some(operation_id),
+        owner_pubkey: owner_pubkey.clone(),
     };
     {
         let mut store = state.task_store.write().await;
@@ -441,6 +443,15 @@ pub async fn create_task(
             "create_task: verifying task_id '{}' exists in store: {}",
             task_id,
             store.contains_key(&task_id)
+        );
+    }
+
+    if !owner_pubkey.is_empty() {
+        crate::workload_integration::record_manifest_owner(&manifest_id, &owner_pubkey).await;
+    } else {
+        log::warn!(
+            "create_task: missing owner pubkey when recording manifest_id={}",
+            manifest_id
         );
     }
 
