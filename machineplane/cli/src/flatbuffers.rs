@@ -452,12 +452,77 @@ impl FlatbufferClient {
 
     /// Send a DELETE request with optional body
     pub async fn send_delete_request(&self, url: &str, body: &[u8]) -> Result<Vec<u8>> {
+        // Wrap the delete request in a signed envelope
+        let envelope = if let Some(machine_pubkey) = &self.machine_public_key {
+            // Create encrypted envelope with peer_id
+            let kem_pub_b64 =
+                base64::engine::general_purpose::STANDARD.encode(&self.kem_public_key);
+            protocol::machine::build_encrypted_envelope_with_peer(
+                body,
+                "delete_request",
+                machine_pubkey,
+                &self.private_key,
+                &self.public_key,
+                "cli-client",
+                Some(kem_pub_b64.as_str()),
+            )?
+        } else {
+            // Create unencrypted envelope with peer_id and public key
+            use crypto::sign_envelope;
+            use protocol::machine::{
+                build_envelope_canonical_with_peer, build_envelope_signed_with_peer,
+            };
+
+            // Generate unique random nonce and timestamp
+            let nonce_bytes: [u8; 16] = rand::random();
+            let nonce = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            // Build canonical envelope for signing (with peer_id)
+            let kem_pub_b64 =
+                base64::engine::general_purpose::STANDARD.encode(&self.kem_public_key);
+            let canonical = build_envelope_canonical_with_peer(
+                body,
+                "delete_request",
+                &nonce,
+                ts,
+                "ml-dsa-65",
+                "cli-client",
+                Some(kem_pub_b64.as_str()),
+            );
+
+            // Decode sender public key from base64 for signing
+            let sender_pubkey_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&self.public_key)
+                .map_err(|e| anyhow::anyhow!("Failed to decode sender public key: {}", e))?;
+
+            // Sign the canonical envelope
+            let signature = sign_envelope(&self.private_key, &sender_pubkey_bytes, &canonical)?;
+
+            // Build the final signed envelope with unencrypted payload (with peer_id)
+            build_envelope_signed_with_peer(
+                body,
+                "delete_request",
+                &nonce,
+                ts,
+                "ml-dsa-65",
+                "ml-dsa-65",
+                &signature.0,
+                &signature.1,
+                "cli-client",
+                Some(kem_pub_b64.as_str()),
+            )
+        };
+
         let resp = self
             .client
             .delete(url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .header("x-peer-id", "cli-client") // Identify as CLI client
-            .body(body.to_vec())
+            .body(envelope)
             .send()
             .await?;
 
@@ -469,6 +534,41 @@ impl FlatbufferClient {
         }
 
         let response_bytes = resp.bytes().await?;
+
+        // Try to decrypt if it looks like an encrypted envelope
+        if response_bytes.len() > 100 && self.machine_public_key.is_some() {
+            // Try to parse as envelope first
+            match protocol::machine::root_as_envelope(&response_bytes) {
+                Ok(_envelope) => {
+                    // It's an envelope, try to decrypt
+                    match self.decrypt_from_machine(&response_bytes) {
+                        Ok(decrypted) => {
+                            log::info!(
+                                "send_delete_request: Decryption successful, decrypted length: {}",
+                                decrypted.len()
+                            );
+                            return Ok(decrypted);
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "send_delete_request: Decryption failed: {:?}, returning raw bytes",
+                                e
+                            );
+                            // Decryption failed, return raw bytes
+                            return Ok(response_bytes.to_vec());
+                        }
+                    }
+                }
+                Err(_) => {
+                    log::info!(
+                        "send_delete_request: Not an envelope, server sent unencrypted response"
+                    );
+                    // Server sent unencrypted response directly, return as-is
+                    return Ok(response_bytes.to_vec());
+                }
+            }
+        }
+
         Ok(response_bytes.to_vec())
     }
 }
