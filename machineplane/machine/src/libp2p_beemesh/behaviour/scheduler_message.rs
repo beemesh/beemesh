@@ -1,7 +1,9 @@
 use super::message_verifier::verify_signed_message;
 use crate::libp2p_beemesh::reply::{build_capacity_reply_with, warn_missing_kem, CapacityReply};
+use crate::resource_verifier::ResourceRequest;
+use crate::workload_integration::get_global_resource_verifier;
 use libp2p::request_response;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
@@ -35,30 +37,82 @@ pub fn scheduler_message(
                         orig_request_id, peer
                     );
 
-                    // Dummy capacity check - always true for now
-                    let has_capacity = true;
-
-                    // build CapacityReply using protocol helper and include local KEM pubkey if available
-                    let responder_peer = local_peer.to_string();
-                    let reply =
-                        build_capacity_reply_with(orig_request_id, &responder_peer, |params| {
-                            params.ok = has_capacity;
-                        });
-                    let CapacityReply {
-                        payload,
-                        kem_pub_b64,
-                    } = reply;
-                    warn_missing_kem("scheduler", &responder_peer, kem_pub_b64.as_deref());
-
-                    // Send response via request-response
-                    let _ = swarm
-                        .behaviour_mut()
-                        .scheduler_rr
-                        .send_response(channel, payload);
-                    debug!(
-                        "libp2p: sent scheduler capacity reply for id={} to {}",
-                        orig_request_id, peer
+                    // Perform real capacity check using resource verifier
+                    let resource_request = ResourceRequest::new(
+                        Some(cap_req.cpu_milli()),
+                        Some(cap_req.memory_bytes()),
+                        Some(cap_req.storage_bytes()),
+                        cap_req.replicas(),
                     );
+
+                    let verifier = get_global_resource_verifier();
+                    let responder_peer = local_peer.to_string();
+
+                    // Perform synchronous capacity check using cached resources
+                    // This is called from within the libp2p event loop, so we can't use async
+                    let check_result = {
+                        let handle = tokio::runtime::Handle::current();
+                        // Spawn a blocking task to avoid nesting runtimes
+                        std::thread::spawn(move || {
+                            handle.block_on(verifier.verify_capacity(&resource_request))
+                        })
+                        .join()
+                        .unwrap_or_else(|_| {
+                            warn!("Capacity check thread panicked, assuming no capacity");
+                            crate::resource_verifier::CapacityCheckResult {
+                                has_capacity: false,
+                                rejection_reason: Some("Internal error".to_string()),
+                                available_cpu_milli: 0,
+                                available_memory_bytes: 0,
+                                available_storage_bytes: 0,
+                            }
+                        })
+                    };
+
+                    let has_capacity = check_result.has_capacity;
+
+                    if has_capacity {
+                        info!(
+                            "Capacity check passed for request_id={}: CPU={}m, Mem={} MB, Storage={} GB available",
+                            orig_request_id,
+                            check_result.available_cpu_milli,
+                            check_result.available_memory_bytes / (1024 * 1024),
+                            check_result.available_storage_bytes / (1024 * 1024 * 1024)
+                        );
+
+                        // build CapacityReply using protocol helper and include local KEM pubkey if available
+                        let reply =
+                            build_capacity_reply_with(orig_request_id, &responder_peer, |params| {
+                                params.ok = true;
+                                params.cpu_milli = check_result.available_cpu_milli;
+                                params.memory_bytes = check_result.available_memory_bytes;
+                                params.storage_bytes = check_result.available_storage_bytes;
+                            });
+                        let CapacityReply {
+                            payload,
+                            kem_pub_b64,
+                        } = reply;
+                        warn_missing_kem("scheduler", &responder_peer, kem_pub_b64.as_deref());
+
+                        // Send response via request-response
+                        let _ = swarm
+                            .behaviour_mut()
+                            .scheduler_rr
+                            .send_response(channel, payload);
+                        debug!(
+                            "libp2p: sent scheduler capacity reply for id={} to {}",
+                            orig_request_id, peer
+                        );
+                    } else {
+                        info!(
+                            "Capacity check failed for request_id={}: {} - not sending response",
+                            orig_request_id,
+                            check_result
+                                .rejection_reason
+                                .unwrap_or_else(|| "Unknown reason".to_string())
+                        );
+                        // Do not send a response when capacity is unavailable
+                    }
                 }
                 Err(e) => {
                     warn!("libp2p: failed to parse scheduler request: {:?}", e);

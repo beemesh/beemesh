@@ -35,13 +35,10 @@ pub async fn handle_send_apply_request(
     // send it to the target peer so they can store it in their keystore.
     // Compute a manifest_id deterministically when possible (follow same heuristic as apply_message)
     let _manifest_id = if let Ok(apply_req) = protocol::machine::root_as_apply_request(&manifest) {
-        if let (Some(tenant), Some(operation_id), Some(manifest_json)) = (
-            apply_req.tenant(),
-            apply_req.operation_id(),
-            apply_req.manifest_json(),
-        ) {
+        if let (Some(operation_id), Some(manifest_json)) =
+            (apply_req.operation_id(), apply_req.manifest_json())
+        {
             let mut hasher = DefaultHasher::new();
-            tenant.hash(&mut hasher);
             operation_id.hash(&mut hasher);
             manifest_json.hash(&mut hasher);
             format!("{:x}", hasher.finish())

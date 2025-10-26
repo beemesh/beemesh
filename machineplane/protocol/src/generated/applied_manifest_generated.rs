@@ -335,19 +335,18 @@ impl<'a> flatbuffers::Follow<'a> for AppliedManifest<'a> {
 
 impl<'a> AppliedManifest<'a> {
   pub const VT_ID: flatbuffers::VOffsetT = 4;
-  pub const VT_TENANT: flatbuffers::VOffsetT = 6;
-  pub const VT_OPERATION_ID: flatbuffers::VOffsetT = 8;
-  pub const VT_ORIGIN_PEER: flatbuffers::VOffsetT = 10;
-  pub const VT_OWNER_PUBKEY: flatbuffers::VOffsetT = 12;
-  pub const VT_SIGNATURE_SCHEME: flatbuffers::VOffsetT = 14;
-  pub const VT_SIGNATURE: flatbuffers::VOffsetT = 16;
-  pub const VT_MANIFEST_JSON: flatbuffers::VOffsetT = 18;
-  pub const VT_MANIFEST_KIND: flatbuffers::VOffsetT = 20;
-  pub const VT_LABELS: flatbuffers::VOffsetT = 22;
-  pub const VT_TIMESTAMP: flatbuffers::VOffsetT = 24;
-  pub const VT_OPERATION: flatbuffers::VOffsetT = 26;
-  pub const VT_TTL_SECS: flatbuffers::VOffsetT = 28;
-  pub const VT_CONTENT_HASH: flatbuffers::VOffsetT = 30;
+  pub const VT_OPERATION_ID: flatbuffers::VOffsetT = 6;
+  pub const VT_ORIGIN_PEER: flatbuffers::VOffsetT = 8;
+  pub const VT_OWNER_PUBKEY: flatbuffers::VOffsetT = 10;
+  pub const VT_SIGNATURE_SCHEME: flatbuffers::VOffsetT = 12;
+  pub const VT_SIGNATURE: flatbuffers::VOffsetT = 14;
+  pub const VT_MANIFEST_JSON: flatbuffers::VOffsetT = 16;
+  pub const VT_MANIFEST_KIND: flatbuffers::VOffsetT = 18;
+  pub const VT_LABELS: flatbuffers::VOffsetT = 20;
+  pub const VT_TIMESTAMP: flatbuffers::VOffsetT = 22;
+  pub const VT_OPERATION: flatbuffers::VOffsetT = 24;
+  pub const VT_TTL_SECS: flatbuffers::VOffsetT = 26;
+  pub const VT_CONTENT_HASH: flatbuffers::VOffsetT = 28;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -369,7 +368,6 @@ impl<'a> AppliedManifest<'a> {
     if let Some(x) = args.owner_pubkey { builder.add_owner_pubkey(x); }
     if let Some(x) = args.origin_peer { builder.add_origin_peer(x); }
     if let Some(x) = args.operation_id { builder.add_operation_id(x); }
-    if let Some(x) = args.tenant { builder.add_tenant(x); }
     if let Some(x) = args.id { builder.add_id(x); }
     builder.add_operation(args.operation);
     builder.add_signature_scheme(args.signature_scheme);
@@ -383,13 +381,6 @@ impl<'a> AppliedManifest<'a> {
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(AppliedManifest::VT_ID, None)}
-  }
-  #[inline]
-  pub fn tenant(&self) -> Option<&'a str> {
-    // Safety:
-    // Created from valid Table for this object
-    // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(AppliedManifest::VT_TENANT, None)}
   }
   #[inline]
   pub fn operation_id(&self) -> Option<&'a str> {
@@ -485,7 +476,6 @@ impl flatbuffers::Verifiable for AppliedManifest<'_> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("id", Self::VT_ID, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("tenant", Self::VT_TENANT, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("operation_id", Self::VT_OPERATION_ID, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("origin_peer", Self::VT_ORIGIN_PEER, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>("owner_pubkey", Self::VT_OWNER_PUBKEY, false)?
@@ -504,7 +494,6 @@ impl flatbuffers::Verifiable for AppliedManifest<'_> {
 }
 pub struct AppliedManifestArgs<'a> {
     pub id: Option<flatbuffers::WIPOffset<&'a str>>,
-    pub tenant: Option<flatbuffers::WIPOffset<&'a str>>,
     pub operation_id: Option<flatbuffers::WIPOffset<&'a str>>,
     pub origin_peer: Option<flatbuffers::WIPOffset<&'a str>>,
     pub owner_pubkey: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
@@ -523,7 +512,6 @@ impl<'a> Default for AppliedManifestArgs<'a> {
   fn default() -> Self {
     AppliedManifestArgs {
       id: None,
-      tenant: None,
       operation_id: None,
       origin_peer: None,
       owner_pubkey: None,
@@ -548,10 +536,6 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> AppliedManifestBuilder<'a, 'b, 
   #[inline]
   pub fn add_id(&mut self, id: flatbuffers::WIPOffset<&'b  str>) {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(AppliedManifest::VT_ID, id);
-  }
-  #[inline]
-  pub fn add_tenant(&mut self, tenant: flatbuffers::WIPOffset<&'b  str>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(AppliedManifest::VT_TENANT, tenant);
   }
   #[inline]
   pub fn add_operation_id(&mut self, operation_id: flatbuffers::WIPOffset<&'b  str>) {
@@ -620,7 +604,6 @@ impl core::fmt::Debug for AppliedManifest<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("AppliedManifest");
       ds.field("id", &self.id());
-      ds.field("tenant", &self.tenant());
       ds.field("operation_id", &self.operation_id());
       ds.field("origin_peer", &self.origin_peer());
       ds.field("owner_pubkey", &self.owner_pubkey());

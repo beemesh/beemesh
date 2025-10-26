@@ -4,10 +4,11 @@ use clap::Parser;
 use env_logger::Env;
 use std::io::Write;
 
-mod hostapi;
+pub mod hostapi;
 pub mod libp2p_beemesh;
 mod pod_communication;
 pub mod provider;
+pub mod resource_verifier;
 pub mod restapi;
 pub mod runtime;
 pub mod workload_integration;

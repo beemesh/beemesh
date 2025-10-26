@@ -6,6 +6,7 @@
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 use crate::provider::{ProviderConfig, ProviderManager};
+use crate::resource_verifier::ResourceVerifier;
 use crate::runtime::{create_default_registry, DeploymentConfig, RuntimeRegistry};
 use base64::Engine;
 use libp2p::request_response;
@@ -24,6 +25,10 @@ static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
 /// Global provider manager for announcements
 static PROVIDER_MANAGER: Lazy<Arc<RwLock<Option<ProviderManager>>>> =
     Lazy::new(|| Arc::new(RwLock::new(None)));
+
+/// Global resource verifier for capacity checks
+static RESOURCE_VERIFIER: Lazy<Arc<ResourceVerifier>> =
+    Lazy::new(|| Arc::new(ResourceVerifier::new()));
 
 /// Node-local cache mapping manifest IDs to owner public keys.
 static MANIFEST_OWNER_MAP: Lazy<RwLock<HashMap<String, Vec<u8>>>> =
@@ -62,6 +67,13 @@ pub async fn initialize_workload_manager() -> Result<(), Box<dyn std::error::Err
         *global_provider_manager = Some(provider_manager);
     }
 
+    // Initialize resource verifier with system resources
+    info!("Initializing resource verifier");
+    let verifier = get_global_resource_verifier();
+    if let Err(e) = verifier.update_system_resources().await {
+        warn!("Failed to update system resources: {}", e);
+    }
+
     info!("Runtime registry and provider manager initialized successfully");
     Ok(())
 }
@@ -98,6 +110,11 @@ pub async fn get_global_runtime_registry(
     } else {
         None
     }
+}
+
+/// Get access to the global resource verifier
+pub fn get_global_resource_verifier() -> Arc<ResourceVerifier> {
+    Arc::clone(&RESOURCE_VERIFIER)
 }
 
 /// Enhanced apply message handler that uses the workload manager
@@ -146,8 +163,7 @@ pub async fn handle_apply_message_with_workload_manager(
             match machine::root_as_apply_request(&effective_request) {
                 Ok(apply_req) => {
                     info!(
-                        "Apply request - tenant={:?} operation_id={:?} replicas={}",
-                        apply_req.tenant(),
+                        "Apply request - operation_id={:?} replicas={}",
                         apply_req.operation_id(),
                         apply_req.replicas()
                     );
@@ -492,12 +508,7 @@ fn create_deployment_config(apply_req: &machine::ApplyRequest) -> DeploymentConf
     // Set replicas
     config.replicas = apply_req.replicas();
 
-    // Add metadata from apply request
-    if let Some(tenant) = apply_req.tenant() {
-        config
-            .env
-            .insert("BEEMESH_TENANT".to_string(), tenant.to_string());
-    }
+    // Metadata from apply request can be added here if needed
     if let Some(operation_id) = apply_req.operation_id() {
         config
             .env
@@ -553,8 +564,7 @@ pub async fn process_enhanced_self_apply_request(manifest: &[u8], swarm: &mut Sw
     match machine::root_as_apply_request(manifest) {
         Ok(apply_req) => {
             debug!(
-                "Enhanced self-apply request - tenant={:?} operation_id={:?} replicas={}",
-                apply_req.tenant(),
+                "Enhanced self-apply request - operation_id={:?} replicas={}",
                 apply_req.operation_id(),
                 apply_req.replicas()
             );

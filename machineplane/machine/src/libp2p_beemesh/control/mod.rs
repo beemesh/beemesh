@@ -78,7 +78,6 @@ pub async fn handle_control_message(
         }
 
         Libp2pControl::BootstrapDht { reply_tx } => {
-            // Bootstrap the Kademlia DHT
             let _ = swarm.behaviour_mut().kademlia.bootstrap();
             let _ = reply_tx.send(Ok(()));
         }

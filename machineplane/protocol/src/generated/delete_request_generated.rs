@@ -43,10 +43,9 @@ impl<'a> flatbuffers::Follow<'a> for DeleteRequest<'a> {
 
 impl<'a> DeleteRequest<'a> {
   pub const VT_MANIFEST_ID: flatbuffers::VOffsetT = 4;
-  pub const VT_TENANT: flatbuffers::VOffsetT = 6;
-  pub const VT_OPERATION_ID: flatbuffers::VOffsetT = 8;
-  pub const VT_ORIGIN_PEER: flatbuffers::VOffsetT = 10;
-  pub const VT_FORCE: flatbuffers::VOffsetT = 12;
+  pub const VT_OPERATION_ID: flatbuffers::VOffsetT = 6;
+  pub const VT_ORIGIN_PEER: flatbuffers::VOffsetT = 8;
+  pub const VT_FORCE: flatbuffers::VOffsetT = 10;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -60,7 +59,6 @@ impl<'a> DeleteRequest<'a> {
     let mut builder = DeleteRequestBuilder::new(_fbb);
     if let Some(x) = args.origin_peer { builder.add_origin_peer(x); }
     if let Some(x) = args.operation_id { builder.add_operation_id(x); }
-    if let Some(x) = args.tenant { builder.add_tenant(x); }
     if let Some(x) = args.manifest_id { builder.add_manifest_id(x); }
     builder.add_force(args.force);
     builder.finish()
@@ -73,13 +71,6 @@ impl<'a> DeleteRequest<'a> {
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(DeleteRequest::VT_MANIFEST_ID, None)}
-  }
-  #[inline]
-  pub fn tenant(&self) -> Option<&'a str> {
-    // Safety:
-    // Created from valid Table for this object
-    // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(DeleteRequest::VT_TENANT, None)}
   }
   #[inline]
   pub fn operation_id(&self) -> Option<&'a str> {
@@ -112,7 +103,6 @@ impl flatbuffers::Verifiable for DeleteRequest<'_> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_id", Self::VT_MANIFEST_ID, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("tenant", Self::VT_TENANT, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("operation_id", Self::VT_OPERATION_ID, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("origin_peer", Self::VT_ORIGIN_PEER, false)?
      .visit_field::<bool>("force", Self::VT_FORCE, false)?
@@ -122,7 +112,6 @@ impl flatbuffers::Verifiable for DeleteRequest<'_> {
 }
 pub struct DeleteRequestArgs<'a> {
     pub manifest_id: Option<flatbuffers::WIPOffset<&'a str>>,
-    pub tenant: Option<flatbuffers::WIPOffset<&'a str>>,
     pub operation_id: Option<flatbuffers::WIPOffset<&'a str>>,
     pub origin_peer: Option<flatbuffers::WIPOffset<&'a str>>,
     pub force: bool,
@@ -132,7 +121,6 @@ impl<'a> Default for DeleteRequestArgs<'a> {
   fn default() -> Self {
     DeleteRequestArgs {
       manifest_id: None,
-      tenant: None,
       operation_id: None,
       origin_peer: None,
       force: false,
@@ -148,10 +136,6 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> DeleteRequestBuilder<'a, 'b, A>
   #[inline]
   pub fn add_manifest_id(&mut self, manifest_id: flatbuffers::WIPOffset<&'b  str>) {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(DeleteRequest::VT_MANIFEST_ID, manifest_id);
-  }
-  #[inline]
-  pub fn add_tenant(&mut self, tenant: flatbuffers::WIPOffset<&'b  str>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(DeleteRequest::VT_TENANT, tenant);
   }
   #[inline]
   pub fn add_operation_id(&mut self, operation_id: flatbuffers::WIPOffset<&'b  str>) {
@@ -184,7 +168,6 @@ impl core::fmt::Debug for DeleteRequest<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("DeleteRequest");
       ds.field("manifest_id", &self.manifest_id());
-      ds.field("tenant", &self.tenant());
       ds.field("operation_id", &self.operation_id());
       ds.field("origin_peer", &self.origin_peer());
       ds.field("force", &self.force());

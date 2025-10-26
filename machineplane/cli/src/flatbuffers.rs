@@ -362,60 +362,12 @@ impl FlatbufferClient {
         }
     }
 
-    /// Create a task by sending flatbuffer data
-    pub async fn create_task(
-        &self,
-        tenant: &str,
-        manifest_bytes: &[u8], // Raw flatbuffer bytes
-        manifest_id: Option<String>,
-        operation_id: Option<String>,
-    ) -> Result<JsonValue> {
-        let mut url = format!(
-            "{}/tenant/{}/tasks",
-            self.base_url.trim_end_matches('/'),
-            tenant
-        );
-
-        // Add query parameters
-        let mut query_params = Vec::new();
-        if let Some(mid) = manifest_id {
-            query_params.push(format!("manifest_id={}", mid));
-        }
-        if let Some(oid) = operation_id {
-            query_params.push(format!("operation_id={}", oid));
-        }
-        if !query_params.is_empty() {
-            url.push('?');
-            url.push_str(&query_params.join("&"));
-        }
-
-        let response_bytes = self
-            .send_encrypted_request(&url, manifest_bytes, "task_create_request")
-            .await?;
-
-        // Parse as flatbuffer TaskCreateResponse
-        let task_response = protocol::machine::root_as_task_create_response(&response_bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to parse TaskCreateResponse: {}", e))?;
-
-        Ok(serde_json::json!({
-            "ok": task_response.ok(),
-            "task_id": task_response.task_id().unwrap_or(""),
-            "manifest_id": task_response.manifest_ref().unwrap_or(""),
-            "selection_window_ms": task_response.selection_window_ms()
-        }))
-    }
-
     /// Get candidates using flatbuffer capacity request
-    pub async fn get_candidates(&self, tenant: &str, task_id: &str) -> Result<Vec<String>> {
-        log::debug!(
-            "get_candidates: called with tenant={}, task_id={}",
-            tenant,
-            task_id
-        );
+    pub async fn get_candidates(&self, task_id: &str) -> Result<Vec<String>> {
+        log::debug!("get_candidates: called with task_id={}", task_id);
         let url = format!(
-            "{}/tenant/{}/tasks/{}/candidates",
+            "{}/tasks/{}/candidates",
             self.base_url.trim_end_matches('/'),
-            tenant,
             task_id
         );
         log::debug!("get_candidates: requesting URL: {}", url);

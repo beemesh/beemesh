@@ -51,16 +51,14 @@ pub fn delete_message(
             match machine::root_as_delete_request(&effective_request) {
                 Ok(delete_req) => {
                     info!(
-                        "Delete request - manifest_id={:?} tenant={:?} operation_id={:?} force={}",
+                        "Delete request - manifest_id={:?} operation_id={:?} force={}",
                         delete_req.manifest_id(),
-                        delete_req.tenant(),
                         delete_req.operation_id(),
                         delete_req.force()
                     );
 
                     // Process the delete request asynchronously
                     let manifest_id = delete_req.manifest_id().unwrap_or("").to_string();
-                    let tenant = delete_req.tenant().unwrap_or("").to_string();
                     let operation_id = delete_req.operation_id().unwrap_or("").to_string();
                     let force = delete_req.force();
                     let requesting_peer = peer.to_string();
@@ -69,7 +67,6 @@ pub fn delete_message(
                     tokio::spawn(async move {
                         let (success, message, removed_workloads) = process_delete_request(
                             &manifest_id,
-                            &tenant,
                             force,
                             &envelope_pubkey_inner,
                             &requesting_peer,
@@ -137,14 +134,12 @@ pub fn delete_message(
 /// Process a delete request by verifying ownership and removing workloads
 async fn process_delete_request(
     manifest_id: &str,
-    tenant: &str,
     force: bool,
     envelope_pubkey: &[u8],
     _requesting_peer: &str,
 ) -> (bool, String, Vec<String>) {
     // Step 1: Verify ownership before proceeding
-    let ownership_check = match verify_delete_ownership(manifest_id, tenant, envelope_pubkey).await
-    {
+    let ownership_check = match verify_delete_ownership(manifest_id, envelope_pubkey).await {
         Ok(status) => status,
         Err(e) => {
             error!(
@@ -161,10 +156,7 @@ async fn process_delete_request(
 
     match ownership_check {
         OwnershipStatus::Match => {
-            info!(
-                "Delete ownership verified for manifest_id={} (tenant={})",
-                manifest_id, tenant
-            );
+            info!("Delete ownership verified for manifest_id={}", manifest_id);
         }
         OwnershipStatus::Mismatch => {
             if force {
@@ -236,7 +228,6 @@ enum OwnershipStatus {
 /// Verify that the requesting peer is the owner of the manifest.
 async fn verify_delete_ownership(
     manifest_id: &str,
-    _tenant: &str,
     envelope_pubkey: &[u8],
 ) -> Result<OwnershipStatus, anyhow::Error> {
     info!(
@@ -285,7 +276,7 @@ mod tests {
         let manifest_id = "test-ownership-unknown";
         let _ = crate::workload_integration::remove_manifest_owner(manifest_id).await;
 
-        let status = verify_delete_ownership(manifest_id, "tenant", b"any")
+        let status = verify_delete_ownership(manifest_id, b"any")
             .await
             .expect("ownership check to succeed");
 
@@ -298,7 +289,7 @@ mod tests {
         let owner = vec![1u8, 2, 3];
         crate::workload_integration::record_manifest_owner(manifest_id, &owner).await;
 
-        let status = verify_delete_ownership(manifest_id, "tenant", &owner)
+        let status = verify_delete_ownership(manifest_id, &owner)
             .await
             .expect("ownership check to succeed");
 
@@ -313,7 +304,7 @@ mod tests {
         let owner = vec![4u8, 5, 6];
         crate::workload_integration::record_manifest_owner(manifest_id, &owner).await;
 
-        let status = verify_delete_ownership(manifest_id, "tenant", &[9u8, 8, 7])
+        let status = verify_delete_ownership(manifest_id, &[9u8, 8, 7])
             .await
             .expect("ownership check to succeed");
 
@@ -355,7 +346,7 @@ pub fn delete_outbound_failure(peer: libp2p::PeerId, error: request_response::Ou
     warn!("Delete outbound failure for peer {}: {:?}", peer, error);
 }
 
-/// Handle delete inbound failure  
+/// Handle delete inbound failure
 pub fn delete_inbound_failure(peer: libp2p::PeerId, error: request_response::InboundFailure) {
     warn!("Delete inbound failure for peer {}: {:?}", peer, error);
 }

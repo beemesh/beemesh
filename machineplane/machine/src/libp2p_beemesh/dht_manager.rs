@@ -19,11 +19,6 @@ pub enum DhtOperation {
         id: String,
         reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest<'static>>, String>>,
     },
-    /// Get all manifests for a specific tenant
-    GetManifestsByTenant {
-        tenant: String,
-        reply_tx: mpsc::UnboundedSender<Result<Vec<AppliedManifest<'static>>, String>>,
-    },
     /// Get all manifests by a specific peer
     GetManifestsByPeer {
         peer_id: String,
@@ -57,11 +52,7 @@ impl DhtManager {
         kad::RecordKey::new(&format!("manifest:{}", id))
     }
 
-    /// Generate a DHT key for tenant indexing
-    pub fn tenant_index_key(tenant: &str) -> kad::RecordKey {
-        kad::RecordKey::new(&format!("tenant-index:{}", tenant))
-    }
-
+    /// Generate a DHT key for a given manifest ID
     /// Generate a DHT key for peer indexing
     pub fn peer_index_key(peer_id: &str) -> kad::RecordKey {
         kad::RecordKey::new(&format!("peer-index:{}", peer_id))
@@ -75,13 +66,6 @@ impl DhtManager {
             }
             DhtOperation::GetManifest { id, reply_tx } => {
                 self.get_manifest(id, reply_tx, swarm);
-            }
-            DhtOperation::GetManifestsByTenant {
-                tenant: _,
-                reply_tx,
-            } => {
-                // For now, send an error as this requires more complex indexing
-                let _ = reply_tx.send(Err("Tenant queries not implemented yet".to_string()));
             }
             DhtOperation::GetManifestsByPeer {
                 peer_id: _,
@@ -112,7 +96,6 @@ impl DhtManager {
         let manifest_bytes = {
             // We need to re-serialize the FlatBuffer since we can't clone it directly
             let id = manifest.id().unwrap_or("");
-            let tenant = manifest.tenant().unwrap_or("");
             let operation_id = manifest.operation_id().unwrap_or("");
             let origin_peer = manifest.origin_peer().unwrap_or("");
             let owner_pubkey = manifest
@@ -147,7 +130,6 @@ impl DhtManager {
 
             build_applied_manifest(
                 &manifest_id,
-                &tenant,
                 &operation_id,
                 &origin_peer,
                 &owner_pubkey,
@@ -285,7 +267,6 @@ impl DhtManager {
 /// Helper function to create an AppliedManifest for a deployed workload
 pub fn create_applied_manifest_for_deployment(
     id: String,
-    tenant: String,
     operation_id: String,
     origin_peer: String,
     manifest_json: String,
@@ -314,7 +295,6 @@ pub fn create_applied_manifest_for_deployment(
 
     build_applied_manifest(
         &id,
-        &tenant,
         &operation_id,
         &origin_peer,
         &empty_pubkey,

@@ -4,7 +4,6 @@ use protocol::machine::{build_envelope_canonical, build_envelope_signed};
 use std::time::Duration;
 
 #[test]
-#[test]
 fn test_envelope_payload_extraction() {
     // This test should verify that the envelope payload can be extracted and matches the expected encrypted manifest
     // (Implementation needed based on new envelope structure)
@@ -23,7 +22,6 @@ fn test_apply_request_flatbuffer_envelope() {
     // Create an apply request FlatBuffer
     let apply_request = protocol::machine::build_apply_request(
         3,                           // replicas
-        "test-tenant",               // tenant
         "apply-op-123",              // operation_id
         "apiVersion: v1\nkind: Pod", // manifest_json (YAML as string)
         "origin-peer-id",            // origin_peer
@@ -81,7 +79,6 @@ fn test_apply_request_flatbuffer_envelope() {
         .expect("Should parse apply request from envelope payload");
 
     assert_eq!(parsed_apply.replicas(), 3);
-    assert_eq!(parsed_apply.tenant().unwrap_or(""), "test-tenant");
     assert_eq!(parsed_apply.operation_id().unwrap_or(""), "apply-op-123");
     assert!(parsed_apply
         .manifest_json()

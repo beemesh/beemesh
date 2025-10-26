@@ -62,3 +62,35 @@ pub const SPEC_REPLICAS_FIELD: &str = "spec";
 
 /// Version byte used in the compact binary envelope for capreq/capreply messages.
 pub const BINARY_ENVELOPE_VERSION: u8 = 1;
+
+// === RESOURCE MANAGEMENT CONSTANTS ===
+
+/// Maximum percentage of CPU that can be allocated to workloads (90% to leave headroom)
+pub const MAX_CPU_ALLOCATION_PERCENT: u8 = 90;
+
+/// Maximum percentage of memory that can be allocated to workloads (90% to leave headroom)
+pub const MAX_MEMORY_ALLOCATION_PERCENT: u8 = 90;
+
+/// Maximum percentage of storage that can be allocated to workloads (90% to leave headroom)
+pub const MAX_STORAGE_ALLOCATION_PERCENT: u8 = 90;
+
+/// Minimum free memory to keep available in bytes (512 MB)
+pub const MIN_FREE_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Minimum free storage to keep available in bytes (1 GB)
+pub const MIN_FREE_STORAGE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Maximum number of workloads per node (0 = unlimited)
+pub const MAX_WORKLOADS_PER_NODE: u32 = 0;
+
+/// Timeout for resource availability checks in milliseconds
+pub const RESOURCE_CHECK_TIMEOUT_MS: u64 = 1000;
+
+/// Default CPU request in millicores if not specified in manifest (100m = 0.1 core)
+pub const DEFAULT_CPU_REQUEST_MILLI: u32 = 100;
+
+/// Default memory request in bytes if not specified in manifest (128 MB)
+pub const DEFAULT_MEMORY_REQUEST_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Default storage request in bytes if not specified in manifest (1 GB)
+pub const DEFAULT_STORAGE_REQUEST_BYTES: u64 = 1024 * 1024 * 1024;

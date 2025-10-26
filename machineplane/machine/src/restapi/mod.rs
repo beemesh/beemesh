@@ -135,22 +135,13 @@ pub fn build_router(
             get(debug_workloads_by_peer),
         )
         .route("/debug/local_peer_id", get(debug_local_peer_id))
-        .route(
-            "/tenant/{tenant}/tasks/{task_id}/manifest_id",
-            get(get_task_manifest_id),
-        )
-        .route("/tenant/{tenant}/tasks", post(create_task))
-        .route("/tenant/{tenant}/tasks/{task_id}", get(get_task_status))
-        .route("/tenant/{tenant}/tasks/{task_id}", delete(delete_task))
-        .route(
-            "/tenant/{tenant}/tasks/{task_id}/candidates",
-            post(get_candidates),
-        )
-        .route(
-            "/tenant/{tenant}/apply_direct/{peer_id}",
-            post(apply_direct),
-        )
-        .route("/tenant/{tenant}/nodes", get(get_nodes))
+        .route("/tasks/{task_id}/manifest_id", get(get_task_manifest_id))
+        .route("/tasks", post(create_task))
+        .route("/tasks/{task_id}", get(get_task_status))
+        .route("/tasks/{task_id}", delete(delete_task))
+        .route("/tasks/{task_id}/candidates", post(get_candidates))
+        .route("/apply_direct/{peer_id}", post(apply_direct))
+        .route("/nodes", get(get_nodes))
         // Add envelope middleware to decrypt incoming requests and extract peer keys
         .layer(middleware::from_fn_with_state(
             state.envelope_handler.clone(),
@@ -161,7 +152,7 @@ pub fn build_router(
 }
 
 pub async fn get_candidates(
-    Path((_tenant, task_id)): Path<(String, String)>,
+    Path(task_id): Path<String>,
     State(state): State<RestState>,
     Extension(envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
     _headers: HeaderMap,
@@ -293,7 +284,6 @@ pub struct TaskRecord {
 }
 
 pub async fn create_task(
-    Path(tenant): Path<String>,
     State(state): State<RestState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     _headers: HeaderMap,
@@ -327,9 +317,8 @@ pub async fn create_task(
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
-        tenant.hash(&mut hasher);
 
-        // Use stable manifest name instead of operation_id for consistent hashing
+        // Use stable manifest name for consistent hashing
         if let Some(name) = protocol::machine::extract_manifest_name(&payload_bytes_for_parsing) {
             name.hash(&mut hasher);
         } else {
@@ -344,9 +333,8 @@ pub async fn create_task(
         use std::hash::{Hash, Hasher};
         let operation_id = uuid::Uuid::new_v4().to_string();
         let mut hasher = DefaultHasher::new();
-        tenant.hash(&mut hasher);
 
-        // Use stable manifest name instead of operation_id for consistent hashing
+        // Use stable manifest name for consistent hashing
         if let Some(name) = protocol::machine::extract_manifest_name(&payload_bytes_for_parsing) {
             name.hash(&mut hasher);
         } else {
@@ -672,7 +660,7 @@ async fn debug_all_tasks(State(state): State<RestState>) -> axum::Json<serde_jso
 }
 
 async fn get_task_manifest_id(
-    Path((_tenant, task_id)): Path<(String, String)>,
+    Path(task_id): Path<String>,
     State(state): State<RestState>,
     _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
@@ -733,7 +721,7 @@ async fn get_task_manifest_id(
 }
 
 pub async fn get_task_status(
-    Path((_tenant, task_id)): Path<(String, String)>,
+    Path(task_id): Path<String>,
     State(state): State<RestState>,
     _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
@@ -762,13 +750,13 @@ pub async fn get_task_status(
 
 /// Delete a task by task ID - discovers providers and sends delete requests
 pub async fn delete_task(
-    Path((tenant, task_id)): Path<(String, String)>,
+    Path(task_id): Path<String>,
     State(state): State<RestState>,
     _headers: HeaderMap,
     Extension(envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    info!("delete_task: tenant={} task_id={}", tenant, task_id);
+    info!("delete_task: task_id={}", task_id);
 
     // Generate operation ID for this delete request
     let timestamp = SystemTime::now()
@@ -824,13 +812,8 @@ pub async fn delete_task(
     );
 
     // Step 2: Create delete request
-    let delete_request = protocol::machine::build_delete_request(
-        &task_id,
-        &tenant,
-        &operation_id,
-        &origin_peer,
-        force,
-    );
+    let delete_request =
+        protocol::machine::build_delete_request(&task_id, &operation_id, &origin_peer, force);
 
     // Step 3: Send delete requests to all providers
     let mut successful_deletes = Vec::new();
@@ -1090,7 +1073,7 @@ async fn send_delete_request_to_peer(
 /// Forward an ApplyRequest directly to a specific peer via libp2p
 /// This bypasses centralized task storage and forwards the request directly
 pub async fn apply_direct(
-    Path((_tenant, peer_id)): Path<(String, String)>,
+    Path(peer_id): Path<String>,
     State(state): State<RestState>,
     _headers: HeaderMap,
     Extension(_envelope_metadata): Extension<crate::restapi::envelope_handler::EnvelopeMetadata>,

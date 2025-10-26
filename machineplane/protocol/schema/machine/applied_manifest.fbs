@@ -27,12 +27,9 @@ enum OperationType:byte {
 table AppliedManifest {
   // A canonical identifier for this record. We recommend computing this as
   // the hex-encoded SHA-256 over a canonicalized payload (for example:
-  // SHA256(tenant + ':' + operation_id + ':' + canonical_manifest)).
+  // SHA256(owner_pubkey + ':' + operation_id + ':' + canonical_manifest)).
   // Storing it here avoids recalculating it when scanning or indexing.
   id:string;
-
-  // Tenant or namespace used by the application to separate multi-tenant data.
-  tenant:string;
 
   // An operation id supplied by the originator (also stored in ApplyRequest).
   // This can be used to correlate apply requests and responses.

@@ -43,11 +43,10 @@ impl<'a> flatbuffers::Follow<'a> for ApplyRequest<'a> {
 
 impl<'a> ApplyRequest<'a> {
   pub const VT_REPLICAS: flatbuffers::VOffsetT = 4;
-  pub const VT_TENANT: flatbuffers::VOffsetT = 6;
-  pub const VT_OPERATION_ID: flatbuffers::VOffsetT = 8;
-  pub const VT_MANIFEST_JSON: flatbuffers::VOffsetT = 10;
-  pub const VT_ORIGIN_PEER: flatbuffers::VOffsetT = 12;
-  pub const VT_MANIFEST_ID: flatbuffers::VOffsetT = 14;
+  pub const VT_OPERATION_ID: flatbuffers::VOffsetT = 6;
+  pub const VT_MANIFEST_JSON: flatbuffers::VOffsetT = 8;
+  pub const VT_ORIGIN_PEER: flatbuffers::VOffsetT = 10;
+  pub const VT_MANIFEST_ID: flatbuffers::VOffsetT = 12;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -63,7 +62,6 @@ impl<'a> ApplyRequest<'a> {
     if let Some(x) = args.origin_peer { builder.add_origin_peer(x); }
     if let Some(x) = args.manifest_json { builder.add_manifest_json(x); }
     if let Some(x) = args.operation_id { builder.add_operation_id(x); }
-    if let Some(x) = args.tenant { builder.add_tenant(x); }
     builder.add_replicas(args.replicas);
     builder.finish()
   }
@@ -75,13 +73,6 @@ impl<'a> ApplyRequest<'a> {
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u32>(ApplyRequest::VT_REPLICAS, Some(1)).unwrap()}
-  }
-  #[inline]
-  pub fn tenant(&self) -> Option<&'a str> {
-    // Safety:
-    // Created from valid Table for this object
-    // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(ApplyRequest::VT_TENANT, None)}
   }
   #[inline]
   pub fn operation_id(&self) -> Option<&'a str> {
@@ -121,7 +112,6 @@ impl flatbuffers::Verifiable for ApplyRequest<'_> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
      .visit_field::<u32>("replicas", Self::VT_REPLICAS, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("tenant", Self::VT_TENANT, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("operation_id", Self::VT_OPERATION_ID, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_json", Self::VT_MANIFEST_JSON, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("origin_peer", Self::VT_ORIGIN_PEER, false)?
@@ -132,7 +122,6 @@ impl flatbuffers::Verifiable for ApplyRequest<'_> {
 }
 pub struct ApplyRequestArgs<'a> {
     pub replicas: u32,
-    pub tenant: Option<flatbuffers::WIPOffset<&'a str>>,
     pub operation_id: Option<flatbuffers::WIPOffset<&'a str>>,
     pub manifest_json: Option<flatbuffers::WIPOffset<&'a str>>,
     pub origin_peer: Option<flatbuffers::WIPOffset<&'a str>>,
@@ -143,7 +132,6 @@ impl<'a> Default for ApplyRequestArgs<'a> {
   fn default() -> Self {
     ApplyRequestArgs {
       replicas: 1,
-      tenant: None,
       operation_id: None,
       manifest_json: None,
       origin_peer: None,
@@ -160,10 +148,6 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> ApplyRequestBuilder<'a, 'b, A> 
   #[inline]
   pub fn add_replicas(&mut self, replicas: u32) {
     self.fbb_.push_slot::<u32>(ApplyRequest::VT_REPLICAS, replicas, 1);
-  }
-  #[inline]
-  pub fn add_tenant(&mut self, tenant: flatbuffers::WIPOffset<&'b  str>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(ApplyRequest::VT_TENANT, tenant);
   }
   #[inline]
   pub fn add_operation_id(&mut self, operation_id: flatbuffers::WIPOffset<&'b  str>) {
@@ -200,7 +184,6 @@ impl core::fmt::Debug for ApplyRequest<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("ApplyRequest");
       ds.field("replicas", &self.replicas());
-      ds.field("tenant", &self.tenant());
       ds.field("operation_id", &self.operation_id());
       ds.field("manifest_json", &self.manifest_json());
       ds.field("origin_peer", &self.origin_peer());

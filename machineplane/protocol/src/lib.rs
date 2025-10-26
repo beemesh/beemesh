@@ -361,21 +361,18 @@ pub mod machine {
 
     pub fn build_apply_request(
         replicas: u32,
-        tenant: &str,
         operation_id: &str,
         manifest_json: &str,
         origin_peer: &str,
         manifest_id: &str,
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(256);
-        let tenant_off = fbb.create_string(tenant);
         let op_off = fbb.create_string(operation_id);
         let manifest_off = fbb.create_string(manifest_json);
         let origin_off = fbb.create_string(origin_peer);
         let manifest_id_off = fbb.create_string(manifest_id);
         let mut args: crate::generated::generated_apply_request::beemesh::machine::ApplyRequestArgs = Default::default();
         args.replicas = replicas;
-        args.tenant = Some(tenant_off);
         args.operation_id = Some(op_off);
         args.manifest_json = Some(manifest_off);
         args.origin_peer = Some(origin_off);
@@ -405,20 +402,17 @@ pub mod machine {
 
     pub fn build_delete_request(
         manifest_id: &str,
-        tenant: &str,
         operation_id: &str,
         origin_peer: &str,
         force: bool,
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(256);
         let manifest_id_off = fbb.create_string(manifest_id);
-        let tenant_off = fbb.create_string(tenant);
         let operation_id_off = fbb.create_string(operation_id);
         let origin_peer_off = fbb.create_string(origin_peer);
 
         let mut args: crate::generated::generated_delete_request::beemesh::machine::DeleteRequestArgs = Default::default();
         args.manifest_id = Some(manifest_id_off);
-        args.tenant = Some(tenant_off);
         args.operation_id = Some(operation_id_off);
         args.origin_peer = Some(origin_peer_off);
         args.force = force;
@@ -724,7 +718,6 @@ pub mod machine {
 
     pub fn build_applied_manifest(
         id: &str,
-        tenant: &str,
         operation_id: &str,
         origin_peer: &str,
         owner_pubkey: &[u8],
@@ -740,7 +733,6 @@ pub mod machine {
 
         // Create string offsets
         let id_offset = fbb.create_string(id);
-        let tenant_offset = fbb.create_string(tenant);
         let operation_id_offset = fbb.create_string(operation_id);
         let origin_peer_offset = fbb.create_string(origin_peer);
         let manifest_json_offset = fbb.create_string(manifest_json);
@@ -770,7 +762,6 @@ pub mod machine {
 
         let args = AppliedManifestArgs {
             id: Some(id_offset),
-            tenant: Some(tenant_offset),
             operation_id: Some(operation_id_offset),
             origin_peer: Some(origin_peer_offset),
             owner_pubkey: Some(owner_pubkey_offset),

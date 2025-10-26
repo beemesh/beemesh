@@ -2,7 +2,6 @@ namespace beemesh.machine;
 
 table DeleteRequest {
   manifest_id:string;
-  tenant:string;
   operation_id:string;
   origin_peer:string;
   force:bool = false;  // Force deletion even if verification fails

@@ -7,8 +7,6 @@ use tokio::time::sleep;
 mod test_utils;
 use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
 
-pub const TENANT: &str = "00000000-0000-0000-0000-000000000000";
-
 // We will start machines directly in this process by calling `start_machine(cli).await`.
 
 #[tokio::test]

@@ -64,9 +64,6 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     // Ensure CLI keypair - always use persistent keypairs for consistency
     let (pk_bytes, _sk_bytes) = ensure_keypair_on_disk()?;
 
-    // Hardcoded tenant for now
-    let tenant = "00000000-0000-0000-0000-000000000000";
-
     // Compute stable manifest_id from owning public key and manifest name only
     // This allows manifest content to be updated while keeping the same ID for overwriting
     let manifest_id = {
@@ -107,7 +104,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
     // 1) Get candidates for node selection
     debug!("About to call get_candidates...");
-    let peers = fb_client.get_candidates(tenant, &manifest_id).await?;
+    let peers = fb_client.get_candidates(&manifest_id).await?;
     debug!(
         "apply_file: get_candidates completed successfully, found {} peers",
         peers.len()
@@ -248,7 +245,6 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
         let apply_request_bytes = protocol::machine::build_apply_request(
             1, // replicas (1 per target peer)
-            tenant,
             &operation_id,
             &manifest_json_b64,
             "", // origin_peer (CLI doesn't have peer ID)
@@ -257,9 +253,8 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
 
         // Send via the apply_direct endpoint which forwards to the peer
         let url = format!(
-            "{}/tenant/{}/apply_direct/{}",
+            "{}/apply_direct/{}",
             fb_client.base_url.trim_end_matches('/'),
-            tenant,
             node_id
         );
 
@@ -329,9 +324,6 @@ pub async fn delete_file(path: PathBuf, force: bool) -> anyhow::Result<String> {
     // Ensure CLI keypair - always use persistent keypairs for consistency
     let (pk_bytes, _sk_bytes) = ensure_keypair_on_disk()?;
 
-    // Hardcoded tenant for now
-    let tenant = "00000000-0000-0000-0000-000000000000";
-
     // Compute stable manifest_id from owning public key and manifest name only
     // This matches the same logic as apply_file for consistency
     let manifest_id = {
@@ -374,7 +366,6 @@ pub async fn delete_file(path: PathBuf, force: bool) -> anyhow::Result<String> {
     let operation_id = Uuid::new_v4().to_string();
     let delete_request_bytes = protocol::machine::build_delete_request(
         &manifest_id,
-        tenant,
         &operation_id,
         "", // origin_peer (CLI doesn't have peer ID)
         force,
@@ -382,16 +373,16 @@ pub async fn delete_file(path: PathBuf, force: bool) -> anyhow::Result<String> {
 
     // Send delete request via REST API
     let url = format!(
-        "{}/tenant/{}/tasks/{}",
+        "{}/tasks/{}",
         fb_client.base_url.trim_end_matches('/'),
-        tenant,
         manifest_id
     );
 
     debug!("Sending delete request to: {}", url);
 
-    let body = if force { "force=true" } else { "" };
-    let response_bytes = fb_client.send_delete_request(&url, body.as_bytes()).await?;
+    let response_bytes = fb_client
+        .send_delete_request(&url, &delete_request_bytes)
+        .await?;
 
     // Parse response as DeleteResponse
     let delete_response = protocol::machine::root_as_delete_response(&response_bytes)
