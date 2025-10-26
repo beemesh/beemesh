@@ -199,7 +199,7 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     );
     debug!("Selected nodes with pubkeys: {:?}", selected_nodes);
 
-    // 5) Create encrypted tasks for each node sequentially with same manifest_id
+    // Create encrypted tasks for each node sequentially with same manifest_id
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -208,30 +208,11 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     let mut created_task_ids = Vec::new();
 
     // Create and assign tasks for each node sequentially to avoid store conflicts
+    // Send the original manifest without modification - each node will handle replica count
+    let original_manifest_str = serde_json::to_string(&manifest_json)?;
+
     for (node_id, node_pubkey) in &selected_nodes {
         debug!("Creating encrypted task for node: {}", node_id);
-
-        // Create a modified manifest with replicas=1 for this specific node
-        let mut node_manifest = manifest_json.clone();
-        if let Some(spec) = node_manifest.get_mut("spec") {
-            if let Some(spec_obj) = spec.as_object_mut() {
-                spec_obj.insert(
-                    "replicas".to_string(),
-                    serde_json::Value::Number(serde_json::Number::from(1)),
-                );
-            }
-        } else if manifest_json.get("replicas").is_some() {
-            // Handle top-level replicas field
-            if let Some(manifest_obj) = node_manifest.as_object_mut() {
-                manifest_obj.insert(
-                    "replicas".to_string(),
-                    serde_json::Value::Number(serde_json::Number::from(1)),
-                );
-            }
-        }
-
-        let node_manifest_str = serde_json::to_string(&node_manifest)?;
-        debug!("Node {} will receive manifest with replicas=1", node_id);
 
         let node_pubkey_bytes = base64::engine::general_purpose::STANDARD
             .decode(node_pubkey)
@@ -239,9 +220,9 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
                 anyhow::anyhow!("Failed to decode node public key for {}: {}", node_id, e)
             })?;
 
-        // Encrypt the manifest for the recipient using KEM
+        // Encrypt the original manifest for the recipient using KEM
         let encrypted_blob =
-            encrypt_payload_for_recipient(&node_pubkey_bytes, node_manifest_str.as_bytes())?;
+            encrypt_payload_for_recipient(&node_pubkey_bytes, original_manifest_str.as_bytes())?;
 
         // Create a simple envelope containing the encrypted payload
         let encrypted_manifest_bytes = protocol::machine::build_envelope_canonical_with_peer(

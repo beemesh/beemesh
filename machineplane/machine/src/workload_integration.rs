@@ -256,11 +256,15 @@ async fn process_manifest_deployment(
         record_manifest_owner(&manifest_id, owner_pubkey).await;
     }
 
+    // Modify manifest to set replicas=1 for this node deployment
+    // The original manifest is stored in DHT, but each node deploys with replicas=1
+    let modified_manifest_content = modify_manifest_replicas(&manifest_content)?;
+
     // Create deployment configuration
     let deployment_config = create_deployment_config(apply_req);
 
     // Select appropriate runtime engine based on manifest type
-    let engine_name = select_runtime_engine(&manifest_content).await?;
+    let engine_name = select_runtime_engine(&modified_manifest_content).await?;
     info!(
         "Selected runtime engine '{}' for manifest_id: {}",
         engine_name, manifest_id
@@ -277,7 +281,8 @@ async fn process_manifest_deployment(
         .get_engine(&engine_name)
         .ok_or(format!("Runtime engine '{}' not available", engine_name))?;
 
-    // Deploy the workload - use peer-aware deployment for mock engine
+    // Deploy the workload with modified manifest (replicas=1)
+    // use peer-aware deployment for mock engine
     let workload_info = if engine_name == "mock" {
         // For mock engine, use the peer-aware deployment method if available
         if let Some(mock_engine) = engine
@@ -288,7 +293,7 @@ async fn process_manifest_deployment(
             mock_engine
                 .deploy_workload_with_peer(
                     &manifest_id,
-                    &manifest_content,
+                    &modified_manifest_content,
                     &deployment_config,
                     *swarm.local_peer_id(),
                 )
@@ -296,13 +301,13 @@ async fn process_manifest_deployment(
         } else {
             // Fallback to regular deployment
             engine
-                .deploy_workload(&manifest_id, &manifest_content, &deployment_config)
+                .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
                 .await?
         }
     } else {
         // For other engines, use regular deployment
         engine
-            .deploy_workload(&manifest_id, &manifest_content, &deployment_config)
+            .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
             .await?
     };
 
@@ -332,6 +337,45 @@ async fn process_manifest_deployment(
     }
 
     Ok(workload_info.id)
+}
+
+/// Modify the manifest to set replicas=1 for single-node deployment
+/// Each node in the cluster will deploy one replica of the workload
+fn modify_manifest_replicas(
+    manifest_content: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let manifest_str = String::from_utf8_lossy(manifest_content);
+
+    // Try to parse as YAML/JSON and modify replicas field
+    if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&manifest_str) {
+        // Check for spec.replicas field (Kubernetes-style)
+        if let Some(spec) = doc.get_mut("spec") {
+            if let Some(spec_map) = spec.as_mapping_mut() {
+                spec_map.insert(
+                    serde_yaml::Value::String("replicas".to_string()),
+                    serde_yaml::Value::Number(serde_yaml::Number::from(1)),
+                );
+            }
+        }
+        // Check for top-level replicas field
+        else if doc.get("replicas").is_some() {
+            if let Some(doc_map) = doc.as_mapping_mut() {
+                doc_map.insert(
+                    serde_yaml::Value::String("replicas".to_string()),
+                    serde_yaml::Value::Number(serde_yaml::Number::from(1)),
+                );
+            }
+        }
+
+        // Convert back to YAML bytes
+        let modified_yaml = serde_yaml::to_string(&doc)?;
+        info!("Modified manifest to set replicas=1 for single-node deployment");
+        Ok(modified_yaml.into_bytes())
+    } else {
+        // If parsing fails, return original content unchanged
+        warn!("Failed to parse manifest for replica modification, using original");
+        Ok(manifest_content.to_vec())
+    }
 }
 
 /// Select the appropriate runtime engine based on manifest content and annotations
