@@ -411,17 +411,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
 
 [[package]]
-name = "blahaj"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5106bf2680d585dc5f29711b8aa5dde353180b8e14af89b7f0424f760c84e7ce"
-dependencies = [
- "hashbrown 0.15.5",
- "rand 0.8.5",
- "zeroize",
-]
-
-[[package]]
 name = "blake2"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -586,7 +575,6 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 name = "cli"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "base64 0.21.7",
  "clap",
@@ -594,7 +582,6 @@ dependencies = [
  "dirs",
  "env_logger",
  "flatbuffers 23.5.26",
- "kyber-rust",
  "log",
  "protocol",
  "rand 0.8.5",
@@ -722,11 +709,9 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "base64 0.21.7",
- "blahaj",
  "clap",
  "dirs",
  "hex",
- "kyber-rust",
  "libp2p",
  "log",
  "once_cell",
@@ -1963,16 +1948,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kyber-rust"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17e1c27cd96a5e24c2753c33873fcc946d42012f8630ff432e5371fbd97e259a"
-dependencies = [
- "cc",
- "libloading",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1983,16 +1958,6 @@ name = "libc"
 version = "0.2.175"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a82ae493e598baaea5209805c49bbf2ea7de956d50d7da0da1164f9c6d28543"
-
-[[package]]
-name = "libloading"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
-dependencies = [
- "cfg-if",
- "windows-link 0.2.0",
-]
 
 [[package]]
 name = "libp2p"

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Integration tests for beemesh machine plane"
 
-[dev-dependencies]
+[dependencies]
 machine = { path = "../machine" }
 cli = { path = "../cli" }
 crypto = { path = "../crypto" }

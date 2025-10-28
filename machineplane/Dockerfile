@@ -1,21 +1,19 @@
-# Dockerfile.machine
-FROM golang:1.24-alpine AS builder
-WORKDIR /app
-# Copy go mod files
-COPY go.mod go.sum ./
-RUN go mod download
-# Copy source code
-COPY . .
-# Build the Machine Plane binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o beemesh ./cmd/machine/main.go
+FROM rust:1.82-slim-bullseye AS builder
 
-# Final stage
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates podman
-WORKDIR /root/
-# Copy the built binary
-COPY --from=builder /app/beemesh .
-# Expose ports for HTTP API and libp2p
-EXPOSE 8080 4001
-# Run as privileged for Podman socket access
-CMD ["./beemesh"]
+WORKDIR /app
+
+# Copy the workspace so we can build the machine binary
+COPY . .
+
+# Build the release binary for the machine crate
+RUN cargo build --release -p machine
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/machine /usr/local/bin/machine
+
+ENTRYPOINT ["/usr/local/bin/machine"]

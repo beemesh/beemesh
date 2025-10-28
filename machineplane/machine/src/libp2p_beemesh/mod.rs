@@ -7,7 +7,7 @@ use libp2p::{
 use log::{debug, info, warn};
 use once_cell::sync::OnceCell;
 use std::collections::HashMap as StdHashMap;
-
+use std::sync::Mutex;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -19,6 +19,25 @@ use protocol::libp2p_constants::BEEMESH_CLUSTER;
 
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
+static DISABLED_SCHEDULING: OnceCell<Mutex<StdHashMap<PeerId, bool>>> = OnceCell::new();
+
+fn scheduling_map() -> &'static Mutex<StdHashMap<PeerId, bool>> {
+    DISABLED_SCHEDULING.get_or_init(|| Mutex::new(StdHashMap::new()))
+}
+
+pub fn register_scheduling_preference(peer: PeerId, disabled: bool) {
+    let mut map = scheduling_map().lock().unwrap();
+    map.insert(peer, disabled);
+}
+
+pub fn is_scheduling_disabled_for(peer: &PeerId) -> bool {
+    scheduling_map()
+        .lock()
+        .unwrap()
+        .get(peer)
+        .copied()
+        .unwrap_or(false)
+}
 
 mod request_response_codec;
 pub use request_response_codec::{ApplyCodec, DeleteCodec, HandshakeCodec};
@@ -46,6 +65,7 @@ pub fn setup_libp2p_node(
     tcp_port: u16,
     quic_port: u16,
     host: &str,
+    disable_scheduling: bool,
 ) -> Result<(
     Swarm<MyBehaviour>,
     gossipsub::IdentTopic,
@@ -158,6 +178,8 @@ pub fn setup_libp2p_node(
         })?
         .build();
 
+    register_scheduling_preference(swarm.local_peer_id().clone(), disable_scheduling);
+
     let topic = gossipsub::IdentTopic::new(BEEMESH_CLUSTER);
     debug!("Subscribing to topic: {}", topic.hash());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
@@ -195,6 +217,7 @@ pub fn get_control_sender() -> Option<&'static mpsc::UnboundedSender<control::Li
     CONTROL_SENDER.get()
 }
 
+/// Set whether scheduler request handling is disabled for this node
 pub async fn start_libp2p_node(
     mut swarm: Swarm<MyBehaviour>,
     topic: gossipsub::IdentTopic,

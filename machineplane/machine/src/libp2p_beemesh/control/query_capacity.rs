@@ -110,8 +110,14 @@ pub async fn handle_query_capacity_with_payload(
             // Also notify local pending senders directly so the originator is always considered
             // a potential responder. This ensures single-node operation and makes the
             // origining host countable when collecting responders.
+            // When scheduling is disabled, skip the local response to honour the configuration.
             // Include the local KEM public key in the same format as remote responses.
-            if let Some(senders) = pending_queries.get_mut(&request_id) {
+            if crate::libp2p_beemesh::is_scheduling_disabled_for(swarm.local_peer_id()) {
+                log::info!(
+                    "libp2p: local scheduling disabled, skipping local capacity response for {}",
+                    request_id
+                );
+            } else if let Some(senders) = pending_queries.get_mut(&request_id) {
                 let responder_peer = swarm.local_peer_id().to_string();
                 let reply = build_capacity_reply_with(&request_id, &responder_peer, |params| {
                     params.cpu_milli = cap_req.cpu_milli();

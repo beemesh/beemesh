@@ -18,6 +18,13 @@ pub fn scheduler_message(
         request_response::Message::Request {
             request, channel, ..
         } => {
+            if crate::libp2p_beemesh::is_scheduling_disabled_for(&local_peer) {
+                debug!(
+                    "libp2p: scheduling disabled, ignoring scheduler request from {}",
+                    peer
+                );
+                return;
+            }
             debug!("libp2p: received scheduler request from peer={}", peer);
             // First, attempt to verify request as an Envelope (JSON or FlatBuffer)
             let verified = match verify_signed_message(&peer, &request, |err| {

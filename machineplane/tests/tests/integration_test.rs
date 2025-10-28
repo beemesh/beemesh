@@ -17,7 +17,7 @@ async fn test_run_host_application() {
 
     // start three nodes using the reusable helper (first node runs REST+machine, others disabled APIs)
     // node_3000 gets fixed libp2p port 4001, node_3100 gets port 4002, both serve as bootstrap peers
-    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0);
+    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0, false);
     let cli2 = make_test_cli(
         3100,
         true,
@@ -26,13 +26,14 @@ async fn test_run_host_application() {
         vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
         4002,
         0,
+        false,
     );
     // node_3200 uses both nodes as bootstrap peers for resilience
     let bootstrap_peers = vec![
         "/ip4/127.0.0.1/tcp/4001".to_string(),
         "/ip4/127.0.0.1/tcp/4002".to_string(),
     ];
-    let cli3 = make_test_cli(3200, true, true, None, bootstrap_peers, 0, 0);
+    let cli3 = make_test_cli(3200, true, true, None, bootstrap_peers, 0, 0, false);
 
     let mut guard = start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await;
 

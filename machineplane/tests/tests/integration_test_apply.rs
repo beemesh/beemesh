@@ -1,239 +1,21 @@
 use env_logger::Env;
-use futures::future::join_all;
 use serial_test::serial;
 
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
 
-mod test_utils;
-use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
-
-async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
-    // Setup cleanup hook and initialize logger
-    setup_cleanup_hook();
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
-
-    // Set environment variable to use mock-only runtime
-    std::env::set_var("BEEMESH_MOCK_ONLY_RUNTIME", "1");
-
-    let client = reqwest::Client::new();
-    let ports = vec![3000u16, 3100u16, 3200u16];
-
-    (client, ports)
-}
-
-async fn start_test_nodes() -> test_utils::NodeGuard {
-    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0);
-    let cli2 = make_test_cli(
-        3100,
-        false,
-        true,
-        None,
-        vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
-        4002,
-        0,
-    );
-
-    let bootstrap_peers = vec![
-        "/ip4/127.0.0.1/tcp/4001".to_string(),
-        "/ip4/127.0.0.1/tcp/4002".to_string(),
-    ];
-
-    let cli3 = make_test_cli(3200, false, true, None, bootstrap_peers.clone(), 0, 0);
-
-    // Start nodes in-process instead of as separate processes for better control
-    start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await
-}
-
-async fn get_peer_ids(
-    client: &reqwest::Client,
-    ports: &[u16],
-) -> std::collections::HashMap<u16, String> {
-    let peer_id_tasks = ports.iter().map(|&port| {
-        let client = client.clone();
-        async move {
-            let base = format!("http://127.0.0.1:{}", port);
-            let resp = client
-                .get(format!("{}/debug/local_peer_id", base))
-                .send()
-                .await;
-            if let Ok(r) = resp {
-                if let Ok(j) = r.json::<serde_json::Value>().await {
-                    if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                        if let Some(peer_id) = j.get("local_peer_id").and_then(|v| v.as_str()) {
-                            return (port, Some(peer_id.to_string()));
-                        }
-                    }
-                }
-            }
-            (port, None)
-        }
-    });
-
-    let peer_id_results = join_all(peer_id_tasks).await;
-    let mut port_to_peer_id = std::collections::HashMap::new();
-    for (port, peer_id_opt) in peer_id_results {
-        if let Some(peer_id) = peer_id_opt {
-            port_to_peer_id.insert(port, peer_id);
-        }
-    }
-    port_to_peer_id
-}
-
-async fn wait_for_mesh_formation(
-    client: &reqwest::Client,
-    ports: &[u16],
-    timeout: Duration,
-) -> bool {
-    let start = tokio::time::Instant::now();
-    loop {
-        // Check if we have at least 2 peers in the mesh
-        let mut total_peers = 0;
-        for &port in ports {
-            let base = format!("http://127.0.0.1:{}", port);
-            if let Ok(resp) = client.get(format!("{}/debug/peers", base)).send().await {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(peers_array) = json.get("peers").and_then(|p| p.as_array()) {
-                        total_peers += peers_array.len();
-                    }
-                }
-            }
-        }
-
-        // We need at least some peer connections for the mesh to work
-        if total_peers >= 2 {
-            log::info!(
-                "Mesh formation successful: {} total peer connections",
-                total_peers
-            );
-            return true;
-        }
-
-        if start.elapsed() > timeout {
-            log::warn!(
-                "Mesh formation timed out after {:?}, only {} peer connections",
-                timeout,
-                total_peers
-            );
-            return false;
-        }
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-}
-
-async fn check_workload_deployment(
-    client: &reqwest::Client,
-    ports: &[u16],
-    task_id: &str,
-    original_content: &str,
-    port_to_peer_id: &std::collections::HashMap<u16, String>,
-    _expect_modified_replicas: bool,
-) -> (Vec<u16>, Vec<u16>) {
-    let mock_verification_tasks = ports.iter().map(|&port| {
-        let client = client.clone();
-        let _task_id = task_id.to_string();
-        let _original_content = original_content.to_string();
-        let port_to_peer_id = port_to_peer_id.clone();
-        async move {
-            let base = format!("http://127.0.0.1:{}", port);
-
-            // Get the peer ID for this port
-            if let Some(peer_id) = port_to_peer_id.get(&port) {
-                // First, try peer-specific endpoint to check workloads for this specific peer
-                let peer_workloads_resp = client
-                    .get(format!("{}/debug/workloads_by_peer/{}", base, peer_id))
-                    .send()
-                    .await;
-                
-                if let Ok(r) = peer_workloads_resp {
-                    if let Ok(j) = r.json::<serde_json::Value>().await {
-                        log::info!("Peer-specific endpoint response for peer {} on port {}: {}", peer_id, port, j);
-                        if j.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                            let workload_count = j.get("workload_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                            log::info!("Peer-specific endpoint workload_count for peer {} on port {}: {}", peer_id, port, workload_count);
-                            
-                            if workload_count == 0 {
-                                log::info!("No workloads for peer {} on port {} - returning early", peer_id, port);
-                                return (port, false, false);
-                            }
-                            
-                            if let Some(workloads) = j.get("workloads").and_then(|v| v.as_object())
-                            {
-                                // Check if any workload matches our expected metadata
-                                for (_workload_id, workload_info) in workloads {
-                                    if let Some(metadata) = workload_info
-                                        .get("metadata")
-                                        .and_then(|v| v.as_object())
-                                    {
-                                        // Check if this looks like our nginx manifest by checking the name in metadata
-                                        if let Some(name) = metadata.get("name").and_then(|v| v.as_str()) {
-                                            if name == "my-nginx" {
-                                                // Also check if the exported manifest is available and similar to original
-                                                let exported_manifest_matches = if let Some(exported_manifest) = workload_info.get("exported_manifest").and_then(|v| v.as_str()) {
-                                                    // Verify that the exported manifest contains key elements from the original
-                                                    let contains_nginx = exported_manifest.contains("my-nginx");
-                                                    let contains_deployment_or_pod = exported_manifest.contains("Deployment") || exported_manifest.contains("Pod");
-                                                    let contains_api_version = exported_manifest.contains("apiVersion");
-                                                    
-                                                    log::info!("Exported manifest verification - nginx: {}, deployment/pod: {}, apiVersion: {}", 
-                                                               contains_nginx, contains_deployment_or_pod, contains_api_version);
-                                                    
-                                                    if exported_manifest.len() > 100 {
-                                                        log::info!("Exported manifest preview: {}", 
-                                                                   &exported_manifest[..std::cmp::min(200, exported_manifest.len())]);
-                                                    }
-                                                    
-                                                    contains_nginx && contains_deployment_or_pod && contains_api_version
-                                                } else {
-                                                    log::warn!("No exported manifest found for workload");
-                                                    false
-                                                };
-                                                
-                                                return (port, true, exported_manifest_matches);
-                                            }
-                                        }
-                                    }
-                                    
-                                    // Fallback: check if workload status indicates successful deployment
-                                    if let Some(status) = workload_info.get("status").and_then(|v| v.as_str()) {
-                                        if status == "Running" {
-                                            // We have a running workload, assume it's correct for now
-                                            return (port, true, true);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            (port, false, false)
-        }
-    });
-
-    let mock_verification_results = join_all(mock_verification_tasks).await;
-    let mut nodes_with_deployed_workloads: Vec<u16> = Vec::new();
-    let mut nodes_with_content_mismatch: Vec<u16> = Vec::new();
-
-    for (port, has_workload, content_matches) in mock_verification_results {
-        if has_workload {
-            nodes_with_deployed_workloads.push(port);
-            if !content_matches {
-                nodes_with_content_mismatch.push(port);
-            }
-        }
-    }
-
-    (nodes_with_deployed_workloads, nodes_with_content_mismatch)
-}
+use integration::apply_common::{
+    check_workload_deployment, get_peer_ids, setup_test_environment, start_cluster_nodes,
+    wait_for_mesh_formation,
+};
+use integration::test_utils::{make_test_cli, setup_cleanup_hook, start_nodes, NodeGuard};
 
 #[serial]
 #[tokio::test]
 async fn test_apply_functionality() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_test_nodes().await;
+    let mut guard = start_cluster_nodes(&[false, false, false]).await;
 
     // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
@@ -357,7 +139,7 @@ async fn test_apply_with_real_podman() {
 #[tokio::test]
 async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_test_nodes().await;
+    let mut guard = start_cluster_nodes(&[false, false, false]).await;
 
     // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
@@ -449,8 +231,8 @@ async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
     (client, ports)
 }
 
-async fn start_test_nodes_for_podman() -> test_utils::NodeGuard {
-    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0);
+async fn start_test_nodes_for_podman() -> NodeGuard {
+    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0, false);
     let cli2 = make_test_cli(
         3100,
         false,
@@ -459,6 +241,7 @@ async fn start_test_nodes_for_podman() -> test_utils::NodeGuard {
         vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
         4002,
         0,
+        false,
     );
 
     let bootstrap_peers = vec![
@@ -466,7 +249,16 @@ async fn start_test_nodes_for_podman() -> test_utils::NodeGuard {
         "/ip4/127.0.0.1/tcp/4002".to_string(),
     ];
 
-    let cli3 = make_test_cli(3200, false, true, None, bootstrap_peers.clone(), 0, 0);
+    let cli3 = make_test_cli(
+        3200,
+        false,
+        true,
+        None,
+        bootstrap_peers.clone(),
+        0,
+        0,
+        false,
+    );
 
     // Start nodes in-process for better control
     start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await

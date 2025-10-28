@@ -3,7 +3,6 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose, Engine as _};
-use blahaj::{Share, Sharks};
 use once_cell::sync::OnceCell;
 use rand::RngCore;
 use saorsa_pqc::api::sig::{ml_dsa_65, MlDsaPublicKey, MlDsaSecretKey, MlDsaVariant};
@@ -331,15 +330,6 @@ pub fn decrypt_manifest(
     Ok(plain)
 }
 
-pub fn split_symmetric_key(sym: &[u8; 32], n: usize, k: usize) -> Vec<Vec<u8>> {
-    assert!(k >= 1 && k <= 255, "invalid threshold");
-    assert!(n >= 1 && n <= 255, "invalid share count");
-    let sharks = Sharks(k as u8);
-    let dealer = sharks.dealer(&sym[..]);
-    let shares: Vec<Share> = dealer.take(n).collect();
-    shares.into_iter().map(|s| Vec::from(&s)).collect()
-}
-
 pub fn sign_envelope(
     sk_bytes: &[u8],
     pk_bytes: &[u8],
@@ -374,39 +364,6 @@ pub fn verify_envelope(
         )),
         Err(e) => Err(anyhow::anyhow!("signature verification error: {:?}", e)),
     }
-}
-
-/// Attempt to decapsulate a ciphertext (KEM-style) using the provided private key bytes.
-/// This wrapper currently tries to use saorsa_pqc's ml_kem APIs. The exact kem variant
-/// used must match the sender's encapsulation. For now we support the ml_kem interface
-/// and return an error if decapsulation fails.
-// NOTE: decapsulation helpers were intentionally omitted. The current CLI produces
-// shares as base64 strings inside a signed JSON envelope. If we later add KEM-based
-// per-recipient encryption, implement a proper decapsulation wrapper here using the
-// exact KEM API chosen by the CLI (saorsa_pqc / kyber / hpke). Keep the key material
-// in-memory only and zeroize as appropriate.
-
-pub fn recover_symmetric_key(shares_bytes: &[Vec<u8>], k: usize) -> anyhow::Result<[u8; 32]> {
-    if shares_bytes.len() < k {
-        anyhow::bail!("need at least k shares to recover");
-    }
-    let mut shares: Vec<Share> = Vec::with_capacity(k);
-    for b in shares_bytes.iter().take(k) {
-        let s = Share::try_from(b.as_slice())
-            .map_err(|e| anyhow::anyhow!("invalid share bytes: {}", e))?;
-        shares.push(s);
-    }
-
-    let sharks = Sharks(k as u8);
-    let recovered = sharks
-        .recover(shares.as_slice())
-        .map_err(|e| anyhow::anyhow!("blahaj recover failed: {:?}", e))?;
-    if recovered.len() != 32 {
-        anyhow::bail!("recovered secret length != 32: {}", recovered.len());
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&recovered[..32]);
-    Ok(out)
 }
 
 #[cfg(test)]

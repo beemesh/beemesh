@@ -37,6 +37,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub disable_machine_api: bool,
 
+    /// Disable participation in scheduling (no capacity replies)
+    #[arg(long, default_value_t = false)]
+    pub disable_scheduling: bool,
+
     /// Custom node name (optional)
     #[arg(long)]
     pub node_name: Option<String>,
@@ -147,6 +151,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         cli.libp2p_tcp_port,
         cli.libp2p_quic_port,
         &cli.libp2p_host,
+        cli.disable_scheduling,
     )?;
 
     // If bootstrap peers are provided, dial them explicitly (for in-process tests)

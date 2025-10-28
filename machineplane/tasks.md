@@ -1,4 +1,0 @@
-1. Extract the encryption / signing logic from the CLI into the crypto crate. The crypto is a library and shall contain all required crypto logic to be used by machine and cli.
-2. Each libp2p node in machine should create a key pair on startup and store this keypair on disk in /etc/beemesh/machine. Add a CLI option for machine to optionally store this key-pair and the libp2p key-pair in memory for ephemeral nodes.
-3. Ensure that machine/src/libp2p_beemesh/behaviour/gossipsub_message.rs (and its corresponding flatbuffers are correctly signed)
-4. Replace all println! with proper standard logging in rust. Use debug! or info! or error! depending on the the content of the println! statement.

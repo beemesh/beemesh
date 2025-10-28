@@ -20,7 +20,7 @@ async fn setup_test_environment() -> Vec<u16> {
 }
 
 async fn start_test_nodes() -> test_utils::NodeGuard {
-    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0);
+    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0, false);
     let cli2 = make_test_cli(
         3100,
         false,
@@ -29,6 +29,7 @@ async fn start_test_nodes() -> test_utils::NodeGuard {
         vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
         4002,
         0,
+        false,
     );
 
     // Start nodes in-process instead of as separate processes for better control
