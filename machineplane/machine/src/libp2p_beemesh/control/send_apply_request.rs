@@ -1,4 +1,4 @@
-use crate::libp2p_beemesh::envelope::{sign_with_node_keys, SignEnvelopeConfig};
+use crate::libp2p_beemesh::utils;
 use libp2p::{PeerId, Swarm};
 use log::{debug, info, warn};
 use tokio::sync::mpsc;
@@ -57,14 +57,13 @@ pub async fn handle_send_apply_request(
     // No capability token needed - direct manifest application
 
     // Sign the apply request in an envelope before sending
-    let signed_apply_request =
-        match sign_with_node_keys(&manifest, "apply_request", SignEnvelopeConfig::default()) {
-            Ok(envelope) => envelope.bytes,
-            Err(e) => {
-                warn!("failed to sign apply request for peer {}: {:?}", peer_id, e);
-                manifest
-            }
-        };
+    let signed_apply_request = match utils::sign_payload_default(&manifest, "apply_request", Some("apply")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!("failed to sign apply request for peer {}: {:?}", peer_id, e);
+            manifest
+        }
+    };
 
     // Finally send the (now signed) apply request
     let request_id = swarm

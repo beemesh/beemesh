@@ -1,7 +1,6 @@
 use super::message_verifier::verify_signed_message;
-use crate::libp2p_beemesh::reply::{
-    build_capacity_reply_with, sign_capacity_reply, warn_missing_kem,
-};
+use crate::libp2p_beemesh::reply::{build_capacity_reply_with, warn_missing_kem};
+use crate::libp2p_beemesh::utils;
 use libp2p::gossipsub;
 use log::{debug, error, info, warn};
 
@@ -38,12 +37,13 @@ pub fn gossipsub_message(
         let reply = build_capacity_reply_with(&orig_request_id, &responder_peer, |_| {});
         warn_missing_kem("gossipsub", &responder_peer, reply.kem_pub_b64.as_deref());
         let payload_len = reply.payload.len();
-        match sign_capacity_reply(&reply.payload) {
-            Ok(signed) => {
+
+        match utils::sign_payload_default(&reply.payload, "capacity_reply", Some("capreply")) {
+            Ok(signed_bytes) => {
                 if let Err(e) = swarm
                     .behaviour_mut()
                     .gossipsub
-                    .publish(topic.clone(), signed.bytes.as_slice())
+                    .publish(topic.clone(), signed_bytes.as_slice())
                 {
                     error!(
                         "libp2p: failed to publish signed capacity reply id={} to {}: {:?}",

@@ -52,6 +52,7 @@ pub mod control;
 pub mod envelope;
 pub mod reply;
 pub mod security;
+pub mod utils;
 
 // Handshake state used by the handshake behaviour handlers
 #[derive(Debug)]

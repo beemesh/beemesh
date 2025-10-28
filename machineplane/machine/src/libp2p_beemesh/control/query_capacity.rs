@@ -4,8 +4,8 @@ use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
-use crate::libp2p_beemesh::envelope::{sign_with_existing_keypair, SignEnvelopeConfig};
 use crate::libp2p_beemesh::reply::{build_capacity_reply_with, warn_missing_kem};
+use crate::libp2p_beemesh::utils;
 
 /// Handle QueryCapacityWithPayload control message
 pub async fn handle_query_capacity_with_payload(
@@ -47,54 +47,9 @@ pub async fn handle_query_capacity_with_payload(
             let cap_off = protocol::machine::CapacityRequest::create(&mut fbb, &cap_args);
             protocol::machine::finish_capacity_request_buffer(&mut fbb, cap_off);
             let finished = fbb.finished_data().to_vec();
-            // Wrap the capacity request in a signed envelope before sending
-            match crypto::ensure_keypair_on_disk() {
-                Ok((pub_bytes, sk_bytes)) => {
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let mut sent = 0usize;
-                    let peers: Vec<libp2p::PeerId> = swarm
-                        .behaviour()
-                        .gossipsub
-                        .all_peers()
-                        .map(|(p, _)| p.clone())
-                        .collect();
-                    for peer in peers.iter() {
-                        let nonce = format!("capacity_query_{}_{}", peer, rand::random::<u32>());
-                        let sign_cfg = SignEnvelopeConfig {
-                            nonce: Some(&nonce),
-                            timestamp: Some(timestamp),
-                            ..Default::default()
-                        };
-
-                        match sign_with_existing_keypair(
-                            &finished, "capacity", sign_cfg, &pub_bytes, &sk_bytes,
-                        ) {
-                            Ok(signed) => {
-                                let req_id = swarm
-                                    .behaviour_mut()
-                                    .scheduler_rr
-                                    .send_request(&peer, signed.bytes);
-                                log::debug!(
-                                    "libp2p: sent scheduler request to peer={} request_id={:?} nonce={}",
-                                    peer,
-                                    req_id,
-                                    nonce
-                                );
-                                sent += 1;
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "failed to sign capacity query envelope for peer {}: {:?}",
-                                    peer,
-                                    e
-                                );
-                            }
-                        }
-                    }
-
+            // Broadcast signed scheduler requests to peers (centralized helper)
+            match utils::broadcast_signed_request_to_peers(swarm, &finished, "capacity") {
+                Ok(sent) => {
                     log::info!(
                         "libp2p: broadcasted capreq request_id={} to {} peers",
                         request_id,
@@ -102,7 +57,7 @@ pub async fn handle_query_capacity_with_payload(
                     );
                 }
                 Err(e) => {
-                    log::error!("failed to load keypair for capacity query: {:?}", e);
+                    log::error!("failed to broadcast capacity request: {:?}", e);
                     return;
                 }
             }
