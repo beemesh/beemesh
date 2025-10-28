@@ -304,7 +304,7 @@ async fn test_apply_with_real_podman() {
         return;
     }
 
-    let (client, ports) = setup_test_environment_for_podman().await;
+    let (_client, _ports) = setup_test_environment_for_podman().await;
     let mut guard = start_test_nodes_for_podman().await;
 
     sleep(Duration::from_secs(3)).await;

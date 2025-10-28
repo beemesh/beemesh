@@ -11,12 +11,14 @@ use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use serde_yaml::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 
 /// Podman runtime engine
 pub struct PodmanEngine {
     podman_binary: String,
+    podman_socket: Option<String>,
 }
 
 impl PodmanEngine {
@@ -24,6 +26,7 @@ impl PodmanEngine {
     pub fn new() -> Self {
         Self {
             podman_binary: "podman".to_string(),
+            podman_socket: Self::detect_podman_socket(),
         }
     }
 
@@ -31,13 +34,119 @@ impl PodmanEngine {
     pub fn with_binary(binary_path: String) -> Self {
         Self {
             podman_binary: binary_path,
+            podman_socket: Self::detect_podman_socket(),
         }
+    }
+
+    /// Detect a podman socket URL from environment or common locations
+    fn detect_podman_socket() -> Option<String> {
+        let socket_env_vars = ["BEEMESH_PODMAN_SOCKET", "PODMAN_HOST", "CONTAINER_HOST"];
+
+        for var in socket_env_vars {
+            if let Ok(value) = std::env::var(var) {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    let normalized = if trimmed.contains("://") {
+                        trimmed.to_string()
+                    } else {
+                        format!("unix://{}", trimmed)
+                    };
+                    info!(
+                        "Using Podman socket from environment variable {}: {}",
+                        var, normalized
+                    );
+                    return Some(normalized);
+                }
+            }
+        }
+
+        let mut candidate_paths: Vec<PathBuf> = Vec::new();
+
+        if let Ok(xdg_runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            candidate_paths.push(PathBuf::from(&xdg_runtime_dir).join("podman/podman.sock"));
+        }
+
+        candidate_paths.push(PathBuf::from("/run/podman/podman.sock"));
+        candidate_paths.push(PathBuf::from("/var/run/podman/podman.sock"));
+
+        for path in candidate_paths {
+            if path.exists() {
+                let url = format!("unix://{}", path.to_string_lossy());
+                info!("Detected Podman socket at {}", url);
+                return Some(url);
+            }
+        }
+
+        None
     }
 
     /// Execute a podman command and return the output
     async fn execute_command(&self, args: &[&str]) -> RuntimeResult<String> {
+        let mut remote_error_message: Option<String> = None;
+
+        if let Some(socket) = &self.podman_socket {
+            match self.execute_command_with_socket(args, socket).await {
+                Ok(output) => return Ok(output),
+                Err(RuntimeError::CommandFailed(stderr))
+                    if Self::is_socket_connection_error(&stderr) =>
+                {
+                    warn!(
+                        "Podman socket command failed ({}). Falling back to local CLI...",
+                        stderr.trim()
+                    );
+                    remote_error_message = Some(stderr);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        match self.execute_command_local(args).await {
+            Ok(output) => Ok(output),
+            Err(err) => {
+                if let Some(remote_error) = remote_error_message {
+                    let combined_error = format!(
+                        "Podman socket command failed ({remote_error}); local fallback failed ({err})"
+                    );
+                    Err(RuntimeError::CommandFailed(combined_error))
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    /// Execute podman command against configured socket
+    async fn execute_command_with_socket(
+        &self,
+        args: &[&str],
+        socket: &str,
+    ) -> RuntimeResult<String> {
         debug!(
-            "Executing podman command: {} {}",
+            "Executing podman (remote) command via {}: {} {}",
+            socket,
+            self.podman_binary,
+            args.join(" ")
+        );
+
+        let output = Command::new(&self.podman_binary)
+            .arg("--remote")
+            .arg("--url")
+            .arg(socket)
+            .args(args)
+            .env("CONTAINER_HOST", socket)
+            .env("PODMAN_HOST", socket)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?;
+
+        Self::process_command_output(output)
+    }
+
+    /// Execute podman command locally (no socket)
+    async fn execute_command_local(&self, args: &[&str]) -> RuntimeResult<String> {
+        debug!(
+            "Executing podman (local) command: {} {}",
             self.podman_binary,
             args.join(" ")
         );
@@ -49,6 +158,11 @@ impl PodmanEngine {
             .output()
             .await?;
 
+        Self::process_command_output(output)
+    }
+
+    /// Helper to process podman command output
+    fn process_command_output(output: std::process::Output) -> RuntimeResult<String> {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             debug!("Podman command succeeded: {}", stdout.trim());
@@ -58,6 +172,15 @@ impl PodmanEngine {
             error!("Podman command failed: {}", stderr);
             Err(RuntimeError::CommandFailed(stderr))
         }
+    }
+
+    /// Detect if a failed command looks like a socket connectivity issue
+    fn is_socket_connection_error(stderr: &str) -> bool {
+        let lower = stderr.to_ascii_lowercase();
+        lower.contains("dial unix")
+            || lower.contains("connect:")
+            || lower.contains("connection refused")
+            || lower.contains("no such file or directory")
     }
 
     /// Parse Kubernetes manifest to extract metadata
@@ -226,16 +349,30 @@ impl RuntimeEngine for PodmanEngine {
     }
 
     async fn is_available(&self) -> bool {
-        match Command::new(&self.podman_binary)
-            .args(&["--version"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-        {
-            Ok(status) => status.success(),
-            Err(e) => {
-                debug!("Podman not available: {}", e);
+        let check_args = ["--version"];
+
+        if let Some(socket) = &self.podman_socket {
+            match self.execute_command_with_socket(&check_args, socket).await {
+                Ok(_) => return true,
+                Err(RuntimeError::CommandFailed(stderr))
+                    if Self::is_socket_connection_error(&stderr) =>
+                {
+                    debug!(
+                        "Podman socket at {} not available ({}), attempting local fallback",
+                        socket, stderr
+                    );
+                }
+                Err(err) => {
+                    debug!("Podman socket check failed: {}", err);
+                    return false;
+                }
+            }
+        }
+
+        match self.execute_command_local(&check_args).await {
+            Ok(_) => true,
+            Err(err) => {
+                debug!("Podman not available locally: {}", err);
                 false
             }
         }
