@@ -98,7 +98,7 @@ pub fn make_test_cli(
         libp2p_host: "0.0.0.0".to_string(),
         disable_scheduling,
         mock_only_runtime: true,
-        podman_socket: None,
+        podman_socket: Some("/run/podman/podman.sock".to_string()),
         signing_ephemeral: true,
         kem_ephemeral: true,
         ephemeral_keys: true,

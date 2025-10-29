@@ -35,7 +35,7 @@ async fn test_apply_functionality() {
         .await
         .expect("Failed to read original manifest file for verification");
 
-    let task_id = cli::apply_file(manifest_path.clone())
+    let task_id = cli::apply_file(manifest_path.clone(), None)
         .await
         .expect("apply_file should succeed");
 
@@ -99,7 +99,7 @@ async fn test_apply_with_real_podman() {
         .await
         .expect("Failed to read original manifest file for verification");
 
-    let task_id = cli::apply_file(manifest_path.clone())
+    let task_id = cli::apply_file(manifest_path.clone(), None)
         .await
         .expect("apply_file should succeed with real Podman");
 
@@ -115,7 +115,7 @@ async fn test_apply_with_real_podman() {
         "Podman deployment verification failed - no matching pods found"
     );
 
-    let _delete_result = cli::delete_file(manifest_path, true).await;
+    let _delete_result = cli::delete_file(manifest_path, true, None).await;
     sleep(Duration::from_secs(5)).await;
 
     let podman_verification_successful =
@@ -156,7 +156,7 @@ async fn test_apply_nginx_with_replicas() {
         .await
         .expect("Failed to read nginx_with_replicas manifest file for verification");
 
-    let task_id = cli::apply_file(manifest_path.clone())
+    let task_id = cli::apply_file(manifest_path.clone(), None)
         .await
         .expect("apply_file should succeed for nginx_with_replicas");
 

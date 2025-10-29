@@ -12,7 +12,6 @@ use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use serde_yaml::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::RwLock;
 use tokio::process::Command;
@@ -21,9 +20,11 @@ use tokio::process::Command;
 pub struct PodmanEngine {
     podman_binary: String,
     podman_socket: Option<String>,
+    force_remote: bool,
 }
 
 static PODMAN_SOCKET_OVERRIDE: Lazy<RwLock<Option<String>>> = Lazy::new(|| RwLock::new(None));
+static PODMAN_FORCE_REMOTE: Lazy<RwLock<bool>> = Lazy::new(|| RwLock::new(false));
 
 impl PodmanEngine {
     /// Create a new Podman engine instance
@@ -31,6 +32,7 @@ impl PodmanEngine {
         Self {
             podman_binary: "podman".to_string(),
             podman_socket: Self::detect_podman_socket(),
+            force_remote: Self::is_force_remote(),
         }
     }
 
@@ -39,11 +41,12 @@ impl PodmanEngine {
         Self {
             podman_binary: binary_path,
             podman_socket: Self::detect_podman_socket(),
+            force_remote: Self::is_force_remote(),
         }
     }
 
-    /// Set a podman socket override provided by configuration (CLI).
-    pub fn set_socket_override(socket: Option<String>) {
+    /// Configure the Podman runtime using CLI-provided parameters.
+    pub fn configure_runtime(socket: Option<String>, force_remote: bool) {
         let normalized = socket.and_then(|value| {
             let trimmed = value.trim();
             if trimmed.is_empty() {
@@ -53,10 +56,15 @@ impl PodmanEngine {
             }
         });
 
-        let mut guard = PODMAN_SOCKET_OVERRIDE
+        let mut socket_guard = PODMAN_SOCKET_OVERRIDE
             .write()
             .expect("podman socket override rwlock poisoned");
-        *guard = normalized;
+        *socket_guard = normalized;
+
+        let mut remote_guard = PODMAN_FORCE_REMOTE
+            .write()
+            .expect("podman force remote rwlock poisoned");
+        *remote_guard = force_remote;
     }
 
     fn socket_override() -> Option<String> {
@@ -64,6 +72,12 @@ impl PodmanEngine {
             .read()
             .expect("podman socket override rwlock poisoned")
             .clone()
+    }
+
+    fn is_force_remote() -> bool {
+        *PODMAN_FORCE_REMOTE
+            .read()
+            .expect("podman force remote rwlock poisoned")
     }
 
     fn normalize_socket(value: &str) -> String {
@@ -76,81 +90,42 @@ impl PodmanEngine {
 
     /// Detect a podman socket URL from configuration, environment, or common locations
     fn detect_podman_socket() -> Option<String> {
-        if let Some(socket) = Self::socket_override() {
-            info!("Using Podman socket from CLI configuration: {}", socket);
-            return Some(socket);
-        }
-
-        let socket_env_vars = ["PODMAN_HOST", "CONTAINER_HOST"];
-
-        for var in socket_env_vars {
-            if let Ok(value) = std::env::var(var) {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    let normalized = Self::normalize_socket(trimmed);
-                    info!(
-                        "Using Podman socket from environment variable {}: {}",
-                        var, normalized
-                    );
-                    return Some(normalized);
-                }
-            }
-        }
-
-        let mut candidate_paths: Vec<PathBuf> = Vec::new();
-
-        if let Ok(xdg_runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            candidate_paths.push(PathBuf::from(&xdg_runtime_dir).join("podman/podman.sock"));
-        }
-
-        candidate_paths.push(PathBuf::from("/run/podman/podman.sock"));
-        candidate_paths.push(PathBuf::from("/var/run/podman/podman.sock"));
-
-        for path in candidate_paths {
-            if path.exists() {
-                let path_str = path.to_string_lossy().to_string();
-                let url = Self::normalize_socket(&path_str);
-                info!("Detected Podman socket at {}", url);
-                return Some(url);
-            }
-        }
-
-        None
+        Self::socket_override()
     }
 
     /// Execute a podman command and return the output
     async fn execute_command(&self, args: &[&str]) -> RuntimeResult<String> {
-        let mut remote_error_message: Option<String> = None;
-
         if let Some(socket) = &self.podman_socket {
             match self.execute_command_with_socket(args, socket).await {
                 Ok(output) => return Ok(output),
-                Err(RuntimeError::CommandFailed(stderr))
-                    if Self::is_socket_connection_error(&stderr) =>
-                {
-                    warn!(
-                        "Podman socket command failed ({}). Falling back to local CLI...",
-                        stderr.trim()
-                    );
-                    remote_error_message = Some(stderr);
+                Err(err) => {
+                    if self.force_remote {
+                        return Err(err);
+                    }
+
+                    if let RuntimeError::CommandFailed(stderr) = &err {
+                        if Self::is_socket_connection_error(stderr) {
+                            warn!(
+                                "Podman socket command failed ({}). Falling back to local CLI...",
+                                stderr.trim()
+                            );
+                        } else {
+                            return Err(err);
+                        }
+                    } else {
+                        return Err(err);
+                    }
                 }
-                Err(err) => return Err(err),
             }
         }
 
-        match self.execute_command_local(args).await {
-            Ok(output) => Ok(output),
-            Err(err) => {
-                if let Some(remote_error) = remote_error_message {
-                    let combined_error = format!(
-                        "Podman socket command failed ({remote_error}); local fallback failed ({err})"
-                    );
-                    Err(RuntimeError::CommandFailed(combined_error))
-                } else {
-                    Err(err)
-                }
-            }
+        if self.force_remote {
+            return Err(RuntimeError::CommandFailed(
+                "Podman socket command failed and fallback disabled".to_string(),
+            ));
         }
+
+        self.execute_command_local(args).await
     }
 
     /// Execute podman command against configured socket
@@ -390,30 +365,18 @@ impl RuntimeEngine for PodmanEngine {
         let check_args = ["--version"];
 
         if let Some(socket) = &self.podman_socket {
-            match self.execute_command_with_socket(&check_args, socket).await {
-                Ok(_) => return true,
-                Err(RuntimeError::CommandFailed(stderr))
-                    if Self::is_socket_connection_error(&stderr) =>
-                {
-                    debug!(
-                        "Podman socket at {} not available ({}), attempting local fallback",
-                        socket, stderr
-                    );
-                }
-                Err(err) => {
-                    debug!("Podman socket check failed: {}", err);
-                    return false;
-                }
-            }
+            return self
+                .execute_command_with_socket(&check_args, socket)
+                .await
+                .is_ok();
         }
 
-        match self.execute_command_local(&check_args).await {
-            Ok(_) => true,
-            Err(err) => {
-                debug!("Podman not available locally: {}", err);
-                false
-            }
+        if self.force_remote {
+            debug!("Podman socket forced but not configured; marking unavailable");
+            return false;
         }
+
+        self.execute_command_local(&check_args).await.is_ok()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1016,6 +979,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_podman_engine_creation() {
+        PodmanEngine::configure_runtime(None, false);
         let engine = PodmanEngine::new();
         assert_eq!(engine.name(), "podman");
     }
@@ -1054,6 +1018,7 @@ spec:
 
     #[tokio::test]
     async fn test_parse_manifest_metadata() {
+        PodmanEngine::configure_runtime(None, false);
         let engine = PodmanEngine::new();
 
         let manifest = br#"
@@ -1077,6 +1042,7 @@ spec:
 
     #[tokio::test]
     async fn test_workload_id_generation() {
+        PodmanEngine::configure_runtime(None, false);
         let engine = PodmanEngine::new();
 
         let manifest1 = b"apiVersion: v1\nkind: Pod\nmetadata:\n  name: test-pod";
@@ -1098,5 +1064,16 @@ spec:
 
         // Manifest without name should still use manifest_id only
         assert_eq!(id4, "beemesh-manifest-789");
+    }
+
+    #[tokio::test]
+    async fn test_force_remote_configuration() {
+        PodmanEngine::configure_runtime(Some("/run/podman/podman.sock".to_string()), true);
+        let engine = PodmanEngine::new();
+        assert!(engine.force_remote);
+        assert_eq!(
+            engine.podman_socket.as_deref(),
+            Some("unix:///run/podman/podman.sock")
+        );
     }
 }

@@ -5,6 +5,9 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "beemesh", about = "beemesh CLI")]
 struct Cli {
+    /// REST API base URL (can also be set via BEEMESH_API)
+    #[arg(long = "api-url", env = "BEEMESH_API", value_name = "URL")]
+    api_url: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -32,13 +35,14 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let cli = Cli::parse();
+    let Cli { api_url, command } = cli;
 
-    match cli.command {
+    match command {
         Commands::Apply { file } => {
-            let _task_id = apply_file(file).await?;
+            let _task_id = apply_file(file, api_url.as_deref()).await?;
         }
         Commands::Delete { file, force } => {
-            let _task_id = delete_file(file, force).await?;
+            let _task_id = delete_file(file, force, api_url.as_deref()).await?;
         }
     }
 

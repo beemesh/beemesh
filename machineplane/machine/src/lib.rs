@@ -22,7 +22,7 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub ephemeral: bool,
     /// Host address for REST API
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "0.0.0.0")]
     pub rest_api_host: String,
 
     /// Port for REST API
@@ -80,7 +80,7 @@ pub struct Cli {
     #[arg(long, default_value = "0")]
     pub libp2p_quic_port: u16,
 
-    /// Host address for libp2p listeners (default: 0.0.0.0)
+    /// Host address for libp2p listeners (IPv4 or IPv6 literal, default: 0.0.0.0)
     #[arg(long, default_value = "0.0.0.0")]
     pub libp2p_host: String,
 }
@@ -131,7 +131,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         key_directory: Some(std::path::PathBuf::from(&cli.key_dir)),
     });
 
-    runtime::configure_podman_socket(cli.podman_socket.clone());
+    runtime::configure_podman_runtime(cli.podman_socket.clone());
 
     // initialize PQC once at process startup; fail early if it doesn't initialize
     crypto::ensure_pqc_init().map_err(|e| anyhow::anyhow!("pqc initialization failed: {}", e))?;

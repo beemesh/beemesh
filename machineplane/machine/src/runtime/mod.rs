@@ -12,9 +12,10 @@ use thiserror::Error;
 pub mod engines;
 pub mod mock;
 
-/// Configure the Podman engine socket override based on CLI input.
-pub fn configure_podman_socket(socket: Option<String>) {
-    engines::podman::PodmanEngine::set_socket_override(socket);
+/// Configure the Podman runtime using CLI-provided settings.
+pub fn configure_podman_runtime(socket: Option<String>) {
+    let force_remote = socket.is_some();
+    engines::podman::PodmanEngine::configure_runtime(socket, force_remote);
 }
 
 /// Errors that can occur during runtime operations

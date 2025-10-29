@@ -296,7 +296,7 @@ impl ResourceVerifier {
     fn get_storage_info() -> Result<u64, String> {
         use std::process::Command;
         let output = Command::new("df")
-            .args(&["-B1", "/"])
+            .args(&["-B1", "/var/lib/containers/storage"])
             .output()
             .map_err(|e| format!("Failed to execute df: {}", e))?;
 

@@ -193,7 +193,10 @@ pub async fn get_candidates(
         let remaining = Duration::from_secs(timeout_secs).saturating_sub(start.elapsed());
         match tokio::time::timeout(remaining, reply_rx.recv()).await {
             Ok(Some(peer)) => {
-                log::info!("get_candidates: received response from peer: {}", &peer[..16]);
+                log::info!(
+                    "get_candidates: received response from peer: {}",
+                    &peer[..16]
+                );
                 if !responders.contains(&peer) {
                     responders.push(peer);
                     // Get a few candidates to choose from

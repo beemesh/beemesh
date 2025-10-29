@@ -1,10 +1,14 @@
 use anyhow::Result;
 
 use futures::stream::StreamExt;
-use libp2p::{PeerId, Swarm, gossipsub, kad, request_response, swarm::SwarmEvent};
+use libp2p::{
+    PeerId, Swarm, gossipsub, kad, multiaddr::Multiaddr, multiaddr::Protocol, request_response,
+    swarm::SwarmEvent,
+};
 use log::{debug, info, warn};
 use once_cell::sync::OnceCell;
 use std::collections::HashMap as StdHashMap;
+use std::net::IpAddr;
 use std::sync::Mutex;
 use std::{
     collections::hash_map::DefaultHasher,
@@ -21,6 +25,23 @@ static DISABLED_SCHEDULING: OnceCell<Mutex<StdHashMap<PeerId, bool>>> = OnceCell
 
 fn scheduling_map() -> &'static Mutex<StdHashMap<PeerId, bool>> {
     DISABLED_SCHEDULING.get_or_init(|| Mutex::new(StdHashMap::new()))
+}
+
+fn extract_listen_endpoint(addr: &Multiaddr) -> Option<(String, u16)> {
+    let mut host: Option<String> = None;
+    let mut port: Option<u16> = None;
+    for proto in addr.iter() {
+        match proto {
+            Protocol::Ip4(ipv4) => host = Some(ipv4.to_string()),
+            Protocol::Ip6(ipv6) => host = Some(ipv6.to_string()),
+            Protocol::Dns(dns) => host = Some(dns.to_string()),
+            Protocol::Dns4(dns) => host = Some(dns.to_string()),
+            Protocol::Dns6(dns) => host = Some(dns.to_string()),
+            Protocol::Tcp(value) | Protocol::Udp(value) => port = Some(value),
+            _ => {}
+        }
+    }
+    host.zip(port)
 }
 
 pub fn register_scheduling_preference(peer: PeerId, disabled: bool) {
@@ -186,10 +207,33 @@ pub fn setup_libp2p_node(
         .gossipsub
         .add_explicit_peer(&local_peer);
 
-    swarm.listen_on(format!("/ip4/{}/udp/{}/quic-v1", host, quic_port).parse()?)?;
+    let listen_addr: Multiaddr = match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ipv4)) => {
+            let mut addr = Multiaddr::empty();
+            addr.push(Protocol::Ip4(ipv4));
+            addr.push(Protocol::Udp(quic_port));
+            addr.push(Protocol::QuicV1);
+            addr
+        }
+        Ok(IpAddr::V6(ipv6)) => {
+            let mut addr = Multiaddr::empty();
+            addr.push(Protocol::Ip6(ipv6));
+            addr.push(Protocol::Udp(quic_port));
+            addr.push(Protocol::QuicV1);
+            addr
+        }
+        Err(_) => {
+            debug!(
+                "libp2p host '{}' is not an IP literal; falling back to IPv4 multiaddr string",
+                host
+            );
+            format!("/ip4/{}/udp/{}/quic-v1", host, quic_port).parse()?
+        }
+    };
+
+    swarm.listen_on(listen_addr)?;
 
     let (peer_tx, peer_rx) = watch::channel(Vec::new());
-    //debug!("Libp2p gossip node started. Listening for messages...");
     Ok((swarm, topic, peer_rx, peer_tx))
 }
 
@@ -342,7 +386,11 @@ pub async fn start_libp2p_node(
                         }
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        debug!("Local node is listening on {address}");
+                        if let Some((host, port)) = extract_listen_endpoint(&address) {
+                            info!("libp2p: listening on {}:{}", host, port);
+                        } else {
+                            info!("libp2p: listening on {address}");
+                        }
                     }
                     _ => {}
                 }

@@ -52,14 +52,14 @@ async fn test_delete_task_endpoint() {
     ));
 
     // First apply the manifest to have something to delete
-    let task_id_result = cli::apply_file(manifest_path.clone()).await;
+    let task_id_result = cli::apply_file(manifest_path.clone(), None).await;
     println!("Apply result: {:?}", task_id_result);
 
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
 
     // Now try to delete it using CLI
-    let delete_result = cli::delete_file(manifest_path, false).await;
+    let delete_result = cli::delete_file(manifest_path, false, None).await;
 
     match delete_result {
         Ok(manifest_id) => {
@@ -97,14 +97,14 @@ async fn test_delete_task_with_force() {
     ));
 
     // First apply the manifest to have something to delete
-    let task_id_result = cli::apply_file(manifest_path.clone()).await;
+    let task_id_result = cli::apply_file(manifest_path.clone(), None).await;
     println!("Apply result: {:?}", task_id_result);
 
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
 
     // Now try to delete it with force flag using CLI
-    let delete_result = cli::delete_file(manifest_path, true).await;
+    let delete_result = cli::delete_file(manifest_path, true, None).await;
 
     match delete_result {
         Ok(manifest_id) => {
@@ -142,7 +142,7 @@ async fn test_delete_nonexistent_task() {
     ));
 
     // Try to delete without applying first (should find no providers)
-    let delete_result = cli::delete_file(manifest_path, false).await;
+    let delete_result = cli::delete_file(manifest_path, false, None).await;
 
     match delete_result {
         Ok(manifest_id) => {

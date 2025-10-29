@@ -26,7 +26,7 @@ fn extract_manifest_name_from_json(manifest_json: &serde_json::Value) -> Option<
         .map(|s| s.to_string())
 }
 
-pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
+pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result<String> {
     debug!("apply_file called for path: {:?}", path);
 
     if !path.exists() {
@@ -93,7 +93,10 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     );
 
     // API base URL can be overridden with BEEMESH_API env var
-    let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+    let base = api_base
+        .map(|s| s.to_string())
+        .or_else(|| env::var("BEEMESH_API").ok())
+        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
     debug!("Creating FlatbufferClient with base URL: {}", base);
     let mut fb_client = FlatbufferClient::new(base)?;
 
@@ -296,7 +299,11 @@ pub async fn apply_file(path: PathBuf) -> anyhow::Result<String> {
     Ok(manifest_id)
 }
 
-pub async fn delete_file(path: PathBuf, force: bool) -> anyhow::Result<String> {
+pub async fn delete_file(
+    path: PathBuf,
+    force: bool,
+    api_base: Option<&str>,
+) -> anyhow::Result<String> {
     debug!("delete_file called for path: {:?}, force: {}", path, force);
 
     if !path.exists() {
@@ -353,7 +360,10 @@ pub async fn delete_file(path: PathBuf, force: bool) -> anyhow::Result<String> {
     );
 
     // API base URL can be overridden with BEEMESH_API env var
-    let base = env::var("BEEMESH_API").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+    let base = api_base
+        .map(|s| s.to_string())
+        .or_else(|| env::var("BEEMESH_API").ok())
+        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
     debug!("Creating FlatbufferClient with base URL: {}", base);
     let mut fb_client = FlatbufferClient::new(base)?;
 
