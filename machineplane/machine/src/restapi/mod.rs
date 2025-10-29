@@ -21,7 +21,8 @@ use tokio::{sync::watch, time::Duration};
 pub mod envelope_handler;
 use crate::runtime::RuntimeEngine;
 use envelope_handler::{
-    EnvelopeHandler, create_encrypted_response_with_key, create_response_with_fallback,
+    EnvelopeHandler, create_encrypted_response_with_key, create_response_for_envelope_metadata,
+    create_response_with_fallback,
 };
 
 async fn get_nodes(
@@ -192,7 +193,7 @@ pub async fn get_candidates(
         let remaining = Duration::from_secs(timeout_secs).saturating_sub(start.elapsed());
         match tokio::time::timeout(remaining, reply_rx.recv()).await {
             Ok(Some(peer)) => {
-                log::info!("get_candidates: received response from peer: {}", peer);
+                log::info!("get_candidates: received response from peer: {}", &peer[..16]);
                 if !responders.contains(&peer) {
                     responders.push(peer);
                     // Get a few candidates to choose from
@@ -772,6 +773,7 @@ pub async fn delete_task(
     // Extract requesting peer info from envelope metadata
     let origin_peer = envelope_metadata
         .peer_id
+        .clone()
         .unwrap_or_else(|| "unknown".to_string());
 
     // Parse query parameters for force flag
@@ -792,7 +794,13 @@ pub async fn delete_task(
                 &task_id,
                 &[],
             );
-            return create_response_with_fallback(&error_response).await;
+            return create_response_for_envelope_metadata(
+                &state.envelope_handler,
+                &error_response,
+                "delete_response",
+                &envelope_metadata,
+            )
+            .await;
         }
     };
 
@@ -805,7 +813,13 @@ pub async fn delete_task(
             &task_id,
             &[],
         );
-        return create_response_with_fallback(&response).await;
+        return create_response_for_envelope_metadata(
+            &state.envelope_handler,
+            &response,
+            "delete_response",
+            &envelope_metadata,
+        )
+        .await;
     }
 
     info!(
@@ -839,7 +853,13 @@ pub async fn delete_task(
             &task_id,
             &[],
         );
-        return create_response_with_fallback(&error_response).await;
+        return create_response_for_envelope_metadata(
+            &state.envelope_handler,
+            &error_response,
+            "delete_response",
+            &envelope_metadata,
+        )
+        .await;
     }
 
     let local_peer_id =
@@ -854,7 +874,13 @@ pub async fn delete_task(
                     &task_id,
                     &[],
                 );
-                return create_response_with_fallback(&error_response).await;
+                return create_response_for_envelope_metadata(
+                    &state.envelope_handler,
+                    &error_response,
+                    "delete_response",
+                    &envelope_metadata,
+                )
+                .await;
             }
         };
 
@@ -943,7 +969,13 @@ pub async fn delete_task(
         &removed_workloads,
     );
 
-    create_response_with_fallback(&response).await
+    create_response_for_envelope_metadata(
+        &state.envelope_handler,
+        &response,
+        "delete_response",
+        &envelope_metadata,
+    )
+    .await
 }
 
 /// Handle local workload deletion when the provider is the same machine

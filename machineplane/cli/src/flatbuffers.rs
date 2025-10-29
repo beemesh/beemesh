@@ -328,30 +328,18 @@ impl FlatbufferClient {
                     // It's an envelope, try to decrypt
                     match self.decrypt_from_machine(&response_bytes) {
                         Ok(decrypted) => {
-                            println!(
-                                "send_encrypted_request: Decryption successful, decrypted length: {}",
-                                decrypted.len()
-                            );
                             log::info!(
                                 "send_encrypted_request: Decryption successful, decrypted length: {}",
                                 decrypted.len()
                             );
-                            println!(
-                                "send_encrypted_request: first 50 bytes of decrypted: {:?}",
-                                &decrypted[..std::cmp::min(50, decrypted.len())]
-                            );
-                            log::info!(
+                            log::debug!(
                                 "send_encrypted_request: first 50 bytes of decrypted: {:?}",
                                 &decrypted[..std::cmp::min(50, decrypted.len())]
                             );
                             Ok(decrypted)
                         }
                         Err(e) => {
-                            println!(
-                                "send_encrypted_request: Decryption failed: {:?}, returning raw bytes",
-                                e
-                            );
-                            log::warn!(
+                            log::error!(
                                 "send_encrypted_request: Decryption failed: {:?}, returning raw bytes",
                                 e
                             );
@@ -586,7 +574,7 @@ impl FlatbufferClient {
                     }
                 }
                 Err(_) => {
-                    log::info!(
+                    log::error!(
                         "send_delete_request: Not an envelope, server sent unencrypted response"
                     );
                     // Server sent unencrypted response directly, return as-is

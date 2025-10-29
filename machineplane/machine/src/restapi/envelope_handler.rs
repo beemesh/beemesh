@@ -357,7 +357,7 @@ pub async fn create_encrypted_response_with_key(
                 }
                 Err(e) => {
                     // If encryption fails, log the issue and fall back to unencrypted response
-                    warn!(
+                    error!(
                         "Failed to encrypt response for peer {}: {} - falling back to unencrypted response",
                         peer_id, e
                     );
@@ -393,6 +393,27 @@ pub async fn create_response_with_fallback(
         .body(axum::body::Body::from(payload.to_vec()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(response)
+}
+
+/// Create an encrypted response when metadata provides the recipient KEM key
+pub async fn create_response_for_envelope_metadata(
+    envelope_handler: &Arc<EnvelopeHandler>,
+    payload: &[u8],
+    payload_type: &str,
+    metadata: &EnvelopeMetadata,
+) -> Result<axum::response::Response<axum::body::Body>, StatusCode> {
+    if !metadata.kem_pubkey.is_empty() {
+        return create_encrypted_response_with_key(
+            envelope_handler,
+            payload,
+            payload_type,
+            metadata.peer_id.as_deref(),
+            &metadata.kem_pubkey,
+        )
+        .await;
+    }
+
+    create_response_with_fallback(payload).await
 }
 
 /// Extract peer ID from request state/headers
