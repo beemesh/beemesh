@@ -1,5 +1,6 @@
 use super::message_verifier::verify_signed_message;
-use crate::libp2p_beemesh::reply::{build_capacity_reply_with, warn_missing_kem, CapacityReply};
+use crate::libp2p_beemesh::capacity;
+use crate::libp2p_beemesh::utils;
 use crate::resource_verifier::ResourceRequest;
 use crate::workload_integration::get_global_resource_verifier;
 use libp2p::request_response;
@@ -88,28 +89,37 @@ pub fn scheduler_message(
                         );
 
                         // build CapacityReply using protocol helper and include local KEM pubkey if available
-                        let reply =
-                            build_capacity_reply_with(orig_request_id, &responder_peer, |params| {
+                        let reply = capacity::compose_capacity_reply(
+                            "scheduler",
+                            &orig_request_id,
+                            &responder_peer,
+                            |params| {
                                 params.ok = true;
                                 params.cpu_milli = check_result.available_cpu_milli;
                                 params.memory_bytes = check_result.available_memory_bytes;
                                 params.storage_bytes = check_result.available_storage_bytes;
-                            });
-                        let CapacityReply {
-                            payload,
-                            kem_pub_b64,
-                        } = reply;
-                        warn_missing_kem("scheduler", &responder_peer, kem_pub_b64.as_deref());
-
-                        // Send response via request-response
-                        let _ = swarm
-                            .behaviour_mut()
-                            .scheduler_rr
-                            .send_response(channel, payload);
-                        debug!(
-                            "libp2p: sent scheduler capacity reply for id={} to {}",
-                            orig_request_id, peer
+                            },
                         );
+                        let payload_len = reply.payload.len();
+
+                        match capacity::send_scheduler_capacity_reply(
+                            &mut swarm.behaviour_mut().scheduler_rr,
+                            channel,
+                            reply,
+                        ) {
+                            Ok(_) => {
+                                debug!(
+                                    "libp2p: sent scheduler capacity reply for id={} to {} ({} bytes)",
+                                    orig_request_id, peer, payload_len
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "libp2p: failed to send scheduler capacity reply for id={} to {}: {:?}",
+                                    orig_request_id, peer, e
+                                );
+                            }
+                        }
                     } else {
                         info!(
                             "Capacity check failed for request_id={}: {} - not sending response",
@@ -137,14 +147,11 @@ pub fn scheduler_message(
                     request_part
                 );
                 // KEM pubkey caching has been removed - keys are now extracted directly from envelopes
-                if let Some(senders) = pending_queries.get_mut(&request_part) {
-                    // Extract public key from the capacity reply
-                    let peer_pubkey = cap_reply.kem_pubkey().unwrap_or("").to_string();
-                    let peer_with_key = format!("{}:{}", peer.to_string(), peer_pubkey);
-                    for tx in senders.iter() {
-                        let _ = tx.send(peer_with_key.clone());
-                    }
-                }
+                let peer_pubkey = cap_reply.kem_pubkey().unwrap_or("").to_string();
+                let peer_with_key = format!("{}:{}", peer.to_string(), peer_pubkey);
+                utils::notify_capacity_observers(pending_queries, &request_part, move || {
+                    peer_with_key.clone()
+                });
             }
         }
     }

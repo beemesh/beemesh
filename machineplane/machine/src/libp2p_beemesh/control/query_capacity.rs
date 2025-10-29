@@ -1,10 +1,10 @@
-use libp2p::{gossipsub, Swarm};
+use libp2p::{Swarm, gossipsub};
 
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
-use crate::libp2p_beemesh::reply::{build_capacity_reply_with, warn_missing_kem};
+use crate::libp2p_beemesh::capacity;
 use crate::libp2p_beemesh::utils;
 
 /// Handle QueryCapacityWithPayload control message
@@ -72,33 +72,30 @@ pub async fn handle_query_capacity_with_payload(
                     "libp2p: local scheduling disabled, skipping local capacity response for {}",
                     request_id
                 );
-            } else if let Some(senders) = pending_queries.get_mut(&request_id) {
+            } else {
                 let responder_peer = swarm.local_peer_id().to_string();
-                let reply = build_capacity_reply_with(&request_id, &responder_peer, |params| {
-                    params.cpu_milli = cap_req.cpu_milli();
-                    params.memory_bytes = cap_req.memory_bytes();
-                    params.storage_bytes = cap_req.storage_bytes();
-                });
-                warn_missing_kem("local", &responder_peer, reply.kem_pub_b64.as_deref());
+                let reply = capacity::compose_capacity_reply(
+                    "local",
+                    &request_id,
+                    &responder_peer,
+                    |params| {
+                        params.cpu_milli = cap_req.cpu_milli();
+                        params.memory_bytes = cap_req.memory_bytes();
+                        params.storage_bytes = cap_req.storage_bytes();
+                    },
+                );
                 let local_response = format!(
                     "{}:{}",
                     swarm.local_peer_id(),
                     reply.kem_pub_b64.unwrap_or_default()
                 );
-                for tx in senders.iter() {
-                    let _ = tx.send(local_response.clone());
-                }
+                utils::notify_capacity_observers(pending_queries, &request_id, move || {
+                    local_response.clone()
+                });
             }
         }
         Err(e) => {
             log::error!("libp2p: failed to parse provided capacity payload: {:?}", e);
         }
     }
-}
-
-// Dummy capacity check that always returns true for now.
-#[allow(dead_code)]
-fn has_free_capacity_dummy() -> bool {
-    // TODO: replace with real resource accounting checks
-    true
 }

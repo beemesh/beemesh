@@ -540,10 +540,12 @@ mod tests {
         let result = verifier.verify_capacity(&request).await;
         assert!(!result.has_capacity, "Should not have sufficient CPU");
         assert!(result.rejection_reason.is_some());
-        assert!(result
-            .rejection_reason
-            .unwrap()
-            .contains("Insufficient CPU"));
+        assert!(
+            result
+                .rejection_reason
+                .unwrap()
+                .contains("Insufficient CPU")
+        );
     }
 
     #[tokio::test]
@@ -572,9 +574,11 @@ mod tests {
         let result = verifier.verify_capacity(&request).await;
         assert!(!result.has_capacity, "Should not have sufficient memory");
         assert!(result.rejection_reason.is_some());
-        assert!(result
-            .rejection_reason
-            .unwrap()
-            .contains("Insufficient memory"));
+        assert!(
+            result
+                .rejection_reason
+                .unwrap()
+                .contains("Insufficient memory")
+        );
     }
 }

@@ -1,10 +1,10 @@
 use axum::{
+    Router,
     body::Bytes,
     extract::{Extension, Path, Query, State},
     http::HeaderMap,
     middleware,
     routing::{delete, get, post},
-    Router,
 };
 use base64::Engine;
 use log::{debug, error, info, warn};
@@ -14,14 +14,14 @@ use protocol::libp2p_constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SEC
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
 
 pub mod envelope_handler;
 use crate::runtime::RuntimeEngine;
 use envelope_handler::{
-    create_encrypted_response_with_key, create_response_with_fallback, EnvelopeHandler,
+    EnvelopeHandler, create_encrypted_response_with_key, create_response_with_fallback,
 };
 
 async fn get_nodes(
@@ -540,7 +540,11 @@ async fn debug_workloads_by_peer(
                                 match String::from_utf8(manifest_bytes) {
                                     Ok(manifest_str) => Some(manifest_str),
                                     Err(e) => {
-                                        log::warn!("Failed to convert manifest bytes to string for workload {}: {}", workload.info.id, e);
+                                        log::warn!(
+                                            "Failed to convert manifest bytes to string for workload {}: {}",
+                                            workload.info.id,
+                                            e
+                                        );
                                         None
                                     }
                                 }

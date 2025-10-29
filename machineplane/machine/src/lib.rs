@@ -45,6 +45,26 @@ pub struct Cli {
     #[arg(long)]
     pub node_name: Option<String>,
 
+    /// Force the workload manager to use the mock runtime registry (testing only)
+    #[arg(long, default_value_t = false)]
+    pub mock_only_runtime: bool,
+
+    /// Override the Podman socket URL used by runtime engines
+    #[arg(long)]
+    pub podman_socket: Option<String>,
+
+    /// Use ephemeral signing keys instead of writing to disk
+    #[arg(long, default_value_t = false)]
+    pub signing_ephemeral: bool,
+
+    /// Use ephemeral KEM keys instead of writing to disk
+    #[arg(long, default_value_t = false)]
+    pub kem_ephemeral: bool,
+
+    /// Enable fully ephemeral key handling for all keypair operations
+    #[arg(long, default_value_t = false)]
+    pub ephemeral_keys: bool,
+
     #[arg(long, default_value = "/run/beemesh/host.sock")]
     pub api_socket: Option<String>,
 
@@ -56,10 +76,6 @@ pub struct Cli {
     #[arg(long)]
     pub bootstrap_peer: Vec<String>,
 
-    /// Port for libp2p TCP transport (default: 0 for auto-assignment)
-    #[arg(long, default_value = "0")]
-    pub libp2p_tcp_port: u16,
-
     /// Port for libp2p UDP/QUIC transport (default: 0 for auto-assignment)
     #[arg(long, default_value = "0")]
     pub libp2p_quic_port: u16,
@@ -69,11 +85,53 @@ pub struct Cli {
     pub libp2p_host: String,
 }
 
+impl Default for Cli {
+    fn default() -> Self {
+        Self {
+            ephemeral: false,
+            rest_api_host: "127.0.0.1".to_string(),
+            rest_api_port: 3000,
+            disable_rest_api: false,
+            disable_machine_api: false,
+            disable_scheduling: false,
+            node_name: None,
+            mock_only_runtime: false,
+            podman_socket: None,
+            signing_ephemeral: false,
+            kem_ephemeral: false,
+            ephemeral_keys: false,
+            api_socket: Some("/run/beemesh/host.sock".to_string()),
+            key_dir: "/etc/beemesh/machine".to_string(),
+            bootstrap_peer: Vec::new(),
+            libp2p_quic_port: 0,
+            libp2p_host: "0.0.0.0".to_string(),
+        }
+    }
+}
+
 /// Start the machine runtime using the provided CLI configuration.
 /// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
 pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     // initialize logger but don't panic if already initialized
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+
+    let signing_ephemeral = cli.signing_ephemeral || cli.ephemeral_keys;
+    let kem_ephemeral = cli.kem_ephemeral || cli.ephemeral_keys;
+    crypto::set_keypair_config(crypto::KeypairConfig {
+        signing_mode: if signing_ephemeral {
+            crypto::KeypairMode::Ephemeral
+        } else {
+            crypto::KeypairMode::Persistent
+        },
+        kem_mode: if kem_ephemeral {
+            crypto::KeypairMode::Ephemeral
+        } else {
+            crypto::KeypairMode::Persistent
+        },
+        key_directory: Some(std::path::PathBuf::from(&cli.key_dir)),
+    });
+
+    runtime::configure_podman_socket(cli.podman_socket.clone());
 
     // initialize PQC once at process startup; fail early if it doesn't initialize
     crypto::ensure_pqc_init().map_err(|e| anyhow::anyhow!("pqc initialization failed: {}", e))?;
@@ -148,7 +206,6 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         }
     };
     let (mut swarm, topic, peer_rx, peer_tx) = libp2p_beemesh::setup_libp2p_node(
-        cli.libp2p_tcp_port,
         cli.libp2p_quic_port,
         &cli.libp2p_host,
         cli.disable_scheduling,
@@ -205,7 +262,12 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // Initialize runtime registry and provider manager for manifest deployment
     log::info!("Initializing runtime registry and provider manager...");
-    if let Err(e) = workload_integration::initialize_workload_manager().await {
+    if let Err(e) = workload_integration::initialize_workload_manager(
+        cli.mock_only_runtime,
+        cli.mock_only_runtime,
+    )
+    .await
+    {
         log::warn!(
             "Failed to initialize runtime registry: {}. Will use legacy deployment only.",
             e

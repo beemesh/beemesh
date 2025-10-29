@@ -7,3 +7,21 @@ members = [
 	"tests",
 	"crypto",
 ]
+
+[workspace.dependencies]
+libp2p = { version = "0.56", features = [ "tokio", "gossipsub", "macros", "quic", "request-response", "kad"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11",  default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+env_logger = "0.10"
+log = "0.4"
+once_cell = "1.20"
+base64 = "0.21"
+anyhow = "1.0"
+saorsa-pqc = "0.3"
+futures = "0.3"
+dirs = "4.0"
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+thiserror = "1.0"

@@ -2,11 +2,11 @@ use env_logger::Env;
 use futures::future::join_all;
 use std::collections::HashMap as StdHashMap;
 use std::time::Duration;
-use tokio::time::{sleep, Instant};
+use tokio::time::{Instant, sleep};
 
 mod test_utils;
 use machine::Cli;
-use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes, NodeGuard};
+use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 
@@ -14,8 +14,6 @@ pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
     setup_cleanup_hook();
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
-
-    std::env::set_var("BEEMESH_MOCK_ONLY_RUNTIME", "1");
 
     let client = reqwest::Client::new();
     (client, TEST_PORTS.to_vec())
@@ -25,21 +23,20 @@ pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
 fn make_standard_node_clis(disable_flags: &[bool]) -> Vec<Cli> {
     assert!(disable_flags.len() == TEST_PORTS.len());
 
-    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0, disable_flags[0]);
+    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, disable_flags[0]);
     let cli2 = make_test_cli(
         3100,
         false,
         true,
         None,
-        vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+        vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
-        0,
         disable_flags[1],
     );
 
     let bootstrap_peers = vec![
-        "/ip4/127.0.0.1/tcp/4001".to_string(),
-        "/ip4/127.0.0.1/tcp/4002".to_string(),
+        "/ip4/127.0.0.1/udp/4001/quic-v1".to_string(),
+        "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
     let cli3 = make_test_cli(
         3200,
@@ -47,7 +44,6 @@ fn make_standard_node_clis(disable_flags: &[bool]) -> Vec<Cli> {
         true,
         None,
         bootstrap_peers,
-        0,
         0,
         disable_flags[2],
     );

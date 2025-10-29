@@ -1,9 +1,7 @@
 use anyhow::Result;
 
 use futures::stream::StreamExt;
-use libp2p::{
-    gossipsub, kad, noise, request_response, swarm::SwarmEvent, tcp, yamux, PeerId, Swarm,
-};
+use libp2p::{PeerId, Swarm, gossipsub, kad, request_response, swarm::SwarmEvent};
 use log::{debug, info, warn};
 use once_cell::sync::OnceCell;
 use std::collections::HashMap as StdHashMap;
@@ -48,6 +46,7 @@ use crate::libp2p_beemesh::{
 };
 
 pub mod behaviour;
+pub mod capacity;
 pub mod control;
 pub mod envelope;
 pub mod reply;
@@ -63,7 +62,6 @@ pub struct HandshakeState {
 }
 
 pub fn setup_libp2p_node(
-    tcp_port: u16,
     quic_port: u16,
     host: &str,
     disable_scheduling: bool,
@@ -75,9 +73,6 @@ pub fn setup_libp2p_node(
 )> {
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
-        .with_tcp(tcp::Config::default(), noise::Config::new, || {
-            yamux::Config::default()
-        })?
         .with_quic()
         .with_behaviour(|key| {
             debug!("Local PeerId: {}", key.public().to_peer_id());
@@ -192,9 +187,6 @@ pub fn setup_libp2p_node(
         .add_explicit_peer(&local_peer);
 
     swarm.listen_on(format!("/ip4/{}/udp/{}/quic-v1", host, quic_port).parse()?)?;
-    swarm.listen_on(format!("/ip4/{}/tcp/{}", host, tcp_port).parse()?)?;
-    // Also listen on localhost for in-process testing
-    swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
 
     let (peer_tx, peer_rx) = watch::channel(Vec::new());
     //debug!("Libp2p gossip node started. Listening for messages...");

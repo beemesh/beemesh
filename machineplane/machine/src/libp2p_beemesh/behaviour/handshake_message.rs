@@ -1,5 +1,5 @@
 use super::message_verifier::verify_signed_message;
-use crate::libp2p_beemesh::envelope::{sign_with_node_keys, SignEnvelopeConfig};
+use crate::libp2p_beemesh::envelope::{SignEnvelopeConfig, sign_with_node_keys};
 use libp2p::request_response;
 use std::time::Duration;
 use tokio::time::Instant;

@@ -5,7 +5,7 @@
 //! and discovery systems to provide a unified workload management experience.
 
 use crate::provider::{ProviderConfig, ProviderManager};
-use crate::runtime::{create_default_registry, DeploymentConfig, RuntimeRegistry, WorkloadStatus};
+use crate::runtime::{DeploymentConfig, RuntimeRegistry, WorkloadStatus, create_default_registry};
 use libp2p::{PeerId, Swarm};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;

@@ -1,3 +1,4 @@
+use super::failure_handlers::{FailureDirection, handle_failure};
 use super::message_verifier::verify_signed_message;
 use libp2p::request_response;
 use log::{error, info, warn};
@@ -120,7 +121,9 @@ pub fn delete_message(
                         delete_resp.ok(),
                         delete_resp.operation_id(),
                         delete_resp.message(),
-                        delete_resp.removed_workloads().map(|w| w.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                        delete_resp
+                            .removed_workloads()
+                            .map(|w| w.iter().map(|s| s.to_string()).collect::<Vec<_>>())
                     );
                 }
                 Err(e) => {
@@ -343,10 +346,10 @@ async fn remove_workloads_by_manifest_id(manifest_id: &str) -> Result<Vec<String
 
 /// Handle delete outbound failure
 pub fn delete_outbound_failure(peer: libp2p::PeerId, error: request_response::OutboundFailure) {
-    warn!("Delete outbound failure for peer {}: {:?}", peer, error);
+    handle_failure("delete", FailureDirection::Outbound, peer, error);
 }
 
 /// Handle delete inbound failure
 pub fn delete_inbound_failure(peer: libp2p::PeerId, error: request_response::InboundFailure) {
-    warn!("Delete inbound failure for peer {}: {:?}", peer, error);
+    handle_failure("delete", FailureDirection::Inbound, peer, error);
 }

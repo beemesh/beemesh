@@ -299,8 +299,14 @@ impl FlatbufferClient {
 
         // Try to decrypt if it looks like an encrypted envelope
         if response_bytes.len() > 100 && self.machine_public_key.is_some() {
-            println!("send_encrypted_request: response length={}, machine_pubkey available, attempting envelope parsing", response_bytes.len());
-            log::info!("send_encrypted_request: response length={}, machine_pubkey available, attempting envelope parsing", response_bytes.len());
+            println!(
+                "send_encrypted_request: response length={}, machine_pubkey available, attempting envelope parsing",
+                response_bytes.len()
+            );
+            log::info!(
+                "send_encrypted_request: response length={}, machine_pubkey available, attempting envelope parsing",
+                response_bytes.len()
+            );
 
             // Try to parse as envelope first
             match protocol::machine::root_as_envelope(&response_bytes) {
@@ -322,8 +328,14 @@ impl FlatbufferClient {
                     // It's an envelope, try to decrypt
                     match self.decrypt_from_machine(&response_bytes) {
                         Ok(decrypted) => {
-                            println!("send_encrypted_request: Decryption successful, decrypted length: {}", decrypted.len());
-                            log::info!("send_encrypted_request: Decryption successful, decrypted length: {}", decrypted.len());
+                            println!(
+                                "send_encrypted_request: Decryption successful, decrypted length: {}",
+                                decrypted.len()
+                            );
+                            log::info!(
+                                "send_encrypted_request: Decryption successful, decrypted length: {}",
+                                decrypted.len()
+                            );
                             println!(
                                 "send_encrypted_request: first 50 bytes of decrypted: {:?}",
                                 &decrypted[..std::cmp::min(50, decrypted.len())]
@@ -335,8 +347,14 @@ impl FlatbufferClient {
                             Ok(decrypted)
                         }
                         Err(e) => {
-                            println!("send_encrypted_request: Decryption failed: {:?}, returning raw bytes", e);
-                            log::warn!("send_encrypted_request: Decryption failed: {:?}, returning raw bytes", e);
+                            println!(
+                                "send_encrypted_request: Decryption failed: {:?}, returning raw bytes",
+                                e
+                            );
+                            log::warn!(
+                                "send_encrypted_request: Decryption failed: {:?}, returning raw bytes",
+                                e
+                            );
                             // Decryption failed, return raw bytes
                             Ok(response_bytes.to_vec())
                         }
@@ -356,8 +374,16 @@ impl FlatbufferClient {
                 }
             }
         } else {
-            println!("send_encrypted_request: response_bytes.len()={}, machine_public_key.is_some()={}, skipping decryption", response_bytes.len(), self.machine_public_key.is_some());
-            log::info!("send_encrypted_request: response_bytes.len()={}, machine_public_key.is_some()={}, skipping decryption", response_bytes.len(), self.machine_public_key.is_some());
+            println!(
+                "send_encrypted_request: response_bytes.len()={}, machine_public_key.is_some()={}, skipping decryption",
+                response_bytes.len(),
+                self.machine_public_key.is_some()
+            );
+            log::info!(
+                "send_encrypted_request: response_bytes.len()={}, machine_public_key.is_some()={}, skipping decryption",
+                response_bytes.len(),
+                self.machine_public_key.is_some()
+            );
             Ok(response_bytes.to_vec())
         }
     }

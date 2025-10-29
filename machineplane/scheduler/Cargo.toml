@@ -1,10 +1,10 @@
 [package]
 name = "scheduler"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-log = "0.4"
+log = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1.0", features = ["full"] }
+tokio = { workspace = true }

@@ -126,7 +126,7 @@ impl MockEngine {
     fn should_deployment_succeed(&self) -> bool {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        rng.gen::<f64>() < self.config.deployment_success_rate
+        rng.r#gen::<f64>() < self.config.deployment_success_rate
     }
 
     /// Generate a unique workload ID based on manifest name and ID

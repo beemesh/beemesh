@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use axum::{
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
@@ -7,7 +7,7 @@ use axum::{
 };
 use base64::Engine;
 use log::{debug, error, warn};
-use protocol::machine::{root_as_envelope, FbEnvelope};
+use protocol::machine::{FbEnvelope, root_as_envelope};
 
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ impl EnvelopeHandler {
         let signing_private_key = if let Some(opt_pair) = crate::libp2p_beemesh::NODE_KEYPAIR.get()
         {
             // NODE_KEYPAIR holds Option<(pub, priv)>; prefer it when present
-            if let Some((ref _pub_bytes, ref priv_bytes)) = opt_pair.as_ref() {
+            if let Some((_pub_bytes, priv_bytes)) = opt_pair.as_ref() {
                 log::debug!("EnvelopeHandler::new: using in-memory NODE_KEYPAIR for signing");
                 Some(priv_bytes.clone())
             } else {
@@ -50,7 +50,9 @@ impl EnvelopeHandler {
                         if on_disk_b64 == public_key {
                             Some(priv_bytes)
                         } else {
-                            warn!("EnvelopeHandler::new: provided public_key differs from on-disk public key; using on-disk private key for signing responses");
+                            warn!(
+                                "EnvelopeHandler::new: provided public_key differs from on-disk public key; using on-disk private key for signing responses"
+                            );
                             Some(priv_bytes)
                         }
                     }
@@ -71,7 +73,9 @@ impl EnvelopeHandler {
                     if on_disk_b64 == public_key {
                         Some(priv_bytes)
                     } else {
-                        warn!("EnvelopeHandler::new: provided public_key differs from on-disk public key; using on-disk private key for signing responses");
+                        warn!(
+                            "EnvelopeHandler::new: provided public_key differs from on-disk public key; using on-disk private key for signing responses"
+                        );
                         Some(priv_bytes)
                     }
                 }
@@ -129,7 +133,6 @@ impl EnvelopeHandler {
             "Successfully decrypted envelope payload ({} bytes)",
             decrypted_payload.len()
         );
-
         Ok(decrypted_payload)
     }
 
@@ -405,19 +408,39 @@ mod tests {
 
     use crypto::{ensure_keypair_ephemeral, ensure_pqc_init};
 
+    struct KeypairConfigGuard(crypto::KeypairConfig);
+
+    impl KeypairConfigGuard {
+        fn kem_ephemeral() -> Self {
+            let previous = crypto::get_keypair_config();
+            crypto::set_keypair_config(crypto::KeypairConfig {
+                signing_mode: crypto::KeypairMode::Ephemeral,
+                kem_mode: crypto::KeypairMode::Ephemeral,
+                key_directory: previous.key_directory.clone(),
+            });
+            KeypairConfigGuard(previous)
+        }
+    }
+
+    impl Drop for KeypairConfigGuard {
+        fn drop(&mut self) {
+            crypto::set_keypair_config(self.0.clone());
+        }
+    }
+
     #[tokio::test]
     async fn test_envelope_roundtrip() {
         ensure_pqc_init().expect("PQC init failed");
 
         // Set ephemeral KEM mode for this test
-        std::env::set_var("BEEMESH_KEM_EPHEMERAL", "1");
+        let _config_guard = KeypairConfigGuard::kem_ephemeral();
 
         // Generate test signing keypairs for envelope signing
         // Note: ensure_keypair_ephemeral returns (public_key, private_key)
         let (sender_pub, sender_priv) =
             ensure_keypair_ephemeral().expect("Failed to generate sender keypair");
 
-        // Generate KEM keypairs for encryption - use ensure_kem_keypair_on_disk which respects BEEMESH_KEM_EPHEMERAL
+        // Generate KEM keypairs for encryption using the currently configured keypair mode
         let (recipient_kem_pub, recipient_kem_priv) =
             crypto::ensure_kem_keypair_on_disk().expect("Failed to generate recipient KEM keypair");
 
@@ -484,8 +507,5 @@ mod tests {
                 .expect("Failed to decrypt payload");
 
         assert_eq!(payload, decrypted_payload.as_slice());
-
-        // Clean up environment variable
-        std::env::remove_var("BEEMESH_KEM_EPHEMERAL");
     }
 }

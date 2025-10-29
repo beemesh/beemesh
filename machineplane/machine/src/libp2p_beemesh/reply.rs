@@ -1,4 +1,4 @@
-use crate::libp2p_beemesh::envelope::{sign_with_node_keys, SignEnvelopeConfig, SignedEnvelope};
+use crate::libp2p_beemesh::envelope::{SignEnvelopeConfig, SignedEnvelope, sign_with_node_keys};
 use base64::Engine;
 use log::warn;
 

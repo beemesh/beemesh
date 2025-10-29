@@ -12,6 +12,11 @@ use thiserror::Error;
 pub mod engines;
 pub mod mock;
 
+/// Configure the Podman engine socket override based on CLI input.
+pub fn configure_podman_socket(socket: Option<String>) {
+    engines::podman::PodmanEngine::set_socket_override(socket);
+}
+
 /// Errors that can occur during runtime operations
 #[derive(Error, Debug)]
 pub enum RuntimeError {

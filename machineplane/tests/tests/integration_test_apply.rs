@@ -9,7 +9,7 @@ use integration::apply_common::{
     check_workload_deployment, get_peer_ids, setup_test_environment, start_cluster_nodes,
     wait_for_mesh_formation,
 };
-use integration::test_utils::{make_test_cli, setup_cleanup_hook, start_nodes, NodeGuard};
+use integration::test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
 
 #[serial]
 #[tokio::test]
@@ -72,9 +72,6 @@ async fn test_apply_functionality() {
 
     // Clean up nodes
     guard.cleanup().await;
-
-    // Clean up environment
-    std::env::remove_var("BEEMESH_MOCK_ONLY_RUNTIME");
 }
 
 #[serial]
@@ -214,9 +211,6 @@ async fn test_apply_nginx_with_replicas() {
 
     // Clean up nodes
     guard.cleanup().await;
-
-    // Clean up environment
-    std::env::remove_var("BEEMESH_MOCK_ONLY_RUNTIME");
 }
 
 async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
@@ -232,33 +226,36 @@ async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
 }
 
 async fn start_test_nodes_for_podman() -> NodeGuard {
-    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0, false);
-    let cli2 = make_test_cli(
+    let mut cli1 = make_test_cli(3000, false, true, None, vec![], 4001, false);
+    cli1.mock_only_runtime = false;
+    cli1.signing_ephemeral = false;
+    cli1.kem_ephemeral = false;
+    cli1.ephemeral_keys = false;
+
+    let mut cli2 = make_test_cli(
         3100,
         false,
         true,
         None,
-        vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+        vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
-        0,
         false,
     );
+    cli2.mock_only_runtime = false;
+    cli2.signing_ephemeral = false;
+    cli2.kem_ephemeral = false;
+    cli2.ephemeral_keys = false;
 
     let bootstrap_peers = vec![
-        "/ip4/127.0.0.1/tcp/4001".to_string(),
-        "/ip4/127.0.0.1/tcp/4002".to_string(),
+        "/ip4/127.0.0.1/udp/4001/quic-v1".to_string(),
+        "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
 
-    let cli3 = make_test_cli(
-        3200,
-        false,
-        true,
-        None,
-        bootstrap_peers.clone(),
-        0,
-        0,
-        false,
-    );
+    let mut cli3 = make_test_cli(3200, false, true, None, bootstrap_peers.clone(), 0, false);
+    cli3.mock_only_runtime = false;
+    cli3.signing_ephemeral = false;
+    cli3.kem_ephemeral = false;
+    cli3.ephemeral_keys = false;
 
     // Start nodes in-process for better control
     start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await

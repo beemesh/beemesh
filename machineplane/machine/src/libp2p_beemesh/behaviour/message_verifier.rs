@@ -1,5 +1,5 @@
 use crate::libp2p_beemesh::security::{
-    verify_signed_payload_for_peer, EnvelopeRejection, VerifiedEnvelope,
+    EnvelopeRejection, VerifiedEnvelope, verify_signed_payload_for_peer,
 };
 use libp2p::PeerId;
 

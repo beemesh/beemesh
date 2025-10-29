@@ -80,10 +80,12 @@ fn test_apply_request_flatbuffer_envelope() {
 
     assert_eq!(parsed_apply.replicas(), 3);
     assert_eq!(parsed_apply.operation_id().unwrap_or(""), "apply-op-123");
-    assert!(parsed_apply
-        .manifest_json()
-        .unwrap_or("")
-        .contains("kind: Pod"));
+    assert!(
+        parsed_apply
+            .manifest_json()
+            .unwrap_or("")
+            .contains("kind: Pod")
+    );
 }
 
 #[test]

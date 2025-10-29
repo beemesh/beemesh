@@ -1,4 +1,4 @@
-use machine::{start_machine, Cli};
+use machine::{Cli, start_machine};
 use std::sync::Once;
 use std::time::Duration;
 use tokio::process::{Child, Command};
@@ -6,6 +6,22 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
 static CLEANUP_HOOK_INIT: Once = Once::new();
+
+/// Set env var for tests while containing the unsafe block required by Rust 2024.
+#[allow(dead_code)]
+pub fn set_env_var(key: &str, value: &str) {
+    unsafe {
+        std::env::set_var(key, value);
+    }
+}
+
+/// Remove env var for tests while containing the unsafe block required by Rust 2024.
+#[allow(dead_code)]
+pub fn remove_env_var(key: &str) {
+    unsafe {
+        std::env::remove_var(key);
+    }
+}
 
 #[allow(dead_code)]
 pub struct NodeGuard {
@@ -65,7 +81,6 @@ pub fn make_test_cli(
     disable_machine: bool,
     api_socket: Option<String>,
     bootstrap_peers: Vec<String>,
-    libp2p_tcp_port: u16,
     libp2p_quic_port: u16,
     disable_scheduling: bool,
 ) -> Cli {
@@ -79,10 +94,14 @@ pub fn make_test_cli(
         api_socket,
         key_dir: String::from("/tmp/.beemesh_test_unused"),
         bootstrap_peer: bootstrap_peers,
-        libp2p_tcp_port,
         libp2p_quic_port,
         libp2p_host: "0.0.0.0".to_string(),
         disable_scheduling,
+        mock_only_runtime: true,
+        podman_socket: None,
+        signing_ephemeral: true,
+        kem_ephemeral: true,
+        ephemeral_keys: true,
     }
 }
 
@@ -125,8 +144,6 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
             .arg(&cli.rest_api_host)
             .arg("--rest-api-port")
             .arg(&cli.rest_api_port.to_string())
-            .arg("--libp2p-tcp-port")
-            .arg(&cli.libp2p_tcp_port.to_string())
             .arg("--libp2p-quic-port")
             .arg(&cli.libp2p_quic_port.to_string())
             .arg("--libp2p-host")
@@ -142,13 +159,32 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
             cmd.arg("--disable-scheduling");
         }
 
+        if cli.mock_only_runtime {
+            cmd.arg("--mock-only-runtime");
+        }
+
+        if cli.signing_ephemeral {
+            cmd.arg("--signing-ephemeral");
+        }
+
+        if cli.kem_ephemeral {
+            cmd.arg("--kem-ephemeral");
+        }
+
+        if cli.ephemeral_keys {
+            cmd.arg("--ephemeral-keys");
+        }
+
+        if let Some(socket) = &cli.podman_socket {
+            cmd.arg("--podman-socket").arg(socket);
+        }
+
         for bootstrap in &cli.bootstrap_peer {
             cmd.arg("--bootstrap-peer").arg(bootstrap);
         }
 
         // Set environment variables for this process
-        cmd.env("RUST_LOG", "info,libp2p=warn,quinn=warn")
-            .env("BEEMESH_KEM_EPHEMERAL", "1");
+        cmd.env("RUST_LOG", "info,libp2p=warn,quinn=warn");
 
         //println!("Starting machine process on port {}", cli.rest_api_port);
         match cmd.spawn() {

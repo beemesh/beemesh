@@ -53,7 +53,8 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
         "Expected a single node to host the workload"
     );
     assert!(
-        !nodes_with_deployed_workloads.contains(&3000) && !nodes_with_deployed_workloads.contains(&3200),
+        !nodes_with_deployed_workloads.contains(&3000)
+            && !nodes_with_deployed_workloads.contains(&3200),
         "Node with disabled scheduling should not receive workloads"
     );
     assert!(
@@ -63,7 +64,6 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
     );
 
     guard.cleanup().await;
-    std::env::remove_var("BEEMESH_MOCK_ONLY_RUNTIME");
 }
 
 #[serial]
@@ -98,5 +98,4 @@ async fn test_scheduling_fails_when_all_nodes_disabled() {
     );
 
     guard.cleanup().await;
-    std::env::remove_var("BEEMESH_MOCK_ONLY_RUNTIME");
 }

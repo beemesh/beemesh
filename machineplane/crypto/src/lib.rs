@@ -1,17 +1,18 @@
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
-use base64::{engine::general_purpose, Engine as _};
-use once_cell::sync::OnceCell;
+use base64::{Engine as _, engine::general_purpose};
+use once_cell::sync::{Lazy, OnceCell};
 use rand::RngCore;
-use saorsa_pqc::api::sig::{ml_dsa_65, MlDsaPublicKey, MlDsaSecretKey, MlDsaVariant};
 use saorsa_pqc::ApiMlDsaSignature;
+use saorsa_pqc::api::sig::{MlDsaPublicKey, MlDsaSecretKey, MlDsaVariant, ml_dsa_65};
 use std::convert::AsRef;
-use std::sync::{Mutex, Once};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, Once, RwLock};
 // KEM API from saorsa_pqc
 use saorsa_pqc::api::kem::{
-    ml_kem_512, MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, MlKemVariant,
+    MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, MlKemVariant, ml_kem_512,
 };
 use zeroize::Zeroizing;
 
@@ -27,6 +28,72 @@ pub const PUBKEY_FILE: &str = "pubkey.bin";
 pub const PRIVKEY_FILE: &str = "privkey.bin";
 pub const KEM_PUBFILE: &str = "kem_pub.bin";
 pub const KEM_PRIVFILE: &str = "kem_priv.bin";
+
+/// Storage mode for key material
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeypairMode {
+    Persistent,
+    Ephemeral,
+}
+
+/// Global configuration for keypair handling
+#[derive(Clone, Debug)]
+pub struct KeypairConfig {
+    pub signing_mode: KeypairMode,
+    pub kem_mode: KeypairMode,
+    pub key_directory: Option<PathBuf>,
+}
+
+impl Default for KeypairConfig {
+    fn default() -> Self {
+        Self {
+            signing_mode: KeypairMode::Persistent,
+            kem_mode: KeypairMode::Persistent,
+            key_directory: None,
+        }
+    }
+}
+
+static KEYPAIR_CONFIG: Lazy<RwLock<KeypairConfig>> =
+    Lazy::new(|| RwLock::new(KeypairConfig::default()));
+
+/// Update the global keypair configuration at runtime.
+/// This should typically be called once during application startup based on CLI flags.
+pub fn set_keypair_config(config: KeypairConfig) {
+    let mut guard = KEYPAIR_CONFIG
+        .write()
+        .expect("keypair config rwlock poisoned");
+    *guard = config;
+}
+
+/// Fetch the current keypair configuration.
+pub fn get_keypair_config() -> KeypairConfig {
+    KEYPAIR_CONFIG
+        .read()
+        .expect("keypair config rwlock poisoned")
+        .clone()
+}
+
+fn resolve_key_dir(dir_override: Option<&Path>) -> anyhow::Result<PathBuf> {
+    if let Some(path) = dir_override {
+        return Ok(path.to_path_buf());
+    }
+
+    let home = home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
+    Ok(home.join(KEY_DIR))
+}
+
+fn ensure_key_dir(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        std::fs::create_dir_all(path)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
 
 // Lazy initializer for saorsa_pqc::api_init(). We use std::sync::Once plus
 // a Mutex-protected Option to capture any initialization error so callers
@@ -51,116 +118,100 @@ pub fn ensure_pqc_init() -> anyhow::Result<()> {
 }
 
 pub fn ensure_keypair_on_disk() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    // Support ephemeral signing keypair mode for tests to avoid writing to $HOME and race conditions.
-    // If BEEMESH_SIGNING_EPHEMERAL is set, generate a transient signing keypair once and reuse it
-    // for the life of the process so CLI and machine nodes use the same keys.
     static EPHEMERAL_SIGNING: OnceCell<(Vec<u8>, Vec<u8>)> = OnceCell::new();
-    if std::env::var("BEEMESH_SIGNING_EPHEMERAL").is_ok() {
-        if let Some(k) = EPHEMERAL_SIGNING.get() {
-            return Ok((k.0.clone(), k.1.clone()));
+    let config = get_keypair_config();
+
+    match config.signing_mode {
+        KeypairMode::Ephemeral => {
+            if let Some(k) = EPHEMERAL_SIGNING.get() {
+                return Ok((k.0.clone(), k.1.clone()));
+            }
+            ensure_pqc_init()?;
+            let dsa = ml_dsa_65();
+            let (pubk, privk) = dsa.generate_keypair()?;
+            let pubb = pubk.to_bytes();
+            let privb = privk.to_bytes();
+            log::warn!("ensure_keypair_on_disk: using ephemeral signing keypair (no disk writes)");
+            let _ = EPHEMERAL_SIGNING.set((pubb.clone(), privb.clone()));
+            Ok((pubb, privb))
         }
-        ensure_pqc_init()?;
-        let dsa = ml_dsa_65();
-        let (pubk, privk) = dsa.generate_keypair()?;
-        let pubb = pubk.to_bytes();
-        let privb = privk.to_bytes();
-        log::warn!("ensure_keypair_on_disk: BEEMESH_SIGNING_EPHEMERAL set - using ephemeral signing keypair (no disk writes)");
-        let _ = EPHEMERAL_SIGNING.set((pubb.clone(), privb.clone()));
-        return Ok((pubb, privb));
-    }
+        KeypairMode::Persistent => {
+            let key_dir = resolve_key_dir(config.key_directory.as_deref())?;
+            ensure_key_dir(&key_dir)?;
 
-    let home = home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
-    let key_dir = home.join(KEY_DIR);
-    if !key_dir.exists() {
-        std::fs::create_dir_all(&key_dir)?;
-        // tighten permissions to user-only
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_dir, std::fs::Permissions::from_mode(0o700))?;
+            let pub_path = key_dir.join(PUBKEY_FILE);
+            let priv_path = key_dir.join(PRIVKEY_FILE);
+            if pub_path.exists() && priv_path.exists() {
+                let pubb = std::fs::read(&pub_path)?;
+                let privb = std::fs::read(&priv_path)?;
+                return Ok((pubb, privb));
+            }
+
+            ensure_pqc_init()?;
+            let dsa = ml_dsa_65();
+            let (pubk, privk) = dsa.generate_keypair()?;
+            let pubb = pubk.to_bytes();
+            let privb = privk.to_bytes();
+            std::fs::write(&pub_path, &pubb)?;
+            std::fs::write(&priv_path, &privb)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&pub_path, std::fs::Permissions::from_mode(0o600))?;
+                std::fs::set_permissions(&priv_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            Ok((pubb, privb))
         }
     }
-
-    let pub_path = key_dir.join(PUBKEY_FILE);
-    let priv_path = key_dir.join(PRIVKEY_FILE);
-    if pub_path.exists() && priv_path.exists() {
-        let pubb = std::fs::read(&pub_path)?;
-        let privb = std::fs::read(&priv_path)?;
-        return Ok((pubb, privb));
-    }
-
-    // generate and persist
-    ensure_pqc_init()?;
-    let dsa = ml_dsa_65();
-    let (pubk, privk) = dsa.generate_keypair()?;
-    let pubb = pubk.to_bytes();
-    let privb = privk.to_bytes();
-    std::fs::write(&pub_path, &pubb)?;
-    std::fs::write(&priv_path, &privb)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&pub_path, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::set_permissions(&priv_path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok((pubb, privb))
 }
 
 /// Ensure a KEM keypair exists on disk. Returns (pub_bytes, priv_bytes).
 pub fn ensure_kem_keypair_on_disk() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    // Support ephemeral KEM mode for tests to avoid writing to $HOME.
-    // If BEEMESH_KEM_EPHEMERAL is set, generate a transient KEM keypair once and reuse it
-    // for the life of the process so encrypt/decrypt operations are consistent.
     static EPHEMERAL_KEM: OnceCell<(Vec<u8>, Vec<u8>)> = OnceCell::new();
-    if std::env::var("BEEMESH_KEM_EPHEMERAL").is_ok() {
-        if let Some(k) = EPHEMERAL_KEM.get() {
-            return Ok((k.0.clone(), k.1.clone()));
+    let config = get_keypair_config();
+
+    match config.kem_mode {
+        KeypairMode::Ephemeral => {
+            if let Some(k) = EPHEMERAL_KEM.get() {
+                return Ok((k.0.clone(), k.1.clone()));
+            }
+            ensure_pqc_init()?;
+            let kem = ml_kem_512();
+            let (pubk, privk) = kem.generate_keypair()?;
+            let pubb = pubk.to_bytes();
+            let privb = privk.to_bytes();
+            log::warn!("ensure_kem_keypair_on_disk: using ephemeral KEM keypair (no disk writes)");
+            let _ = EPHEMERAL_KEM.set((pubb.clone(), privb.clone()));
+            Ok((pubb, privb))
         }
-        ensure_pqc_init()?;
-        let kem = ml_kem_512();
-        let (pubk, privk) = kem.generate_keypair()?;
-        let pubb = pubk.to_bytes();
-        let privb = privk.to_bytes();
-        log::warn!("ensure_kem_keypair_on_disk: BEEMESH_KEM_EPHEMERAL set - using ephemeral KEM keypair (no disk writes)");
-        let _ = EPHEMERAL_KEM.set((pubb.clone(), privb.clone()));
-        return Ok((pubb, privb));
-    }
+        KeypairMode::Persistent => {
+            let key_dir = resolve_key_dir(config.key_directory.as_deref())?;
+            ensure_key_dir(&key_dir)?;
 
-    // Reuse same key dir logic as signing keypair
-    let home = home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))?;
-    let key_dir = home.join(KEY_DIR);
-    if !key_dir.exists() {
-        std::fs::create_dir_all(&key_dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_dir, std::fs::Permissions::from_mode(0o700))?;
+            let pub_path = key_dir.join(KEM_PUBFILE);
+            let priv_path = key_dir.join(KEM_PRIVFILE);
+            if pub_path.exists() && priv_path.exists() {
+                let pubb = std::fs::read(&pub_path)?;
+                let privb = std::fs::read(&priv_path)?;
+                return Ok((pubb, privb));
+            }
+
+            ensure_pqc_init()?;
+            let kem = ml_kem_512();
+            let (pubk, privk) = kem.generate_keypair()?;
+            let pubb = pubk.to_bytes();
+            let privb = privk.to_bytes();
+            std::fs::write(&pub_path, &pubb)?;
+            std::fs::write(&priv_path, &privb)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&pub_path, std::fs::Permissions::from_mode(0o600))?;
+                std::fs::set_permissions(&priv_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            Ok((pubb, privb))
         }
     }
-
-    let pub_path = key_dir.join(KEM_PUBFILE);
-    let priv_path = key_dir.join(KEM_PRIVFILE);
-    if pub_path.exists() && priv_path.exists() {
-        let pubb = std::fs::read(&pub_path)?;
-        let privb = std::fs::read(&priv_path)?;
-        return Ok((pubb, privb));
-    }
-
-    // generate and persist
-    ensure_pqc_init()?;
-    let kem = ml_kem_512();
-    let (pubk, privk) = kem.generate_keypair()?;
-    let pubb = pubk.to_bytes();
-    let privb = privk.to_bytes();
-    std::fs::write(&pub_path, &pubb)?;
-    std::fs::write(&priv_path, &privb)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&pub_path, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::set_permissions(&priv_path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok((pubb, privb))
 }
 
 /// Encapsulate to a recipient KEM public key bytes. Returns (ciphertext_bytes, shared_secret_bytes).

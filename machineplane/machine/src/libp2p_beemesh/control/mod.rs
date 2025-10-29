@@ -1,5 +1,5 @@
 use libp2p::kad::RecordKey;
-use libp2p::{gossipsub, PeerId, Swarm};
+use libp2p::{PeerId, Swarm, gossipsub};
 use log::info;
 use once_cell::sync::Lazy;
 use std::collections::HashMap as StdHashMap;

@@ -9,10 +9,12 @@ use crate::runtime::{
 };
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
+use once_cell::sync::Lazy;
 use serde_yaml::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::RwLock;
 use tokio::process::Command;
 
 /// Podman runtime engine
@@ -20,6 +22,8 @@ pub struct PodmanEngine {
     podman_binary: String,
     podman_socket: Option<String>,
 }
+
+static PODMAN_SOCKET_OVERRIDE: Lazy<RwLock<Option<String>>> = Lazy::new(|| RwLock::new(None));
 
 impl PodmanEngine {
     /// Create a new Podman engine instance
@@ -38,19 +42,52 @@ impl PodmanEngine {
         }
     }
 
-    /// Detect a podman socket URL from environment or common locations
+    /// Set a podman socket override provided by configuration (CLI).
+    pub fn set_socket_override(socket: Option<String>) {
+        let normalized = socket.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(Self::normalize_socket(trimmed))
+            }
+        });
+
+        let mut guard = PODMAN_SOCKET_OVERRIDE
+            .write()
+            .expect("podman socket override rwlock poisoned");
+        *guard = normalized;
+    }
+
+    fn socket_override() -> Option<String> {
+        PODMAN_SOCKET_OVERRIDE
+            .read()
+            .expect("podman socket override rwlock poisoned")
+            .clone()
+    }
+
+    fn normalize_socket(value: &str) -> String {
+        if value.contains("://") {
+            value.to_string()
+        } else {
+            format!("unix://{}", value)
+        }
+    }
+
+    /// Detect a podman socket URL from configuration, environment, or common locations
     fn detect_podman_socket() -> Option<String> {
-        let socket_env_vars = ["BEEMESH_PODMAN_SOCKET", "PODMAN_HOST", "CONTAINER_HOST"];
+        if let Some(socket) = Self::socket_override() {
+            info!("Using Podman socket from CLI configuration: {}", socket);
+            return Some(socket);
+        }
+
+        let socket_env_vars = ["PODMAN_HOST", "CONTAINER_HOST"];
 
         for var in socket_env_vars {
             if let Ok(value) = std::env::var(var) {
                 let trimmed = value.trim();
                 if !trimmed.is_empty() {
-                    let normalized = if trimmed.contains("://") {
-                        trimmed.to_string()
-                    } else {
-                        format!("unix://{}", trimmed)
-                    };
+                    let normalized = Self::normalize_socket(trimmed);
                     info!(
                         "Using Podman socket from environment variable {}: {}",
                         var, normalized
@@ -71,7 +108,8 @@ impl PodmanEngine {
 
         for path in candidate_paths {
             if path.exists() {
-                let url = format!("unix://{}", path.to_string_lossy());
+                let path_str = path.to_string_lossy().to_string();
+                let url = Self::normalize_socket(&path_str);
                 info!("Detected Podman socket at {}", url);
                 return Some(url);
             }

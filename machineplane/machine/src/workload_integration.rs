@@ -7,10 +7,10 @@
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 use crate::provider::{ProviderConfig, ProviderManager};
 use crate::resource_verifier::ResourceVerifier;
-use crate::runtime::{create_default_registry, DeploymentConfig, RuntimeRegistry};
+use crate::runtime::{DeploymentConfig, RuntimeRegistry, create_default_registry};
 use base64::Engine;
-use libp2p::request_response;
 use libp2p::Swarm;
+use libp2p::request_response;
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use protocol::machine;
@@ -35,11 +35,15 @@ static MANIFEST_OWNER_MAP: Lazy<RwLock<HashMap<String, Vec<u8>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// Initialize the runtime registry and provider manager
-pub async fn initialize_workload_manager() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn initialize_workload_manager(
+    force_mock_runtime: bool,
+    mock_only_runtime: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     info!("Initializing runtime registry and provider manager for manifest deployment");
 
     // Create runtime registry - use mock-only for tests if environment variable is set
-    let registry = if std::env::var("BEEMESH_MOCK_ONLY_RUNTIME").is_ok() {
+    let use_mock_registry = force_mock_runtime || mock_only_runtime;
+    let registry = if use_mock_registry {
         info!("Using mock-only runtime registry for testing");
         crate::runtime::create_mock_only_registry().await
     } else {
@@ -102,8 +106,8 @@ pub async fn remove_manifest_owner(manifest_id: &str) -> Option<Vec<u8>> {
 }
 
 /// Get access to the global runtime registry (for testing and debug endpoints)
-pub async fn get_global_runtime_registry(
-) -> Option<tokio::sync::RwLockReadGuard<'static, Option<RuntimeRegistry>>> {
+pub async fn get_global_runtime_registry()
+-> Option<tokio::sync::RwLockReadGuard<'static, Option<RuntimeRegistry>>> {
     let registry_guard = RUNTIME_REGISTRY.read().await;
     if registry_guard.is_some() {
         Some(registry_guard)
@@ -732,8 +736,7 @@ pub async fn remove_workloads_by_manifest_id(
     } else {
         warn!(
             "remove_workloads_by_manifest_id: retaining owner mapping for manifest_id={} due to errors {:?}",
-            manifest_id,
-            errors
+            manifest_id, errors
         );
     }
 
@@ -785,7 +788,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_registry_initialization() {
-        let result = initialize_workload_manager().await;
+        let result = initialize_workload_manager(false, false).await;
         assert!(result.is_ok());
 
         let stats = get_runtime_registry_stats().await;
@@ -799,7 +802,7 @@ mod tests {
     #[tokio::test]
     async fn test_runtime_engine_selection() {
         // Initialize registry for testing
-        let _ = initialize_workload_manager().await;
+        let _ = initialize_workload_manager(false, false).await;
 
         // Test Kubernetes manifest
         let k8s_manifest = r#"

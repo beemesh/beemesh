@@ -213,42 +213,42 @@ mod generated {
 pub mod machine {
     // Avoid glob imports; re-export specific items below.
     pub use crate::generated::generated_capacity_reply::beemesh::machine::{
-        finish_capacity_reply_buffer, root_as_capacity_reply, CapacityReply,
+        CapacityReply, finish_capacity_reply_buffer, root_as_capacity_reply,
     };
     pub use crate::generated::generated_capacity_request::beemesh::machine::{
-        finish_capacity_request_buffer, root_as_capacity_request, CapacityRequest,
+        CapacityRequest, finish_capacity_request_buffer, root_as_capacity_request,
     };
-    pub use crate::generated::generated_health::beemesh::machine::{root_as_health, Health};
+    pub use crate::generated::generated_health::beemesh::machine::{Health, root_as_health};
     // Re-export Args to allow building nested FB objects in other modules
     pub use crate::generated::generated_apply_request::beemesh::machine::{
-        root_as_apply_request, ApplyRequest,
+        ApplyRequest, root_as_apply_request,
     };
     pub use crate::generated::generated_apply_response::beemesh::machine::{
-        root_as_apply_response, ApplyResponse,
+        ApplyResponse, root_as_apply_response,
     };
 
     // Delete request/response
     pub use crate::generated::generated_delete_request::beemesh::machine::{
-        root_as_delete_request, DeleteRequest,
+        DeleteRequest, root_as_delete_request,
     };
     pub use crate::generated::generated_delete_response::beemesh::machine::{
-        root_as_delete_response, DeleteResponse,
+        DeleteResponse, root_as_delete_response,
     };
 
     pub use crate::generated::generated_candidates_response::beemesh::machine::root_as_candidates_response;
     pub use crate::generated::generated_capacity_reply::beemesh::machine::CapacityReplyArgs;
     pub use crate::generated::generated_capacity_request::beemesh::machine::CapacityRequestArgs;
     pub use crate::generated::generated_envelope::beemesh::machine::{
-        root_as_envelope, Envelope as FbEnvelope,
+        Envelope as FbEnvelope, root_as_envelope,
     };
     pub use crate::generated::generated_handshake::beemesh::machine::{
-        root_as_handshake, Handshake,
+        Handshake, root_as_handshake,
     };
     pub use crate::generated::generated_nodes_response::beemesh::machine::root_as_nodes_response;
     pub use crate::generated::generated_task_create_response::beemesh::machine::root_as_task_create_response;
     // Also export Args and helper finish function for builders/tests
     pub use crate::generated::generated_envelope::beemesh::machine::{
-        finish_envelope_buffer, EnvelopeArgs,
+        EnvelopeArgs, finish_envelope_buffer,
     };
 
     // Nodes response
@@ -276,8 +276,8 @@ pub mod machine {
     }
 
     pub use crate::machine::generated_applied_manifest::{
-        root_as_applied_manifest, AppliedManifest, AppliedManifestArgs, OperationType,
-        SignatureScheme,
+        AppliedManifest, AppliedManifestArgs, OperationType, SignatureScheme,
+        root_as_applied_manifest,
     };
 
     use base64::Engine;

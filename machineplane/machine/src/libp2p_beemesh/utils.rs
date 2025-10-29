@@ -1,16 +1,20 @@
 use anyhow::Context;
 use log::{debug, error};
 use rand::Rng;
+use std::collections::HashMap as StdHashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
 
-use crate::libp2p_beemesh::envelope::{sign_with_existing_keypair, sign_with_node_keys, SignEnvelopeConfig};
+use crate::libp2p_beemesh::envelope::{
+    SignEnvelopeConfig, sign_with_existing_keypair, sign_with_node_keys,
+};
 
 /// Lightweight helpers to centralize common envelope signing and broadcast logic.
 pub fn make_nonce(prefix: Option<&str>) -> String {
     if let Some(p) = prefix {
-        format!("{}_{}", p, rand::thread_rng().gen::<u32>())
+        format!("{}_{}", p, rand::thread_rng().r#gen::<u32>())
     } else {
-        format!("nonce_{}", rand::thread_rng().gen::<u32>())
+        format!("nonce_{}", rand::thread_rng().r#gen::<u32>())
     }
 }
 
@@ -86,4 +90,20 @@ pub fn broadcast_signed_request_to_peers(
     }
 
     Ok(sent)
+}
+
+/// Notify all pending capacity observers for the given request id with a lazily constructed payload.
+pub fn notify_capacity_observers<F>(
+    pending_queries: &mut StdHashMap<String, Vec<mpsc::UnboundedSender<String>>>,
+    request_id: &str,
+    mut build_payload: F,
+) where
+    F: FnMut() -> String,
+{
+    if let Some(senders) = pending_queries.get_mut(request_id) {
+        let payload = build_payload();
+        for tx in senders.iter() {
+            let _ = tx.send(payload.clone());
+        }
+    }
 }

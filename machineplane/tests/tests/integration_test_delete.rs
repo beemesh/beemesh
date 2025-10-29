@@ -6,29 +6,25 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 mod test_utils;
-use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
+use test_utils::{make_test_cli, set_env_var, setup_cleanup_hook, start_nodes};
 
 async fn setup_test_environment() -> Vec<u16> {
     // Setup cleanup hook and initialize logger
     setup_cleanup_hook();
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
-    // Set environment variable to use mock-only runtime
-    std::env::set_var("BEEMESH_MOCK_ONLY_RUNTIME", "1");
-
     vec![3000u16, 3100u16]
 }
 
 async fn start_test_nodes() -> test_utils::NodeGuard {
-    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, 0, false);
+    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, false);
     let cli2 = make_test_cli(
         3100,
         false,
         true,
         None,
-        vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+        vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
-        0,
         false,
     );
 
@@ -47,7 +43,7 @@ async fn test_delete_task_endpoint() {
     sleep(Duration::from_secs(2)).await;
 
     // Set API endpoint for CLI to use
-    std::env::set_var("BEEMESH_API", "http://127.0.0.1:3000");
+    set_env_var("BEEMESH_API", "http://127.0.0.1:3000");
 
     // Create a test manifest file path using CARGO_MANIFEST_DIR
     let manifest_path = PathBuf::from(format!(
@@ -92,7 +88,7 @@ async fn test_delete_task_with_force() {
     sleep(Duration::from_secs(2)).await;
 
     // Set API endpoint for CLI to use
-    std::env::set_var("BEEMESH_API", "http://127.0.0.1:3000");
+    set_env_var("BEEMESH_API", "http://127.0.0.1:3000");
 
     // Create a test manifest file path using CARGO_MANIFEST_DIR
     let manifest_path = PathBuf::from(format!(
@@ -137,7 +133,7 @@ async fn test_delete_nonexistent_task() {
     sleep(Duration::from_secs(5)).await;
 
     // Set API endpoint for CLI to use
-    std::env::set_var("BEEMESH_API", "http://127.0.0.1:3000");
+    set_env_var("BEEMESH_API", "http://127.0.0.1:3000");
 
     // Create a test manifest file path using CARGO_MANIFEST_DIR
     let manifest_path = PathBuf::from(format!(

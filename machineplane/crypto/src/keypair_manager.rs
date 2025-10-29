@@ -306,12 +306,11 @@ impl KeypairManager {
         })
     }
 
-    /// Determine storage mode from environment variables
+    /// Determine storage mode from the global keypair configuration
     pub fn default_storage_mode() -> StorageMode {
-        if std::env::var("BEEMESH_EPHEMERAL_KEYS").is_ok() {
-            StorageMode::Ephemeral
-        } else {
-            StorageMode::Persistent
+        match crate::get_keypair_config().signing_mode {
+            crate::KeypairMode::Ephemeral => StorageMode::Ephemeral,
+            crate::KeypairMode::Persistent => StorageMode::Persistent,
         }
     }
 }
@@ -391,20 +390,22 @@ mod tests {
 
     #[test]
     fn test_default_storage_mode() {
-        // Test without environment variable
-        std::env::remove_var("BEEMESH_EPHEMERAL_KEYS");
+        crate::set_keypair_config(crate::KeypairConfig::default());
         assert_eq!(
             KeypairManager::default_storage_mode(),
             StorageMode::Persistent
         );
 
-        // Test with environment variable set
-        std::env::set_var("BEEMESH_EPHEMERAL_KEYS", "1");
+        crate::set_keypair_config(crate::KeypairConfig {
+            signing_mode: crate::KeypairMode::Ephemeral,
+            kem_mode: crate::KeypairMode::Ephemeral,
+            key_directory: None,
+        });
         assert_eq!(
             KeypairManager::default_storage_mode(),
             StorageMode::Ephemeral
         );
-        std::env::remove_var("BEEMESH_EPHEMERAL_KEYS");
+        crate::set_keypair_config(crate::KeypairConfig::default());
     }
 
     #[test]

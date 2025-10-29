@@ -1,10 +1,10 @@
 use anyhow::Context;
-use base64::engine::general_purpose;
 use base64::Engine as _;
+use base64::engine::general_purpose;
 use flatbuffers::FlatBufferBuilder;
 
 use crypto::{ensure_keypair_ephemeral, ensure_pqc_init, sign_envelope, verify_envelope};
-use protocol::machine::{finish_envelope_buffer, EnvelopeArgs, FbEnvelope};
+use protocol::machine::{EnvelopeArgs, FbEnvelope, finish_envelope_buffer};
 
 #[test]
 fn flatbuffer_envelope_sign_and_verify() -> anyhow::Result<()> {

@@ -80,7 +80,9 @@ fn main() {
     if generated_any {
         println!("cargo:rustc-cfg=has_flatbuffers_generated");
     } else {
-        println!("cargo:warning=no flatbuffers code generated; tests relying on generated code will be skipped");
+        println!(
+            "cargo:warning=no flatbuffers code generated; tests relying on generated code will be skipped"
+        );
     }
 
     // Re-run build.rs if any schema files change

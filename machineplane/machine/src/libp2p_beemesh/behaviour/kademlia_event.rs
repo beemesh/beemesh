@@ -1,5 +1,5 @@
 use crate::libp2p_beemesh::control;
-use libp2p::{kad, PeerId};
+use libp2p::{PeerId, kad};
 use log::{debug, info, warn};
 
 /// Handle Kademlia DHT events

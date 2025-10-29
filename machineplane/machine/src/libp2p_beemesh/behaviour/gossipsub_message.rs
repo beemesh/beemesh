@@ -1,6 +1,5 @@
 use super::message_verifier::verify_signed_message;
-use crate::libp2p_beemesh::reply::{build_capacity_reply_with, warn_missing_kem};
-use crate::libp2p_beemesh::utils;
+use crate::libp2p_beemesh::{capacity, utils};
 use libp2p::gossipsub;
 use log::{debug, error, info, warn};
 
@@ -34,32 +33,28 @@ pub fn gossipsub_message(
             peer_id,
             payload.len()
         );
-        let reply = build_capacity_reply_with(&orig_request_id, &responder_peer, |_| {});
-        warn_missing_kem("gossipsub", &responder_peer, reply.kem_pub_b64.as_deref());
+        let reply = capacity::compose_default_capacity_reply(
+            "gossipsub",
+            &orig_request_id,
+            &responder_peer,
+        );
         let payload_len = reply.payload.len();
 
-        match utils::sign_payload_default(&reply.payload, "capacity_reply", Some("capreply")) {
-            Ok(signed_bytes) => {
-                if let Err(e) = swarm
-                    .behaviour_mut()
-                    .gossipsub
-                    .publish(topic.clone(), signed_bytes.as_slice())
-                {
-                    error!(
-                        "libp2p: failed to publish signed capacity reply id={} to {}: {:?}",
-                        orig_request_id, peer_id, e
-                    );
-                } else {
-                    info!(
-                        "libp2p: published capreply for id={} ({} bytes)",
-                        orig_request_id, payload_len
-                    );
-                }
+        match capacity::publish_gossipsub_capacity_reply(
+            &mut swarm.behaviour_mut().gossipsub,
+            &topic,
+            &reply,
+        ) {
+            Ok(_) => {
+                info!(
+                    "libp2p: published capreply for id={} ({} bytes)",
+                    orig_request_id, payload_len
+                );
             }
             Err(e) => {
                 error!(
-                    "libp2p: failed to sign capacity reply for peer {} id={}: {:?}",
-                    peer_id, orig_request_id, e
+                    "libp2p: failed to publish signed capacity reply id={} to {}: {:?}",
+                    orig_request_id, peer_id, e
                 );
             }
         }
@@ -73,11 +68,9 @@ pub fn gossipsub_message(
             request_part, peer_id
         );
         // KEM pubkey caching has been removed - keys are now extracted directly from envelopes
-        if let Some(senders) = pending_queries.get_mut(&request_part) {
-            for tx in senders.iter() {
-                let _ = tx.send(peer_id.to_string());
-            }
-        }
+        utils::notify_capacity_observers(pending_queries, &request_part, move || {
+            peer_id.to_string()
+        });
         return;
     }
 

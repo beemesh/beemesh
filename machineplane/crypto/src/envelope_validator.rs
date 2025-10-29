@@ -3,7 +3,7 @@
 //! This module provides reusable envelope validation logic that was previously
 //! duplicated across multiple behavior modules in the machine crate.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use log::warn;
 
 /// Envelope validation error types
