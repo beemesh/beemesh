@@ -38,7 +38,15 @@ static MANIFEST_OWNER_MAP: Lazy<RwLock<HashMap<String, Vec<u8>>>> =
 pub async fn initialize_workload_manager(
     force_mock_runtime: bool,
     mock_only_runtime: bool,
+    scheduling_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if !scheduling_enabled {
+        info!(
+            "Scheduling disabled; skipping runtime registry and provider manager initialization"
+        );
+        return Ok(());
+    }
+
     info!("Initializing runtime registry and provider manager for manifest deployment");
 
     // Create runtime registry - use mock-only for tests if environment variable is set
@@ -788,7 +796,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_registry_initialization() {
-        let result = initialize_workload_manager(false, false).await;
+        let result = initialize_workload_manager(false, false, true).await;
         assert!(result.is_ok());
 
         let stats = get_runtime_registry_stats().await;
@@ -802,7 +810,7 @@ mod tests {
     #[tokio::test]
     async fn test_runtime_engine_selection() {
         // Initialize registry for testing
-        let _ = initialize_workload_manager(false, false).await;
+        let _ = initialize_workload_manager(false, false, true).await;
 
         // Test Kubernetes manifest
         let k8s_manifest = r#"

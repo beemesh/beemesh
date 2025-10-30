@@ -308,8 +308,11 @@ pub async fn create_default_registry() -> RuntimeRegistry {
     // Register Docker engine (for future use)
     registry.register(Box::new(engines::DockerEngine::new()));
 
-    // Register mock engine for testing
-    registry.register(Box::new(mock::MockEngine::new()));
+    // Register mock engine for testing and debug builds only
+    #[cfg(debug_assertions)]
+    {
+        registry.register(Box::new(mock::MockEngine::new()));
+    }
 
     // Try to set the best available engine as default
     let available = registry.check_available_engines().await;
@@ -320,7 +323,10 @@ pub async fn create_default_registry() -> RuntimeRegistry {
     } else if *available.get("docker").unwrap_or(&false) {
         let _ = registry.set_default_engine("docker");
     } else {
-        let _ = registry.set_default_engine("mock");
+        #[cfg(debug_assertions)]
+        {
+            let _ = registry.set_default_engine("mock");
+        }
     }
 
     registry

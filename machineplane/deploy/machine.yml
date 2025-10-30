@@ -10,12 +10,16 @@ spec:
   containers:
     - name: machine
       image: beemesh-machine:latest
+      env:
+      - name: RUST_LOG
+        value: "info"
       args:
         - "--libp2p-quic-port"
         - "4001"
-        - "--podman-socket"
-        - "/run/podman/podman.sock"
+        #- "--podman-socket"
+        #- "/run/podman/podman.sock"
         - "--disable-scheduling"
+        - "--disable-machine-api"
       ports:
         - containerPort: 4001
           hostPort: 4001
@@ -30,34 +34,34 @@ spec:
           hostPort: 3000
           protocol: UDP
       volumeMounts:
-        - name: podman-socket
-          mountPath: /run/podman/podman.sock
-        - name: host-proc-cpuinfo
-          mountPath: /host-proc/cpuinfo
-          readOnly: true
-        - name: host-proc-meminfo
-          mountPath: /host-proc/meminfo
-          readOnly: true
-        - name: host-containers-storage
-          mountPath: /var/lib/containers/storage
-          readOnly: true
+        # - name: podman-socket
+        #   mountPath: /run/podman/podman.sock
+        # - name: host-proc-cpuinfo
+        #   mountPath: /host-proc/cpuinfo
+        #   readOnly: true
+        # - name: host-proc-meminfo
+        #   mountPath: /host-proc/meminfo
+        #   readOnly: true
+        # - name: host-containers-storage
+        #   mountPath: /var/lib/containers/storage
+        #   readOnly: true
   volumes:
-    - name: podman-socket
-      hostPath:
-        path: /run/podman/podman.sock
-        type: Socket
-    - name: host-proc-cpuinfo
-      hostPath:
-        path: /proc/cpuinfo
-        type: File
-    - name: host-proc-meminfo
-      hostPath:
-        path: /proc/meminfo
-        type: File
-    - name: host-containers-storage
-      hostPath:
-        path: /var/lib/containers/storage
-        type: Directory
+    # - name: podman-socket
+    #   hostPath:
+    #     path: /run/podman/podman.sock
+    #     type: Socket
+    # - name: host-proc-cpuinfo
+    #   hostPath:
+    #     path: /proc/cpuinfo
+    #     type: File
+    # - name: host-proc-meminfo
+    #   hostPath:
+    #     path: /proc/meminfo
+    #     type: File
+    # - name: host-containers-storage
+    #   hostPath:
+    #     path: /var/lib/containers/storage
+    #     type: Directory
 ---
 apiVersion: v1
 kind: Pod
@@ -71,6 +75,9 @@ spec:
   containers:
     - name: machine
       image: beemesh-machine:latest
+      env:
+      - name: RUST_LOG
+        value: "info"
       args:
         - "--disable-rest-api"
         - "--disable-machine-api"
@@ -121,6 +128,9 @@ spec:
   containers:
     - name: machine
       image: beemesh-machine:latest
+      env:
+      - name: RUST_LOG
+        value: "info"
       args:
         - "--disable-rest-api"
         - "--disable-machine-api"

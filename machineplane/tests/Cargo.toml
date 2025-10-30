@@ -3,6 +3,7 @@ name = "integration"
 version = "0.1.0"
 edition = "2024"
 description = "Integration tests for beemesh machine plane"
+publish = false
 
 [dependencies]
 machine = { path = "../machine" }
