@@ -46,8 +46,12 @@ COPY --from=alpine:latest /etc/group /etc/group
 
 # CA certificates for HTTPS
 COPY --from=alpine:latest /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# DNS config
+COPY --from=alpine:latest /etc/resolv.conf /etc/resolv.conf
+COPY --from=alpine:latest /etc/nsswitch.conf /etc/nsswitch.conf
+COPY --from=alpine:latest /etc/hosts /etc/hosts
 
-# Copy your binaries into /usr/local/bin (already in PATH)
+# Copy binaries into /usr/local/bin
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/machine /usr/local/bin/machine
 COPY --from=builder /out/podman/podman /usr/local/bin/podman
 
