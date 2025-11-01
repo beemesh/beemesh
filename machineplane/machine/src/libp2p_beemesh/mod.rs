@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use futures::stream::StreamExt;
+use libp2p::{autonat, identify, relay, swarm};
 use libp2p::{
     PeerId, Swarm, gossipsub, kad, multiaddr::Multiaddr, multiaddr::Protocol, request_response,
     swarm::SwarmEvent,
@@ -183,6 +184,13 @@ pub fn setup_libp2p_node(
             let kademlia =
                 kad::Behaviour::with_config(key.public().to_peer_id(), store, kademlia_config);
 
+            let relay = relay::Behaviour::new(key.public().to_peer_id(), Default::default());
+            let autonat = autonat::Behaviour::new(key.public().to_peer_id(), Default::default());
+            let identify = identify::Behaviour::new(identify::Config::new(
+                "/beemesh/0.1.0".into(), // protocol version
+                key.public()
+            ));
+
             Ok(MyBehaviour {
                 gossipsub,
                 apply_rr,
@@ -191,6 +199,9 @@ pub fn setup_libp2p_node(
                 delete_rr,
                 manifest_fetch_rr,
                 kademlia,
+                relay,
+                autonat,
+                identify
             })
         })?
         .build();

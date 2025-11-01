@@ -19,6 +19,7 @@ pub use gossipsub_message::gossipsub_message;
 pub use gossipsub_subscribed::gossipsub_subscribed;
 pub use gossipsub_unsubscribed::gossipsub_unsubscribed;
 pub use handshake_message::handshake_message_event;
+use libp2p::{autonat, relay, identify};
 use libp2p::{gossipsub, kad, request_response, swarm::NetworkBehaviour};
 
 pub use scheduler_message::scheduler_message;
@@ -39,4 +40,7 @@ pub struct MyBehaviour {
     pub delete_rr: request_response::Behaviour<DeleteCodec>,
     pub manifest_fetch_rr: request_response::Behaviour<ApplyCodec>,
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
+    pub relay: relay::Behaviour,
+    pub autonat: autonat::Behaviour,
+    pub identify: identify::Behaviour,
 }
