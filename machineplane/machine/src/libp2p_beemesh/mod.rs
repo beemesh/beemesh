@@ -1,11 +1,11 @@
 use anyhow::Result;
 
 use futures::stream::StreamExt;
-use libp2p::{autonat, identify, relay};
 use libp2p::{
     PeerId, Swarm, gossipsub, kad, multiaddr::Multiaddr, multiaddr::Protocol, request_response,
     swarm::SwarmEvent,
 };
+use libp2p::{autonat, identify, relay};
 use log::{debug, info, warn};
 use once_cell::sync::OnceCell;
 use std::collections::HashMap as StdHashMap;
@@ -189,7 +189,7 @@ pub fn setup_libp2p_node(
             let autonat = autonat::Behaviour::new(key.public().to_peer_id(), Default::default());
             let identify = identify::Behaviour::new(identify::Config::new(
                 "/beemesh/0.1.0".into(), // protocol version
-                key.public()
+                key.public(),
             ));
 
             Ok(MyBehaviour {
@@ -202,7 +202,7 @@ pub fn setup_libp2p_node(
                 kademlia,
                 relay,
                 autonat,
-                identify
+                identify,
             })
         })?
         .build();

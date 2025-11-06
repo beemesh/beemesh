@@ -4,12 +4,15 @@
 //! runtime engines like Podman, Docker, or future VM technologies.
 
 use async_trait::async_trait;
+#[cfg(not(debug_assertions))]
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use thiserror::Error;
 
 pub mod engines;
+#[cfg(debug_assertions)]
 pub mod mock;
 
 /// Configure the Podman runtime using CLI-provided settings.
@@ -335,6 +338,7 @@ pub async fn create_default_registry() -> RuntimeRegistry {
 /// Create a mock-only runtime registry for testing
 /// This registry only contains the MockEngine, useful for integration tests
 /// where we want to verify manifest application without real containers
+#[cfg(debug_assertions)]
 pub async fn create_mock_only_registry() -> RuntimeRegistry {
     let mut registry = RuntimeRegistry::new();
 
@@ -347,7 +351,16 @@ pub async fn create_mock_only_registry() -> RuntimeRegistry {
     registry
 }
 
-#[cfg(test)]
+/// Fallback mock-only registry accessor for release builds where the mock engine
+/// is not compiled in. We return the default registry to ensure callers have a
+/// functional runtime configuration without linking the mock implementation.
+#[cfg(not(debug_assertions))]
+pub async fn create_mock_only_registry() -> RuntimeRegistry {
+    warn!("mock runtime requested in release build; returning default registry");
+    create_default_registry().await
+}
+
+#[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
 

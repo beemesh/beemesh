@@ -41,9 +41,7 @@ pub async fn initialize_workload_manager(
     scheduling_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !scheduling_enabled {
-        info!(
-            "Scheduling disabled; skipping runtime registry and provider manager initialization"
-        );
+        info!("Scheduling disabled; skipping runtime registry and provider manager initialization");
         return Ok(());
     }
 
@@ -51,10 +49,22 @@ pub async fn initialize_workload_manager(
 
     // Create runtime registry - use mock-only for tests if environment variable is set
     let use_mock_registry = force_mock_runtime || mock_only_runtime;
+
+    #[cfg(debug_assertions)]
     let registry = if use_mock_registry {
         info!("Using mock-only runtime registry for testing");
         crate::runtime::create_mock_only_registry().await
     } else {
+        create_default_registry().await
+    };
+
+    #[cfg(not(debug_assertions))]
+    let registry = {
+        if use_mock_registry {
+            warn!(
+                "mock runtime requested but not compiled in release build; falling back to default registry"
+            );
+        }
         create_default_registry().await
     };
     let available_engines = registry.check_available_engines().await;
@@ -310,30 +320,42 @@ async fn process_manifest_deployment(
         .ok_or(format!("Runtime engine '{}' not available", engine_name))?;
 
     // Deploy the workload with modified manifest (replicas=1)
-    // use peer-aware deployment for mock engine
-    let workload_info = if engine_name == "mock" {
-        // For mock engine, use the peer-aware deployment method if available
-        if let Some(mock_engine) = engine
-            .as_any()
-            .downcast_ref::<crate::runtime::mock::MockEngine>()
-        {
-            debug!("Using peer-aware deployment for mock engine");
-            mock_engine
-                .deploy_workload_with_peer(
-                    &manifest_id,
-                    &modified_manifest_content,
-                    &deployment_config,
-                    *swarm.local_peer_id(),
-                )
-                .await?
+    // use peer-aware deployment for mock engine when compiled in debug builds
+    #[cfg(debug_assertions)]
+    let workload_info = {
+        if engine_name == "mock" {
+            if let Some(mock_engine) = engine
+                .as_any()
+                .downcast_ref::<crate::runtime::mock::MockEngine>()
+            {
+                debug!("Using peer-aware deployment for mock engine");
+                mock_engine
+                    .deploy_workload_with_peer(
+                        &manifest_id,
+                        &modified_manifest_content,
+                        &deployment_config,
+                        *swarm.local_peer_id(),
+                    )
+                    .await?
+            } else {
+                engine
+                    .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
+                    .await?
+            }
         } else {
-            // Fallback to regular deployment
             engine
                 .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
                 .await?
         }
-    } else {
-        // For other engines, use regular deployment
+    };
+
+    #[cfg(not(debug_assertions))]
+    let workload_info = {
+        if engine_name == "mock" {
+            warn!(
+                "mock runtime selected but not included in release build; proceeding with default deployment path"
+            );
+        }
         engine
             .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
             .await?

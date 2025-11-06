@@ -7,6 +7,8 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::Engine;
+#[cfg(debug_assertions)]
+use crate::runtime::RuntimeEngine;
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use protocol::libp2p_constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS};
@@ -19,7 +21,6 @@ use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
 
 pub mod envelope_handler;
-use crate::runtime::RuntimeEngine;
 use envelope_handler::{
     EnvelopeHandler, create_encrypted_response_with_key, create_response_for_envelope_metadata,
     create_response_with_fallback,
@@ -523,25 +524,26 @@ async fn debug_workloads_by_peer(
     State(_state): State<RestState>,
 ) -> axum::Json<serde_json::Value> {
     // Try to access the global runtime registry to get MockEngine state
-    if let Some(registry_guard) = crate::workload_integration::get_global_runtime_registry().await {
-        if let Some(ref registry) = *registry_guard {
-            if let Some(mock_engine) = registry.get_engine("mock") {
-                // Try to downcast to MockEngine to get workloads by peer ID
-                if let Some(mock_engine) = mock_engine
-                    .as_any()
-                    .downcast_ref::<crate::runtime::mock::MockEngine>()
-                {
-                    let peer_workloads = mock_engine.get_workloads_by_peer(&peer_id);
-                    let mut workloads_json = serde_json::Map::new();
+    #[cfg(debug_assertions)]
+    {
+        if let Some(registry_guard) =
+            crate::workload_integration::get_global_runtime_registry().await
+        {
+            if let Some(ref registry) = *registry_guard {
+                if let Some(mock_engine) = registry.get_engine("mock") {
+                    if let Some(mock_engine) = mock_engine
+                        .as_any()
+                        .downcast_ref::<crate::runtime::mock::MockEngine>()
+                    {
+                        let peer_workloads = mock_engine.get_workloads_by_peer(&peer_id);
+                        let mut workloads_json = serde_json::Map::new();
 
-                    for workload in &peer_workloads {
-                        let exported_manifest = match mock_engine
-                            .export_manifest(&workload.info.id)
-                            .await
-                        {
-                            Ok(manifest_bytes) => {
-                                // Convert bytes to string for consistency with other endpoints
-                                match String::from_utf8(manifest_bytes) {
+                        for workload in &peer_workloads {
+                            let exported_manifest = match mock_engine
+                                .export_manifest(&workload.info.id)
+                                .await
+                            {
+                                Ok(manifest_bytes) => match String::from_utf8(manifest_bytes) {
                                     Ok(manifest_str) => Some(manifest_str),
                                     Err(e) => {
                                         log::warn!(
@@ -551,40 +553,40 @@ async fn debug_workloads_by_peer(
                                         );
                                         None
                                     }
+                                },
+                                Err(e) => {
+                                    log::warn!(
+                                        "Failed to export manifest for workload {}: {}",
+                                        workload.info.id,
+                                        e
+                                    );
+                                    None
                                 }
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to export manifest for workload {}: {}",
-                                    workload.info.id,
-                                    e
-                                );
-                                None
-                            }
-                        };
+                            };
 
-                        workloads_json.insert(
-                            workload.info.id.clone(),
-                            serde_json::json!({
-                                "manifest_id": workload.info.manifest_id,
-                                "status": format!("{:?}", workload.info.status),
-                                "metadata": workload.info.metadata,
-                                "created_at": workload.info.created_at.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default().as_secs(),
-                                "updated_at": workload.info.updated_at.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default().as_secs(),
-                                "ports": workload.info.ports,
-                                "exported_manifest": exported_manifest,
-                            })
-                        );
+                            workloads_json.insert(
+                                workload.info.id.clone(),
+                                serde_json::json!({
+                                    "manifest_id": workload.info.manifest_id,
+                                    "status": format!("{:?}", workload.info.status),
+                                    "metadata": workload.info.metadata,
+                                    "created_at": workload.info.created_at.duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default().as_secs(),
+                                    "updated_at": workload.info.updated_at.duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default().as_secs(),
+                                    "ports": workload.info.ports,
+                                    "exported_manifest": exported_manifest,
+                                })
+                            );
+                        }
+
+                        return axum::Json(serde_json::json!({
+                            "ok": true,
+                            "peer_id": peer_id,
+                            "workload_count": peer_workloads.len(),
+                            "workloads": workloads_json
+                        }));
                     }
-
-                    return axum::Json(serde_json::json!({
-                        "ok": true,
-                        "peer_id": peer_id,
-                        "workload_count": peer_workloads.len(),
-                        "workloads": workloads_json
-                    }));
                 }
             }
         }
