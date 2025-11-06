@@ -74,8 +74,8 @@ fn test_apply_request_flatbuffer_envelope() {
     );
 
     // Verify we can extract and parse the apply request
-    let (payload_bytes, _, _) = verification_result.unwrap();
-    let parsed_apply = protocol::machine::root_as_apply_request(&payload_bytes)
+    let parts = verification_result.unwrap();
+    let parsed_apply = protocol::machine::root_as_apply_request(&parts.payload)
         .expect("Should parse apply request from envelope payload");
 
     assert_eq!(parsed_apply.replicas(), 3);
@@ -138,6 +138,6 @@ fn test_envelope_base64_encoding_for_transport() {
         verification_result.err()
     );
 
-    let (payload_bytes, _, _) = verification_result.unwrap();
-    assert_eq!(payload_bytes, payload);
+    let parts = verification_result.unwrap();
+    assert_eq!(parts.payload, payload);
 }

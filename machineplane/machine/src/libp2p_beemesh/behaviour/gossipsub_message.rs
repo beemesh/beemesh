@@ -1,7 +1,10 @@
 use super::message_verifier::verify_signed_message;
 use crate::libp2p_beemesh::{capacity, utils};
+use crate::resource_verifier::{CapacityCheckResult, ResourceRequest};
+use crate::workload_integration::get_global_resource_verifier;
 use libp2p::gossipsub;
 use log::{debug, error, info, warn};
+use protocol::libp2p_constants::FREE_CAPACITY_TIMEOUT_MS;
 
 pub fn gossipsub_message(
     peer_id: libp2p::PeerId,
@@ -21,22 +24,133 @@ pub fn gossipsub_message(
         Some(envelope) => envelope,
         None => return,
     };
-    let payload = verified.payload;
+    let crate::libp2p_beemesh::security::VerifiedEnvelope {
+        payload,
+        timestamp_ms,
+        ..
+    } = verified;
 
     // Then try CapacityReply
     if let Ok(cap_req) = protocol::machine::root_as_capacity_request(payload.as_slice()) {
         let orig_request_id = cap_req.request_id().unwrap_or("").to_string();
         let responder_peer = swarm.local_peer_id().to_string();
+
+        let age_ms = utils::make_timestamp_ms().saturating_sub(timestamp_ms);
+        if age_ms > FREE_CAPACITY_TIMEOUT_MS {
+            warn!(
+                "libp2p: dropping stale capreq id={} age={}ms from peer={}",
+                orig_request_id, age_ms, peer_id
+            );
+            return;
+        }
+
+        let manifest_id = match utils::extract_manifest_id_from_request_id(&orig_request_id) {
+            Some(id) => id,
+            None => {
+                warn!(
+                    "libp2p: capreq id={} missing manifest id, ignoring",
+                    orig_request_id
+                );
+                return;
+            }
+        };
+
+        let resource_request = ResourceRequest::new(
+            Some(cap_req.cpu_milli()),
+            Some(cap_req.memory_bytes()),
+            Some(cap_req.storage_bytes()),
+            cap_req.replicas(),
+        );
+
         info!(
-            "libp2p: received capreq id={} from peer={} payload_bytes={}",
+            "libp2p: received capreq id={} manifest_id={} from peer={} payload_bytes={}",
             orig_request_id,
+            manifest_id,
             peer_id,
             payload.len()
         );
-        let reply = capacity::compose_default_capacity_reply(
+
+        let verifier = get_global_resource_verifier();
+
+        // Perform synchronous capacity check using cached resources.
+        let request_id_for_check = orig_request_id.clone();
+        let verifier_for_check = verifier.clone();
+        let resource_request_for_check = resource_request.clone();
+        let check_handle = tokio::runtime::Handle::current();
+        let check_result = std::thread::spawn(move || {
+            check_handle.block_on(verifier_for_check.verify_capacity(&resource_request_for_check))
+        })
+        .join()
+        .unwrap_or_else(|_| {
+            warn!(
+                "libp2p: capacity check thread panicked for request_id={}",
+                request_id_for_check
+            );
+            CapacityCheckResult {
+                has_capacity: false,
+                rejection_reason: Some("internal error".to_string()),
+                available_cpu_milli: 0,
+                available_memory_bytes: 0,
+                available_storage_bytes: 0,
+            }
+        });
+
+        if !check_result.has_capacity {
+            info!(
+                "libp2p: capacity check failed for request_id={} manifest_id={} reason={:?}",
+                orig_request_id, manifest_id, check_result.rejection_reason
+            );
+            return;
+        }
+
+        // Reserve resources for a short period to back the bid.
+        let reserve_request_id = orig_request_id.clone();
+        let reserve_manifest_id = manifest_id.clone();
+        let verifier_for_reserve = verifier.clone();
+        let resource_request_for_reserve = resource_request.clone();
+        let reserve_handle = tokio::runtime::Handle::current();
+        let reserve_outcome = std::thread::spawn(move || {
+            reserve_handle.block_on(verifier_for_reserve.reserve_capacity(
+                &reserve_request_id,
+                Some(reserve_manifest_id.as_str()),
+                &resource_request_for_reserve,
+            ))
+        })
+        .join();
+
+        match reserve_outcome {
+            Ok(Ok(())) => {
+                info!(
+                    "libp2p: reserved resources for request_id={} manifest_id={}",
+                    orig_request_id, manifest_id
+                );
+            }
+            Ok(Err(err)) => {
+                warn!(
+                    "libp2p: failed to reserve resources for request_id={} manifest_id={}: {}",
+                    orig_request_id, manifest_id, err
+                );
+                return;
+            }
+            Err(_) => {
+                warn!(
+                    "libp2p: reservation thread panicked for request_id={} manifest_id={}",
+                    orig_request_id, manifest_id
+                );
+                return;
+            }
+        }
+
+        let reply = capacity::compose_capacity_reply(
             "gossipsub",
             &orig_request_id,
             &responder_peer,
+            |params| {
+                params.ok = true;
+                params.cpu_milli = check_result.available_cpu_milli;
+                params.memory_bytes = check_result.available_memory_bytes;
+                params.storage_bytes = check_result.available_storage_bytes;
+            },
         );
         let payload_len = reply.payload.len();
 
@@ -47,8 +161,8 @@ pub fn gossipsub_message(
         ) {
             Ok(_) => {
                 info!(
-                    "libp2p: published capreply for id={} ({} bytes)",
-                    orig_request_id, payload_len
+                    "libp2p: published capreply for id={} manifest_id={} ({} bytes)",
+                    orig_request_id, manifest_id, payload_len
                 );
             }
             Err(e) => {

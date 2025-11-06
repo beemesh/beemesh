@@ -515,17 +515,18 @@ mod tests {
         );
 
         // Step 2: Verify the envelope can be verified directly
-        let (verified_payload, _pub, _sig) =
-            crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
-                &encrypted_envelope,
-                std::time::Duration::from_secs(300),
-            )
-            .expect("Direct verification failed");
+        let verified_parts = crate::libp2p_beemesh::envelope::verify_flatbuffer_envelope(
+            &encrypted_envelope,
+            std::time::Duration::from_secs(300),
+        )
+        .expect("Direct verification failed");
 
         // Step 3: Decrypt the verified encrypted payload
-        let decrypted_payload =
-            crypto::decrypt_payload_from_recipient_blob(&verified_payload, &recipient_kem_priv)
-                .expect("Failed to decrypt payload");
+        let decrypted_payload = crypto::decrypt_payload_from_recipient_blob(
+            &verified_parts.payload,
+            &recipient_kem_priv,
+        )
+        .expect("Failed to decrypt payload");
 
         assert_eq!(payload, decrypted_payload.as_slice());
     }

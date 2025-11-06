@@ -38,8 +38,8 @@ pub const LEASE_PREFIX: &str = "lease/";
 
 // === TIMEOUTS AND TIMING ===
 
-/// Timeout, in seconds, to wait for free-capacity responses from peers.
-pub const FREE_CAPACITY_TIMEOUT_SECS: u64 = 3;
+/// Timeout, in milliseconds, to wait for free-capacity responses from peers.
+pub const FREE_CAPACITY_TIMEOUT_MS: u64 = 500;
 
 /// Timeout, in seconds, to wait for request-response RPCs (ApplyRequest/ApplyResponse)
 pub const REQUEST_RESPONSE_TIMEOUT_SECS: u64 = 3;
@@ -49,7 +49,7 @@ pub const DEFAULT_SELECTION_WINDOW_MS: u64 = 250;
 
 /// Default lease TTL in milliseconds
 pub const DEFAULT_LEASE_TTL_MS: u64 = 3000;
-
+    
 // === MANIFEST FIELDS ===
 
 /// JSON field name used for replica count in manifests (top-level `replicas`).

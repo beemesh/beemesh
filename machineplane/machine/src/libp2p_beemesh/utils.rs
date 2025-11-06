@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use crate::libp2p_beemesh::envelope::{
     SignEnvelopeConfig, sign_with_existing_keypair, sign_with_node_keys,
 };
+use protocol::libp2p_constants::FREE_CAPACITY_PREFIX;
 
 /// Lightweight helpers to centralize common envelope signing and broadcast logic.
 pub fn make_nonce(prefix: Option<&str>) -> String {
@@ -106,4 +107,25 @@ pub fn notify_capacity_observers<F>(
             let _ = tx.send(payload.clone());
         }
     }
+}
+
+/// Extract the manifest/task identifier encoded in a capacity request id.
+/// Supports the current `prefix:manifest_id:uuid` format and falls back to the
+/// legacy `prefix-manifest_id-uuid` pattern for compatibility.
+pub fn extract_manifest_id_from_request_id(request_id: &str) -> Option<String> {
+    let mut colon_parts = request_id.split(':');
+    if let (Some(prefix), Some(manifest)) = (colon_parts.next(), colon_parts.next()) {
+        if prefix == FREE_CAPACITY_PREFIX && !manifest.is_empty() {
+            return Some(manifest.to_string());
+        }
+    }
+
+    if request_id.starts_with(FREE_CAPACITY_PREFIX) {
+        let parts: Vec<&str> = request_id.split('-').collect();
+        if parts.len() >= 2 && !parts[1].is_empty() {
+            return Some(parts[1].to_string());
+        }
+    }
+
+    None
 }

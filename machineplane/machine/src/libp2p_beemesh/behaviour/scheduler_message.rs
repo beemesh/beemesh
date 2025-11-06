@@ -5,6 +5,7 @@ use crate::resource_verifier::ResourceRequest;
 use crate::workload_integration::get_global_resource_verifier;
 use libp2p::request_response;
 use log::{debug, error, info, warn};
+use protocol::libp2p_constants::FREE_CAPACITY_TIMEOUT_MS;
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
@@ -34,15 +35,41 @@ pub fn scheduler_message(
                 Some(envelope) => envelope,
                 None => return,
             };
-            let effective_request = verified.payload;
+            let crate::libp2p_beemesh::security::VerifiedEnvelope {
+                payload: effective_request,
+                timestamp_ms,
+                ..
+            } = verified;
 
             // Try parse CapacityRequest
             match protocol::machine::root_as_capacity_request(&effective_request) {
                 Ok(cap_req) => {
                     let orig_request_id = cap_req.request_id().unwrap_or("");
+                    let age_ms = utils::make_timestamp_ms().saturating_sub(timestamp_ms);
+                    if age_ms > FREE_CAPACITY_TIMEOUT_MS {
+                        warn!(
+                            "libp2p: dropping stale scheduler capreq id={} age={}ms from {}",
+                            orig_request_id, age_ms, peer
+                        );
+                        return;
+                    }
+
+                    let manifest_id =
+                        match utils::extract_manifest_id_from_request_id(orig_request_id) {
+                            Some(id) => id,
+                            None => {
+                                warn!(
+                                    "libp2p: scheduler capreq id={} missing manifest id, ignoring",
+                                    orig_request_id
+                                );
+                                return;
+                            }
+                        };
+
+                    let orig_request_id = orig_request_id.to_string();
                     debug!(
-                        "libp2p: scheduler capacity request id={} from {}",
-                        orig_request_id, peer
+                        "libp2p: scheduler capacity request id={} manifest_id={} from {}",
+                        orig_request_id, manifest_id, peer
                     );
 
                     // Perform real capacity check using resource verifier
@@ -60,13 +87,20 @@ pub fn scheduler_message(
                     // This is called from within the libp2p event loop, so we can't use async
                     let check_result = {
                         let handle = tokio::runtime::Handle::current();
+                        let verifier_for_check = verifier.clone();
+                        let resource_request_for_check = resource_request.clone();
                         // Spawn a blocking task to avoid nesting runtimes
                         std::thread::spawn(move || {
-                            handle.block_on(verifier.verify_capacity(&resource_request))
+                            handle.block_on(
+                                verifier_for_check.verify_capacity(&resource_request_for_check),
+                            )
                         })
                         .join()
                         .unwrap_or_else(|_| {
-                            warn!("Capacity check thread panicked, assuming no capacity");
+                            warn!(
+                                "Capacity check thread panicked for request_id={}; assuming no capacity",
+                                orig_request_id
+                            );
                             crate::resource_verifier::CapacityCheckResult {
                                 has_capacity: false,
                                 rejection_reason: Some("Internal error".to_string()),
@@ -81,12 +115,50 @@ pub fn scheduler_message(
 
                     if has_capacity {
                         info!(
-                            "Capacity check passed for request_id={}: CPU={}m, Mem={} MB, Storage={} GB available",
+                            "Capacity check passed for request_id={} manifest_id={}: CPU={}m, Mem={} MB, Storage={} GB available",
                             orig_request_id,
+                            manifest_id,
                             check_result.available_cpu_milli,
                             check_result.available_memory_bytes / (1024 * 1024),
                             check_result.available_storage_bytes / (1024 * 1024 * 1024)
                         );
+
+                        // Reserve resources backing this bid
+                        let reserve_request_id = orig_request_id.clone();
+                        let reserve_manifest_id = manifest_id.clone();
+                        let resource_request_for_reserve = resource_request.clone();
+                        let reserve_handle = tokio::runtime::Handle::current();
+                        let reserve_outcome = std::thread::spawn(move || {
+                            reserve_handle.block_on(verifier.reserve_capacity(
+                                &reserve_request_id,
+                                Some(reserve_manifest_id.as_str()),
+                                &resource_request_for_reserve,
+                            ))
+                        })
+                        .join();
+
+                        match reserve_outcome {
+                            Ok(Ok(())) => {
+                                debug!(
+                                    "libp2p: reserved resources for request_id={} manifest_id={}",
+                                    orig_request_id, manifest_id
+                                );
+                            }
+                            Ok(Err(err)) => {
+                                warn!(
+                                    "libp2p: failed to reserve resources for request_id={} manifest_id={}: {}",
+                                    orig_request_id, manifest_id, err
+                                );
+                                return;
+                            }
+                            Err(_) => {
+                                warn!(
+                                    "libp2p: reservation thread panicked for request_id={} manifest_id={}",
+                                    orig_request_id, manifest_id
+                                );
+                                return;
+                            }
+                        }
 
                         // build CapacityReply using protocol helper and include local KEM pubkey if available
                         let reply = capacity::compose_capacity_reply(
@@ -101,7 +173,6 @@ pub fn scheduler_message(
                             },
                         );
                         let payload_len = reply.payload.len();
-
                         match capacity::send_scheduler_capacity_reply(
                             &mut swarm.behaviour_mut().scheduler_rr,
                             channel,

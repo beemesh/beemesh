@@ -33,6 +33,16 @@ impl<'a> Default for SignEnvelopeConfig<'a> {
     }
 }
 
+/// Parsed components from a verified envelope.
+#[derive(Clone, Debug)]
+pub struct VerifiedEnvelopeParts {
+    pub payload: Vec<u8>,
+    pub pubkey: Vec<u8>,
+    pub signature: Vec<u8>,
+    pub timestamp_ms: u64,
+    pub payload_type: String,
+}
+
 /// Sign `payload` using the node's persisted signing keypair.
 pub fn sign_with_node_keys(
     payload: &[u8],
@@ -161,21 +171,21 @@ pub fn check_and_insert_nonce_for_peer(
 }
 
 /// Verify a flatbuffer envelope. Reconstructs canonical bytes and verifies signature.
-/// Returns payload bytes, pub bytes, sig bytes.
+/// Returns verified envelope parts including payload bytes, signing key and timestamp.
 pub fn verify_flatbuffer_envelope(
     fb_envelope_bytes: &[u8],
     nonce_window: Duration,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+) -> anyhow::Result<VerifiedEnvelopeParts> {
     verify_flatbuffer_envelope_for_peer(fb_envelope_bytes, nonce_window, "global")
 }
 
 /// Verify a flatbuffer envelope for a specific peer. Reconstructs canonical bytes and verifies signature.
-/// Returns payload bytes, pub bytes, sig bytes.
+/// Returns verified envelope parts including payload bytes, signing key and timestamp.
 pub fn verify_flatbuffer_envelope_for_peer(
     fb_envelope_bytes: &[u8],
     nonce_window: Duration,
     peer_id: &str,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+) -> anyhow::Result<VerifiedEnvelopeParts> {
     let fb_env = protocol::machine::root_as_envelope(fb_envelope_bytes)
         .context("failed to parse flatbuffer envelope")?;
 
@@ -232,16 +242,22 @@ pub fn verify_flatbuffer_envelope_for_peer(
     crypto::verify_envelope(&pub_bytes, &canonical, &sig_bytes)
         .context("flatbuffer signature verification failed")?;
 
-    Ok((payload_vec, pub_bytes, sig_bytes))
+    Ok(VerifiedEnvelopeParts {
+        payload: payload_vec,
+        pubkey: pub_bytes,
+        signature: sig_bytes,
+        timestamp_ms: ts,
+        payload_type: payload_type.to_string(),
+    })
 }
 
 /// Verify a flatbuffer envelope without nonce replay checking.
 /// This is used when extracting tokens for re-signing, where the same envelope
 /// may be processed multiple times legitimately.
-/// Returns payload bytes, pub bytes, sig bytes.
+/// Returns verified envelope parts.
 pub fn verify_flatbuffer_envelope_skip_nonce_check(
     fb_envelope_bytes: &[u8],
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+) -> anyhow::Result<VerifiedEnvelopeParts> {
     let fb_env = protocol::machine::root_as_envelope(fb_envelope_bytes)
         .context("failed to parse flatbuffer envelope")?;
 
@@ -277,7 +293,13 @@ pub fn verify_flatbuffer_envelope_skip_nonce_check(
     crypto::verify_envelope(&pub_bytes, &canonical, &sig_bytes)
         .context("flatbuffer signature verification failed")?;
 
-    Ok((payload_vec, pub_bytes, sig_bytes))
+    Ok(VerifiedEnvelopeParts {
+        payload: payload_vec,
+        pubkey: pub_bytes,
+        signature: sig_bytes,
+        timestamp_ms: ts,
+        payload_type: payload_type.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -327,10 +349,10 @@ mod tests {
         );
 
         // Verify the envelope using the fb_envelope and ensure the extracted payload matches
-        let (payload_bytes, _pub, _sig) =
+        let parts =
             verify_flatbuffer_envelope(&fb_envelope, Duration::from_secs(300)).expect("verify");
 
-        assert_eq!(payload_bytes, payload);
+        assert_eq!(parts.payload, payload);
 
         // Replay should fail when verifying the same envelope again
         assert!(verify_flatbuffer_envelope(&fb_envelope, Duration::from_secs(300)).is_err());

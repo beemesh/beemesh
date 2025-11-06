@@ -4,13 +4,16 @@
 //! resources to host requested workloads. It collects system metrics and
 //! compares them against workload requests while respecting safety margins.
 
+use anyhow::anyhow;
 use log::{debug, info, warn};
 use protocol::libp2p_constants::{
     DEFAULT_CPU_REQUEST_MILLI, DEFAULT_MEMORY_REQUEST_BYTES, DEFAULT_STORAGE_REQUEST_BYTES,
     MAX_CPU_ALLOCATION_PERCENT, MAX_MEMORY_ALLOCATION_PERCENT, MAX_STORAGE_ALLOCATION_PERCENT,
     MAX_WORKLOADS_PER_NODE, MIN_FREE_MEMORY_BYTES, MIN_FREE_STORAGE_BYTES,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 /// System resource information collected from the host
@@ -128,7 +131,20 @@ pub struct CapacityCheckResult {
 pub struct ResourceVerifier {
     /// Cached system resources
     system_resources: Arc<RwLock<SystemResources>>,
+    /// Active short-lived reservations created after bidding
+    reservations: Arc<RwLock<HashMap<String, CapacityReservation>>>,
 }
+
+#[derive(Debug, Clone)]
+struct CapacityReservation {
+    cpu_milli: u32,
+    memory_bytes: u64,
+    storage_bytes: u64,
+    manifest_id: Option<String>,
+    expires_at: Instant,
+}
+
+const RESERVATION_HOLD_SECS: u64 = 3;
 
 impl ResourceVerifier {
     /// Create a new resource verifier
@@ -144,7 +160,124 @@ impl ResourceVerifier {
                 allocated_storage_bytes: 0,
                 running_workloads: 0,
             })),
+            reservations: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    fn reservation_hold_duration() -> Duration {
+        Duration::from_secs(RESERVATION_HOLD_SECS)
+    }
+
+    async fn prune_expired_reservations(&self) {
+        let mut reservations = self.reservations.write().await;
+        let now = Instant::now();
+        reservations.retain(|_, reservation| reservation.expires_at > now);
+    }
+
+    async fn total_reserved_resources(&self) -> (u32, u64, u64) {
+        let reservations = self.reservations.read().await;
+        reservations
+            .values()
+            .fold((0u32, 0u64, 0u64), |acc, reservation| {
+                (
+                    acc.0.saturating_add(reservation.cpu_milli),
+                    acc.1.saturating_add(reservation.memory_bytes),
+                    acc.2.saturating_add(reservation.storage_bytes),
+                )
+            })
+    }
+
+    /// Reserve capacity for a request for a limited time window. Returns Ok when the reservation was
+    /// accepted or refreshed, and Err when the resources are no longer available.
+    pub async fn reserve_capacity(
+        &self,
+        request_id: &str,
+        manifest_id: Option<&str>,
+        request: &ResourceRequest,
+    ) -> anyhow::Result<()> {
+        self.prune_expired_reservations().await;
+
+        {
+            let mut reservations = self.reservations.write().await;
+            if let Some(existing) = reservations.get_mut(request_id) {
+                existing.expires_at = Instant::now() + Self::reservation_hold_duration();
+                if let Some(manifest) = manifest_id {
+                    existing.manifest_id = Some(manifest.to_string());
+                }
+                return Ok(());
+            }
+        }
+
+        let (reserved_cpu, reserved_memory, reserved_storage) =
+            self.total_reserved_resources().await;
+
+        let request_cpu = request.total_cpu_milli();
+        let request_memory = request.total_memory_bytes();
+        let request_storage = request.total_storage_bytes();
+
+        {
+            let resources = self.system_resources.read().await;
+            let available_cpu = resources.available_cpu_milli().saturating_sub(reserved_cpu);
+            let available_memory = resources
+                .available_memory_bytes()
+                .saturating_sub(reserved_memory);
+            let available_storage = resources
+                .available_storage_bytes()
+                .saturating_sub(reserved_storage);
+
+            if request_cpu > available_cpu {
+                return Err(anyhow!(
+                    "Insufficient CPU reservation capacity: need {}m, reservable {}m",
+                    request_cpu,
+                    available_cpu
+                ));
+            }
+            if request_memory > available_memory {
+                return Err(anyhow!(
+                    "Insufficient memory reservation capacity: need {} MB, reservable {} MB",
+                    request_memory / (1024 * 1024),
+                    available_memory / (1024 * 1024)
+                ));
+            }
+            if request_storage > available_storage {
+                return Err(anyhow!(
+                    "Insufficient storage reservation capacity: need {} GB, reservable {} GB",
+                    request_storage / (1024 * 1024 * 1024),
+                    available_storage / (1024 * 1024 * 1024)
+                ));
+            }
+        }
+
+        let mut reservations = self.reservations.write().await;
+        if let Some(existing) = reservations.get_mut(request_id) {
+            existing.expires_at = Instant::now() + Self::reservation_hold_duration();
+            if let Some(manifest) = manifest_id {
+                existing.manifest_id = Some(manifest.to_string());
+            }
+            return Ok(());
+        }
+
+        reservations.insert(
+            request_id.to_string(),
+            CapacityReservation {
+                cpu_milli: request_cpu,
+                memory_bytes: request_memory,
+                storage_bytes: request_storage,
+                manifest_id: manifest_id.map(|m| m.to_string()),
+                expires_at: Instant::now() + Self::reservation_hold_duration(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Check whether a manifest has an active reservation created by a prior capacity reply.
+    pub async fn has_active_reservation_for_manifest(&self, manifest_id: &str) -> bool {
+        self.prune_expired_reservations().await;
+        let reservations = self.reservations.read().await;
+        reservations
+            .values()
+            .any(|reservation| reservation.manifest_id.as_deref() == Some(manifest_id))
     }
 
     /// Update system resources by collecting metrics from the host
@@ -317,11 +450,19 @@ impl ResourceVerifier {
 
     /// Verify if the node has capacity for a workload request
     pub async fn verify_capacity(&self, request: &ResourceRequest) -> CapacityCheckResult {
+        self.prune_expired_reservations().await;
+        let (reserved_cpu, reserved_memory, reserved_storage) =
+            self.total_reserved_resources().await;
+
         let resources = self.system_resources.read().await;
 
-        let available_cpu = resources.available_cpu_milli();
-        let available_memory = resources.available_memory_bytes();
-        let available_storage = resources.available_storage_bytes();
+        let available_cpu = resources.available_cpu_milli().saturating_sub(reserved_cpu);
+        let available_memory = resources
+            .available_memory_bytes()
+            .saturating_sub(reserved_memory);
+        let available_storage = resources
+            .available_storage_bytes()
+            .saturating_sub(reserved_storage);
 
         let total_cpu_needed = request.total_cpu_milli();
         let total_memory_needed = request.total_memory_bytes();
@@ -421,6 +562,7 @@ impl Default for ResourceVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_resource_request_totals() {
@@ -579,6 +721,97 @@ mod tests {
                 .rejection_reason
                 .unwrap()
                 .contains("Insufficient memory")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reserve_capacity_reduces_available_resources() {
+        let verifier = ResourceVerifier::new();
+
+        {
+            let mut resources = verifier.system_resources.write().await;
+            resources.total_cpu_cores = 8;
+            resources.total_cpu_milli = 8000;
+            resources.total_memory_bytes = 4 * 1024 * 1024 * 1024;
+            resources.total_storage_bytes = 16 * 1024 * 1024 * 1024;
+            resources.allocated_cpu_milli = 0;
+            resources.allocated_memory_bytes = 0;
+            resources.allocated_storage_bytes = 0;
+            resources.running_workloads = 0;
+        }
+
+        let snapshot = verifier.get_system_resources().await;
+        let request = ResourceRequest::new(
+            Some(snapshot.available_cpu_milli()),
+            Some(snapshot.available_memory_bytes()),
+            Some(snapshot.available_storage_bytes()),
+            1,
+        );
+
+        let initial = verifier.verify_capacity(&request).await;
+        assert!(
+            initial.has_capacity,
+            "Expected initial capacity to be available"
+        );
+
+        verifier
+            .reserve_capacity("req-test", Some("manifest-test"), &request)
+            .await
+            .expect("reservation should succeed");
+
+        assert!(
+            verifier
+                .has_active_reservation_for_manifest("manifest-test")
+                .await
+        );
+
+        let follow_up = verifier.verify_capacity(&request).await;
+        assert!(
+            !follow_up.has_capacity,
+            "Reservation should reduce available capacity for identical request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reservation_expires_after_hold() {
+        let verifier = ResourceVerifier::new();
+
+        {
+            let mut resources = verifier.system_resources.write().await;
+            resources.total_cpu_cores = 8;
+            resources.total_cpu_milli = 8000;
+            resources.total_memory_bytes = 4 * 1024 * 1024 * 1024;
+            resources.total_storage_bytes = 16 * 1024 * 1024 * 1024;
+            resources.allocated_cpu_milli = 0;
+            resources.allocated_memory_bytes = 0;
+            resources.allocated_storage_bytes = 0;
+            resources.running_workloads = 0;
+        }
+
+        let request = ResourceRequest::new(
+            Some(1000),
+            Some(512 * 1024 * 1024),
+            Some(2 * 1024 * 1024 * 1024),
+            1,
+        );
+
+        verifier
+            .reserve_capacity("req-expire", Some("manifest-expire"), &request)
+            .await
+            .expect("reservation should succeed");
+
+        {
+            let mut reservations = verifier.reservations.write().await;
+            if let Some(reservation) = reservations.get_mut("req-expire") {
+                reservation.expires_at = Instant::now() - Duration::from_secs(1);
+            }
+        }
+
+        assert!(
+            !verifier
+                .has_active_reservation_for_manifest("manifest-expire")
+                .await,
+            "Expired reservation should no longer be reported as active"
         );
     }
 }

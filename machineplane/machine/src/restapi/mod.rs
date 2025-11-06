@@ -1,3 +1,5 @@
+#[cfg(debug_assertions)]
+use crate::runtime::RuntimeEngine;
 use axum::{
     Router,
     body::Bytes,
@@ -7,11 +9,9 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::Engine;
-#[cfg(debug_assertions)]
-use crate::runtime::RuntimeEngine;
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
-use protocol::libp2p_constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_SECS};
+use protocol::libp2p_constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_MS};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -166,7 +166,12 @@ pub async fn get_candidates(
     );
 
     // For direct delivery, simply query available nodes with their public keys
-    let request_id = format!("{}-{}", FREE_CAPACITY_PREFIX, uuid::Uuid::new_v4());
+    let request_id = format!(
+        "{}:{}:{}",
+        FREE_CAPACITY_PREFIX,
+        task_id,
+        uuid::Uuid::new_v4()
+    );
     let capacity_fb = protocol::machine::build_capacity_request(
         500u32,
         512u64 * 1024 * 1024,
@@ -184,14 +189,14 @@ pub async fn get_candidates(
 
     let mut responders: Vec<String> = Vec::new();
     let start = std::time::Instant::now();
-    let timeout_secs = 3; // Shorter timeout for direct delivery
+    let timeout = Duration::from_millis(FREE_CAPACITY_TIMEOUT_MS);
     log::info!(
-        "get_candidates: waiting for capacity responses, timeout={}s",
-        timeout_secs
+        "get_candidates: waiting for capacity responses, timeout={}ms",
+        FREE_CAPACITY_TIMEOUT_MS
     );
 
-    while start.elapsed() < Duration::from_secs(timeout_secs) {
-        let remaining = Duration::from_secs(timeout_secs).saturating_sub(start.elapsed());
+    while start.elapsed() < timeout {
+        let remaining = timeout.saturating_sub(start.elapsed());
         match tokio::time::timeout(remaining, reply_rx.recv()).await {
             Ok(Some(peer)) => {
                 log::info!(
@@ -452,7 +457,7 @@ pub async fn create_task(
         true,
         &task_id,
         &manifest_id,
-        FREE_CAPACITY_TIMEOUT_SECS as u64 * 1000,
+        FREE_CAPACITY_TIMEOUT_MS,
     );
 
     // Use KEM key directly from envelope metadata for secure response encryption

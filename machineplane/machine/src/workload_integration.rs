@@ -158,7 +158,7 @@ pub async fn handle_apply_message_with_workload_manager(
                     &request,
                     &peer.to_string(),
                 ) {
-                    Ok((payload_bytes, pubkey, _sig)) => (payload_bytes, pubkey),
+                    Ok(parts) => (parts.payload, parts.pubkey),
                     Err(e) => {
                         if crate::libp2p_beemesh::security::require_signed_messages() {
                             error!("Rejecting unsigned/invalid apply request: {:?}", e);
@@ -192,6 +192,44 @@ pub async fn handle_apply_message_with_workload_manager(
 
                     // Extract and validate manifest
                     if let Some(manifest_json) = apply_req.manifest_json() {
+                        let manifest_id = apply_req.manifest_id().unwrap_or("");
+                        if manifest_id.is_empty() {
+                            warn!(
+                                "Apply request missing manifest_id; rejecting from peer={}",
+                                peer
+                            );
+                            let error_response = machine::build_apply_response(
+                                false,
+                                "unknown",
+                                "missing manifest id",
+                            );
+                            let _ = swarm
+                                .behaviour_mut()
+                                .apply_rr
+                                .send_response(channel, error_response);
+                            return;
+                        }
+
+                        let reservation_ok = get_global_resource_verifier()
+                            .has_active_reservation_for_manifest(manifest_id)
+                            .await;
+                        if !reservation_ok {
+                            warn!(
+                                "Apply request for manifest_id={} from peer={} without prior reservation",
+                                manifest_id, peer
+                            );
+                            let error_response = machine::build_apply_response(
+                                false,
+                                manifest_id,
+                                "no active capacity reservation",
+                            );
+                            let _ = swarm
+                                .behaviour_mut()
+                                .apply_rr
+                                .send_response(channel, error_response);
+                            return;
+                        }
+
                         match process_manifest_deployment(
                             swarm,
                             &apply_req,

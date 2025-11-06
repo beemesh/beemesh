@@ -56,8 +56,8 @@ fn test_flatbuffer_envelope_roundtrip() {
         result.err()
     );
 
-    let (payload_bytes, _pub_bytes, _sig_bytes) = result.unwrap();
-    assert_eq!(payload_bytes, payload, "Payload should match original");
+    let parts = result.unwrap();
+    assert_eq!(parts.payload, payload, "Payload should match original");
 }
 
 #[test]
@@ -235,8 +235,8 @@ fn test_flatbuffer_envelope_empty_payload() {
         result.err()
     );
 
-    let (payload_bytes, _, _) = result.unwrap();
-    assert_eq!(payload_bytes, payload, "Empty payload should be preserved");
+    let parts = result.unwrap();
+    assert_eq!(parts.payload, payload, "Empty payload should be preserved");
 }
 
 #[test]
@@ -279,9 +279,9 @@ fn test_flatbuffer_envelope_large_payload() {
         result.err()
     );
 
-    let (payload_bytes, _, _) = result.unwrap();
+    let parts = result.unwrap();
     assert_eq!(
-        payload_bytes, large_payload,
+        parts.payload, large_payload,
         "Large payload should be preserved"
     );
 }
