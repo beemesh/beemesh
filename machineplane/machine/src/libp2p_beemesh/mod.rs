@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use futures::stream::StreamExt;
-use libp2p::{autonat, identify, relay, swarm};
+use libp2p::{autonat, identify, relay};
 use libp2p::{
     PeerId, Swarm, gossipsub, kad, multiaddr::Multiaddr, multiaddr::Protocol, request_response,
     swarm::SwarmEvent,
@@ -96,6 +96,7 @@ pub fn setup_libp2p_node(
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_quic()
+        .with_dns()?
         .with_behaviour(|key| {
             debug!("Local PeerId: {}", key.public().to_peer_id());
             let message_id_fn = |message: &gossipsub::Message| {

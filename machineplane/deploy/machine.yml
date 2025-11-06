@@ -1,23 +1,20 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: beemesh-machine-bootstrap
+  name: beemesh-machine
   labels:
     app: beemesh-machine
-    role: bootstrap
 spec:
   restartPolicy: Always
   containers:
-    - name: machine
+    - name: bootstrap
       image: beemesh-machine:latest
       env:
       - name: RUST_LOG
-        value: "info"
+        value: "debug"
       args:
         - "--libp2p-quic-port"
         - "4001"
-        #- "--podman-socket"
-        #- "/run/podman/podman.sock"
         - "--disable-scheduling"
         - "--disable-machine-api"
       ports:
@@ -33,56 +30,40 @@ spec:
         - containerPort: 3000
           hostPort: 3000
           protocol: UDP
-      volumeMounts:
-        # - name: podman-socket
-        #   mountPath: /run/podman/podman.sock
-        # - name: host-proc-cpuinfo
-        #   mountPath: /host-proc/cpuinfo
-        #   readOnly: true
-        # - name: host-proc-meminfo
-        #   mountPath: /host-proc/meminfo
-        #   readOnly: true
-        # - name: host-containers-storage
-        #   mountPath: /var/lib/containers/storage
-        #   readOnly: true
-  volumes:
-    # - name: podman-socket
-    #   hostPath:
-    #     path: /run/podman/podman.sock
-    #     type: Socket
-    # - name: host-proc-cpuinfo
-    #   hostPath:
-    #     path: /proc/cpuinfo
-    #     type: File
-    # - name: host-proc-meminfo
-    #   hostPath:
-    #     path: /proc/meminfo
-    #     type: File
-    # - name: host-containers-storage
-    #   hostPath:
-    #     path: /var/lib/containers/storage
-    #     type: Directory
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: beemesh-machine-peer-1
-  labels:
-    app: beemesh-machine
-    role: peer
-spec:
-  restartPolicy: Always
-  containers:
-    - name: machine
+    - name: peer1-with-dns
       image: beemesh-machine:latest
       env:
       - name: RUST_LOG
-        value: "info"
+        value: "debug"
       args:
         - "--disable-rest-api"
         - "--disable-machine-api"
         - "--bootstrap-peer"
-        - "/ip4/10.90.0.50/udp/4001/quic-v1"
+        - "/ip4/127.0.0.1/udp/4001/quic-v1"
+        - "--podman-socket"
+        - "/run/podman/podman.sock"
+      volumeMounts:
+        - name: podman-socket
+          mountPath: /run/podman/podman.sock
+        - name: host-proc-cpuinfo
+          mountPath: /host-proc/cpuinfo
+          readOnly: true
+        - name: host-proc-meminfo
+          mountPath: /host-proc/meminfo
+          readOnly: true
+        - name: host-containers-storage
+          mountPath: /var/lib/containers/storage
+          readOnly: true
+    - name: peer2-with-localhost
+      image: beemesh-machine:latest
+      env:
+      - name: RUST_LOG
+        value: "debug"
+      args:
+        - "--disable-rest-api"
+        - "--disable-machine-api"
+        - "--bootstrap-peer"
+        - "/ip4/127.0.0.1/udp/4001/quic-v1"
         - "--podman-socket"
         - "/run/podman/podman.sock"
       volumeMounts:
@@ -100,60 +81,7 @@ spec:
   volumes:
     - name: podman-socket
       hostPath:
-        path: /run/podman/podman.sock
-        type: Socket
-    - name: host-proc-cpuinfo
-      hostPath:
-        path: /proc/cpuinfo
-        type: File
-    - name: host-proc-meminfo
-      hostPath:
-        path: /proc/meminfo
-        type: File
-    - name: host-containers-storage
-      hostPath:
-        path: /var/lib/containers/storage
-        type: Directory
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: beemesh-machine-peer-2
-  labels:
-    app: beemesh-machine
-    role: peer
-spec:
-  restartPolicy: Always
-  containers:
-    - name: machine
-      image: beemesh-machine:latest
-      env:
-      - name: RUST_LOG
-        value: "info"
-      args:
-        - "--disable-rest-api"
-        - "--disable-machine-api"
-        - "--bootstrap-peer"
-        - "/ip4/10.90.0.50/udp/4001/quic-v1"
-        - "--podman-socket"
-        - "/run/podman/podman.sock"
-      volumeMounts:
-        - name: podman-socket
-          mountPath: /run/podman/podman.sock
-        - name: host-proc-cpuinfo
-          mountPath: /host-proc/cpuinfo
-          readOnly: true
-        - name: host-proc-meminfo
-          mountPath: /host-proc/meminfo
-          readOnly: true
-        - name: host-containers-storage
-          mountPath: /var/lib/containers/storage
-          readOnly: true
-  volumes:
-    - name: podman-socket
-      hostPath:
-        path: /run/podman/podman.sock
+        path: /run/user/1000/podman/podman.sock
         type: Socket
     - name: host-proc-cpuinfo
       hostPath:

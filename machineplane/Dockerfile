@@ -47,7 +47,7 @@ COPY --from=alpine:latest /etc/group /etc/group
 # CA certificates for HTTPS
 COPY --from=alpine:latest /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 # DNS config
-COPY --from=alpine:latest /etc/resolv.conf /etc/resolv.conf
+#COPY --from=alpine:latest /etc/resolv.conf /etc/resolv.conf
 COPY --from=alpine:latest /etc/nsswitch.conf /etc/nsswitch.conf
 COPY --from=alpine:latest /etc/hosts /etc/hosts
 
