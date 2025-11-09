@@ -199,7 +199,4 @@ bm policy set retail-eu --quota cpu=200 --priority-tier=gold
 * **Is there a control plane?** No. Control Tower is read‑only and out‑of‑band; it never orchestrates workloads.
 * **Can we build our own packages?** Yes-use `beemesh.yaml`, sign with cosign, publish to Hub or side‑load via bundle.
 
----
 
-**Owner:** CEO/PM. **Editors:** Eng Lead, Product Marketing, Legal.
-**Status:** Draft → Review → Publish (link from README and website).
