@@ -6,29 +6,44 @@
 
 ## 1) Positioning & One‑liner
 
-**Beemesh** is an open, distributed secure fabric platform that turns any machine-cloud, on‑prem, edge-into a global, self‑healing compute pool with **NoOps** scheduling.
+**Beemesh** is an open, distributed secure fabric that turns any machine (cloud, on‑prem, edge) into a global, self‑healing compute pool with **NoOps** scheduling — enabling **true multicloud** without a centralized control plane to run or replicate.
 
-* **Beemesh (OSS)**: the foundation-decentralized scheduling, dual scoped service registries, secure identities, and self-healing workloads. Runs anywhere, including air-gapped. Optionally deploy the **Hub** app on Beemesh to discover, verify, and deploy add-ons.
-* **Beemesh Enterprise (BSL/Commercial)**: the enterprise wrapper-policy, identity, governance, support, and fleet-scale ops packaged for regulated/large environments.
+* **Beemesh (OSS)**: the foundation — decentralized scheduling, dual scoped service registries, secure identities, and self‑healing workloads. Runs anywhere, including air‑gapped. Optionally deploy the **Hub** app on Beemesh to discover, verify, and deploy add‑ons.
+* **Beemesh Enterprise (BSL/Commercial)**: the enterprise wrapper — policy, identity, governance, support, and fleet‑scale ops packaged for regulated/large environments.
+
+**Business value (exec‑ready)**
+
+* **Lower cost:** use the cheapest capacity across clouds + on‑prem (spot/preemptible + owned) with policy control.
+* **Higher resilience:** no control plane to babysit; self‑healing by default; works when links are flaky or offline.
+* **Faster delivery:** deploy new regions/providers in hours, not months; same packaging everywhere.
+* **Stronger posture:** mutual TLS with workload identities; default‑deny policies; tenant/space segmentation.
 
 ---
 
 ## 2) Packaging & Licensing
 
-| Tier                   | License        | What’s inside                                                                                                                                                                                 | Notable Boundaries                                                                                                      |
-| ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| **Beemesh**            | Apache‑2.0     | Machineplane + Rust Workplane, WDHT, sharded pub/sub, LeaseHints, basic controllers (ReplicaSet subset, Job subset, Headless Service), Podman adapter, REST apply/watch, metrics & dashboards | Always runnable offline. Protocols & SDKs open and stable. |
-| **Beemesh Enterprise** | BSL/Commercial | Org CA & namespaces, policy & quotas, SSO/RBAC, audit log, read‑only Control Tower (inventory/rollouts/golden signals), LTS/FIPS, optional relay/bootstrap network                            | No mandatory SaaS. Control Tower is out‑of‑band and read‑only (no central control plane).                               |
+| Tier                   | License        | What’s inside                                                                                                                                                                                                                                           | Primary customer value                                                                        |
+| ---------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **Beemesh**            | Apache‑2.0     | Machineplane + Rust Workplane, workload scoped service registry (WDHT), **sharded event bus (machine‑scoped)**, LeaseHints, basic controllers (ReplicaSet subset, Job subset, Headless Service), Podman adapter, REST apply/watch, metrics & dashboards | **True multicloud runtime** that runs anywhere (incl. air‑gapped) with one operational model. |
+| **Beemesh Enterprise** | BSL/Commercial | Org CA & namespaces, policy & quotas, SSO/RBAC, audit log, read‑only Control Tower (inventory/rollouts/golden signals), LTS/FIPS, optional relay/bootstrap network                                                                                      | **Fleet‑scale governance** and compliance without re‑introducing a central control plane.     |
 
 ---
 
-## 3) Beemesh Hub
+## 3) Hub (deployed on Beemesh)
 
 **Tagline:** Discover, verify, and deploy community or enterprise workloads and services.
 
+**Business outcomes**
+
+* **Shorter time‑to-capability:** add databases, observability, and connectors via signed packages.
+* **Vendor flexibility:** install from the Hub online or import **offline bundles** for disconnected sites.
+* **Controlled adoption:** tenant‑scoped catalogs with policy checks and explicit permissions.
+
+**How it works**
+
 * **Package format:** OCI images + `beemesh.yaml` (permissions/capabilities/planes) + SBOM + in‑toto provenance. Signed with cosign.
 * **Channels:** `stable` / `beta` / `canary`; semantic versioning; rollback support.
-* **Security:** signature verify, policy evaluation before install, tenant scoping, explicit capabilities.
+* **Security:** signature verification, policy evaluation before install, tenant scoping, explicit capabilities.
 * **Offline:** export/import **Hub Bundles** (`.bmz`) for disconnected sites.
 * **Publisher tiers:** Community (signature verified), **Hub Verified** (security scan + e2e tests), **Hub Certified** (vendor support, SLOs, paid).
 * **Economics:** publisher‑set pricing; 80/20 rev‑share (publisher/Beemesh).
@@ -39,7 +54,7 @@
 
 * **Enterprise license:** per managed node/year. Tiers with volume discounts. Indicative: $150–$300/node/year (min $25k–$50k).
 * **Hub paid packages:** price set by publisher; billed via Hub (online) or via license token (offline). Beemesh rev‑share 20%.
-* **Relays/Bootstrap network (optional):** usage‑based (peer‑hours + egress GB).
+* **Relays/Bootstrap network (optional):** usage‑based (node‑hours + egress GB).
 * **Support for OSS users:** annual contracts with response SLOs.
 
 > Pricing will evolve with design partners. Keep the open‑core boundary crisp and public.
@@ -132,12 +147,13 @@ Artifacts: reproducible repos, dashboards, and step‑by‑step scripts.
 * **Adoption:** Hub installs per tenant, Verified/Certified package share.
 * **Revenue:** design‑partner conversions, nodes under Enterprise, Hub GMV & rev‑share.
 * **Ecosystem:** # publishers, package quality score, time‑to‑patch vulnerabilities.
+* **ROI guide:** `ROI = (Baseline $/job − Beemesh $/job) × jobs − platform cost` (track monthly).
 
 ---
 
 ## 12) Risks & Mitigations
 
-* **fabric skepticism:** publish sharding/relay metrics; show stability under load.
+* **Fabric skepticism:** publish sharding/relay metrics; show stability under load.
 * **Data safety fears:** demo write fencing with a small Raft KV; clear explainer.
 * **Air‑gap blockers:** first‑class offline bundles; no cloud hard‑deps.
 * **Support load:** Certified tier obligations for publishers; diagnostics bundles.
@@ -188,7 +204,5 @@ bm policy set retail-eu --quota cpu=200 --priority-tier=gold
 
 * **Does Enterprise require the Hub?** Enterprise ships the **Hub client**; you can run Hub offline with bundles.
 * **Is there a control plane?** No. Control Tower is read‑only and out‑of‑band; it never orchestrates workloads.
-* **Can we build our own packages?** Yes-use `beemesh.yaml`, sign with cosign, publish to Hub or side‑load via bundle.
-
-
+* **Can we build our own packages?** Yes - use `beemesh.yaml`, sign with cosign, publish to Hub or side‑load via bundle.
 
