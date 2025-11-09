@@ -1,6 +1,6 @@
 # **Beemesh: Global Mesh Computing**
 
-> **Beemesh** is a decentralized, lock-free orchestration system that turns any device — cloud, on-prem, edge, or IoT — into an interchangeable compute resource.
+> **Beemesh** is decentralized orchestration that turns any device — cloud, on-prem, edge, or IoT — into an interchangeable compute resource.
 > It scales out by eliminating the centralized control plane, enabling **secure, self-healing workloads** across highly dynamic environments.
 
 ---
