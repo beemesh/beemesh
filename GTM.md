@@ -1,6 +1,6 @@
 # Beemesh - Commercial Planning
 
-> **Purpose:** This doc aligns product, engineering, and GTM on how Beemesh becomes a sustainable business while preserving the open, distributed secure fabric architecture. Treat this as **commercial.md** at the repo root.
+> **Purpose:** This doc aligns product, engineering, and GTM on how Beemesh becomes a sustainable business while preserving the open, distributed secure fabric architecture.
 
 ---
 
