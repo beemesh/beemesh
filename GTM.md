@@ -8,7 +8,7 @@
 
 **Beemesh** is an open, distributed secure fabric platform that turns any machine-cloud, on‑prem, edge-into a global, self‑healing compute pool with **NoOps** scheduling.
 
-* **Beemesh (OSS)**: the foundation-decentralized scheduling, dual DHTs, secure identities, and self-healing workloads. Runs anywhere, including air-gapped. Optionally deploy the **Hub** app on Beemesh to discover, verify, and deploy add-ons.
+* **Beemesh (OSS)**: the foundation-decentralized scheduling, dual scoped service registries, secure identities, and self-healing workloads. Runs anywhere, including air-gapped. Optionally deploy the **Hub** app on Beemesh to discover, verify, and deploy add-ons.
 * **Beemesh Enterprise (BSL/Commercial)**: the enterprise wrapper-policy, identity, governance, support, and fleet-scale ops packaged for regulated/large environments.
 
 ---
@@ -19,15 +19,10 @@
 | ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | **Beemesh**            | Apache‑2.0     | Machineplane + Rust Workplane, WDHT, sharded pub/sub, LeaseHints, basic controllers (ReplicaSet subset, Job subset, Headless Service), Podman adapter, REST apply/watch, metrics & dashboards | Always runnable offline. Protocols & SDKs open and stable. **Hub ships as a deployable app on Beemesh (not deployed).** |
 | **Beemesh Enterprise** | BSL/Commercial | Org CA & namespaces, policy & quotas, SSO/RBAC, audit log, read‑only Control Tower (inventory/rollouts/golden signals), LTS/FIPS, optional relay/bootstrap network                            | No mandatory SaaS. Control Tower is out‑of‑band and read‑only (no central control plane).                               |
+# Beemesh - Commercial Planning
 
-**Why BSL for Enterprise:** protects investment while keeping Beemesh open; protocols stay open to avoid ecosystem lock‑in.
+> **Purpose:** This doc aligns product, engineering, and GTM on how Beemesh becomes a sustainable business while preserving the open, distributed secure fabric architecture. Treat this as **commercial.md** at the repo root.
 
----|---|---|---|
-| **Beemesh** | Apache‑2.0 | Machineplane + Rust Workplane, WDHT, sharded pub/sub, LeaseHints, basic controllers (ReplicaSet subset, Job subset, Headless Service), Podman adapter, REST apply/watch, metrics & dashboards | Always runnable offline. Protocols & SDKs open and stable. |
-| **Hub** | N/A (Service) | Catalog, signatures/attestations, policy checks, install/upgrade/rollback CLI & APIs; **Hub Bundles** (`.bmz`) for air‑gapped import | Hub is a *distribution layer*; packages can be community, Verified, or Certified. |
-| **Beemesh Enterprise** | BSL/Commercial | Org CA & namespaces, policy & quotas, SSO/RBAC, audit log, read‑only Control Tower (inventory/rollouts/golden signals), LTS/FIPS, optional relay/bootstrap network | No mandatory SaaS. Control Tower is out‑of‑band and read‑only (no central control plane). |
-
-**Why BSL for Enterprise:** protects investment while keeping Core open; protocols stay open to avoid ecosystem lock‑in.
 
 ---
 
@@ -146,7 +141,7 @@ Artifacts: reproducible repos, dashboards, and step‑by‑step scripts.
 
 ## 12) Risks & Mitigations
 
-* **Scaling skepticism:** publish sharding/relay metrics; show stability under load.
+* **fabric skepticism:** publish sharding/relay metrics; show stability under load.
 * **Data safety fears:** demo write fencing with a small Raft KV; clear explainer.
 * **Air‑gap blockers:** first‑class offline bundles; no cloud hard‑deps.
 * **Support load:** Certified tier obligations for publishers; diagnostics bundles.
@@ -198,5 +193,6 @@ bm policy set retail-eu --quota cpu=200 --priority-tier=gold
 * **Does Enterprise require the Hub?** Enterprise ships the **Hub client**; you can run Hub offline with bundles.
 * **Is there a control plane?** No. Control Tower is read‑only and out‑of‑band; it never orchestrates workloads.
 * **Can we build our own packages?** Yes-use `beemesh.yaml`, sign with cosign, publish to Hub or side‑load via bundle.
+
 
 
