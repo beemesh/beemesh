@@ -17,18 +17,14 @@
 
 | Tier                   | License        | What’s inside                                                                                                                                                                                 | Notable Boundaries                                                                                                      |
 | ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| **Beemesh**            | Apache‑2.0     | Machineplane + Rust Workplane, WDHT, sharded pub/sub, LeaseHints, basic controllers (ReplicaSet subset, Job subset, Headless Service), Podman adapter, REST apply/watch, metrics & dashboards | Always runnable offline. Protocols & SDKs open and stable. **Hub ships as a deployable app on Beemesh (not deployed).** |
+| **Beemesh**            | Apache‑2.0     | Machineplane + Rust Workplane, WDHT, sharded pub/sub, LeaseHints, basic controllers (ReplicaSet subset, Job subset, Headless Service), Podman adapter, REST apply/watch, metrics & dashboards | Always runnable offline. Protocols & SDKs open and stable. |
 | **Beemesh Enterprise** | BSL/Commercial | Org CA & namespaces, policy & quotas, SSO/RBAC, audit log, read‑only Control Tower (inventory/rollouts/golden signals), LTS/FIPS, optional relay/bootstrap network                            | No mandatory SaaS. Control Tower is out‑of‑band and read‑only (no central control plane).                               |
-# Beemesh - Commercial Planning
-
-> **Purpose:** This doc aligns product, engineering, and GTM on how Beemesh becomes a sustainable business while preserving the open, distributed secure fabric architecture. Treat this as **commercial.md** at the repo root.
-
 
 ---
 
-## 3) Hub (deployed on Beemesh)
+## 3) Beemesh Hub
 
-**Tagline:** Discover, verify, and deploy Beemesh add‑ons - online or air‑gapped.
+**Tagline:** Discover, verify, and deploy community or enterprise workloads and services.
 
 * **Package format:** OCI images + `beemesh.yaml` (permissions/capabilities/planes) + SBOM + in‑toto provenance. Signed with cosign.
 * **Channels:** `stable` / `beta` / `canary`; semantic versioning; rollback support.
