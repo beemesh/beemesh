@@ -7,7 +7,7 @@ use once_cell::sync::{Lazy, OnceCell};
 use rand::RngCore;
 use saorsa_pqc::ApiMlDsaSignature;
 use saorsa_pqc::api::sig::{MlDsaPublicKey, MlDsaSecretKey, MlDsaVariant, ml_dsa_65};
-use std::convert::AsRef;
+use std::convert::{AsRef, TryInto};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once, RwLock};
 // KEM API from saorsa_pqc
@@ -273,10 +273,10 @@ pub fn encrypt_manifest(
         .map_err(|e| anyhow::anyhow!("invalid key length for AES-GCM: {}", e))?;
     let mut nonce_bytes = [0u8; 12];
     rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let plaintext = serde_json::to_vec(manifest_json)?;
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
+    .encrypt(&nonce, plaintext.as_ref())
         .map_err(|e| anyhow::anyhow!("aes-gcm encrypt error: {}", e))?;
     Ok((ciphertext, nonce_bytes.to_vec(), sym, nonce_bytes))
 }
@@ -294,9 +294,9 @@ pub fn encrypt_payload_for_recipient(
         .map_err(|e| anyhow::anyhow!("invalid key length for AES-GCM: {}", e))?;
     let mut nonce_bytes = [0u8; 12];
     rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, payload)
+    .encrypt(&nonce, payload)
         .map_err(|e| anyhow::anyhow!("aes-gcm encrypt error: {}", e))?;
 
     let mut blob =
@@ -357,8 +357,15 @@ pub fn decrypt_payload_from_recipient_blob(
     let shared = decapsulate_share(priv_kem_bytes, wrapped)?; // Zeroizing<Vec<u8>>
     let cipher = Aes256Gcm::new_from_slice(&shared[..])
         .map_err(|e| anyhow::anyhow!("aes key error: {}", e))?;
+    if nonce.len() != 12 {
+        anyhow::bail!("invalid nonce length: {}", nonce.len());
+    }
+    let nonce_array: [u8; 12] = nonce
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("failed to convert nonce slice"))?;
+    let nonce_ga = Nonce::from(nonce_array);
     let plain = cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext.as_ref())
+        .decrypt(&nonce_ga, ciphertext.as_ref())
         .map_err(|e| anyhow::anyhow!("aes-gcm decrypt error: {}", e))?;
     Ok(plain)
 }
@@ -374,9 +381,12 @@ pub fn decrypt_manifest(
     if nonce_bytes.len() != 12 {
         anyhow::bail!("invalid nonce length: {}", nonce_bytes.len());
     }
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce_array: [u8; 12] = nonce_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("nonce length mismatch"))?;
+    let nonce = Nonce::from(nonce_array);
     let plain = cipher
-        .decrypt(nonce, ciphertext.as_ref())
+        .decrypt(&nonce, ciphertext.as_ref())
         .map_err(|e| anyhow::anyhow!("aes-gcm decrypt error: {}", e))?;
     Ok(plain)
 }
