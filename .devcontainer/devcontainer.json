@@ -1,0 +1,7 @@
+{
+  "name": "beemesh-dev",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": ["--privileged"]
+}

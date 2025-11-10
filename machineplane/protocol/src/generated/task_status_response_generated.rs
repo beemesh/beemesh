@@ -45,8 +45,7 @@ impl<'a> TaskStatusResponse<'a> {
   pub const VT_TASK_ID: flatbuffers::VOffsetT = 4;
   pub const VT_STATE: flatbuffers::VOffsetT = 6;
   pub const VT_ASSIGNED_PEERS: flatbuffers::VOffsetT = 8;
-  pub const VT_SHARES_DISTRIBUTED: flatbuffers::VOffsetT = 10;
-  pub const VT_MANIFEST_CID: flatbuffers::VOffsetT = 12;
+  pub const VT_MANIFEST_CID: flatbuffers::VOffsetT = 10;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -59,7 +58,6 @@ impl<'a> TaskStatusResponse<'a> {
   ) -> flatbuffers::WIPOffset<TaskStatusResponse<'bldr>> {
     let mut builder = TaskStatusResponseBuilder::new(_fbb);
     if let Some(x) = args.manifest_cid { builder.add_manifest_cid(x); }
-    if let Some(x) = args.shares_distributed { builder.add_shares_distributed(x); }
     if let Some(x) = args.assigned_peers { builder.add_assigned_peers(x); }
     if let Some(x) = args.state { builder.add_state(x); }
     if let Some(x) = args.task_id { builder.add_task_id(x); }
@@ -89,13 +87,6 @@ impl<'a> TaskStatusResponse<'a> {
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>>(TaskStatusResponse::VT_ASSIGNED_PEERS, None)}
   }
   #[inline]
-  pub fn shares_distributed(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>> {
-    // Safety:
-    // Created from valid Table for this object
-    // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>>(TaskStatusResponse::VT_SHARES_DISTRIBUTED, None)}
-  }
-  #[inline]
   pub fn manifest_cid(&self) -> Option<&'a str> {
     // Safety:
     // Created from valid Table for this object
@@ -114,7 +105,6 @@ impl flatbuffers::Verifiable for TaskStatusResponse<'_> {
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("task_id", Self::VT_TASK_ID, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("state", Self::VT_STATE, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<&'_ str>>>>("assigned_peers", Self::VT_ASSIGNED_PEERS, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<&'_ str>>>>("shares_distributed", Self::VT_SHARES_DISTRIBUTED, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("manifest_cid", Self::VT_MANIFEST_CID, false)?
      .finish();
     Ok(())
@@ -124,7 +114,6 @@ pub struct TaskStatusResponseArgs<'a> {
     pub task_id: Option<flatbuffers::WIPOffset<&'a str>>,
     pub state: Option<flatbuffers::WIPOffset<&'a str>>,
     pub assigned_peers: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>>,
-    pub shares_distributed: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>>,
     pub manifest_cid: Option<flatbuffers::WIPOffset<&'a str>>,
 }
 impl<'a> Default for TaskStatusResponseArgs<'a> {
@@ -134,7 +123,6 @@ impl<'a> Default for TaskStatusResponseArgs<'a> {
       task_id: None,
       state: None,
       assigned_peers: None,
-      shares_distributed: None,
       manifest_cid: None,
     }
   }
@@ -156,10 +144,6 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> TaskStatusResponseBuilder<'a, '
   #[inline]
   pub fn add_assigned_peers(&mut self, assigned_peers: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<&'b  str>>>) {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(TaskStatusResponse::VT_ASSIGNED_PEERS, assigned_peers);
-  }
-  #[inline]
-  pub fn add_shares_distributed(&mut self, shares_distributed: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<&'b  str>>>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(TaskStatusResponse::VT_SHARES_DISTRIBUTED, shares_distributed);
   }
   #[inline]
   pub fn add_manifest_cid(&mut self, manifest_cid: flatbuffers::WIPOffset<&'b  str>) {
@@ -186,7 +170,6 @@ impl core::fmt::Debug for TaskStatusResponse<'_> {
       ds.field("task_id", &self.task_id());
       ds.field("state", &self.state());
       ds.field("assigned_peers", &self.assigned_peers());
-      ds.field("shares_distributed", &self.shares_distributed());
       ds.field("manifest_cid", &self.manifest_cid());
       ds.finish()
   }

@@ -282,8 +282,6 @@ pub async fn get_candidates(
 pub struct TaskRecord {
     pub manifest_bytes: Vec<u8>,
     pub created_at: std::time::SystemTime,
-    // map of peer_id -> delivered?
-    pub shares_distributed: HashMap<String, bool>,
     // map of peer_id -> manifest payload for manifest distribution
     pub manifests_distributed: HashMap<String, String>,
     pub assigned_peers: Option<Vec<String>>,
@@ -415,7 +413,6 @@ pub async fn create_task(
     let rec = TaskRecord {
         manifest_bytes: manifest_bytes_to_store,
         created_at: std::time::SystemTime::now(),
-        shares_distributed: HashMap::new(),
         manifests_distributed: HashMap::new(),
         assigned_peers: None,
         manifest_cid: Some(manifest_id.clone()),
@@ -663,7 +660,6 @@ async fn debug_all_tasks(State(state): State<RestState>) -> axum::Json<serde_jso
             "manifest_cid": record.manifest_cid,
             "created_at": record.created_at.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
             "assigned_peers": record.assigned_peers,
-            "shares_distributed_count": record.shares_distributed.len(),
             "manifest_bytes_len": record.manifest_bytes.len()
         }));
     }
@@ -684,7 +680,7 @@ async fn get_task_manifest_id(
         Some(t) => t,
         None => {
             let error_response =
-                protocol::machine::build_task_status_response("", "Error", &[], &[], None);
+                protocol::machine::build_task_status_response("", "Error", &[], None);
             return create_response_with_fallback(&error_response).await;
         }
     };
@@ -693,7 +689,7 @@ async fn get_task_manifest_id(
         Some(o) => o,
         None => {
             let error_response =
-                protocol::machine::build_task_status_response("", "Error", &[], &[], None);
+                protocol::machine::build_task_status_response("", "Error", &[], None);
             return create_response_with_fallback(&error_response).await;
         }
     };
@@ -723,7 +719,7 @@ async fn get_task_manifest_id(
                     operation_id
                 );
                 let error_response =
-                    protocol::machine::build_task_status_response("", "Error", &[], &[], None);
+                    protocol::machine::build_task_status_response("", "Error", &[], None);
                 return create_response_with_fallback(&error_response).await;
             }
         }
@@ -742,24 +738,18 @@ pub async fn get_task_status(
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     let maybe = { state.task_store.read().await.get(&task_id).cloned() };
     if let Some(r) = maybe {
-        let distributed: Vec<String> = r
-            .shares_distributed
-            .iter()
-            .filter(|(_, v)| **v)
-            .map(|(k, _)| k.clone())
-            .collect();
         let assigned = r.assigned_peers.unwrap_or_default();
 
         let response_data = protocol::machine::build_task_status_response(
             &task_id,
             "Pending",
             &assigned,
-            &distributed,
             r.manifest_cid.as_deref(),
         );
         return create_response_with_fallback(&response_data).await;
     }
-    let error_response = protocol::machine::build_task_status_response("", "Error", &[], &[], None);
+    let error_response =
+        protocol::machine::build_task_status_response("", "Error", &[], None);
     create_response_with_fallback(&error_response).await
 }
 

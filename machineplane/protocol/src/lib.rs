@@ -869,7 +869,6 @@ pub mod machine {
         task_id: &str,
         state: &str,
         assigned_peers: &[String],
-        shares_distributed: &[String],
         manifest_cid: Option<&str>,
     ) -> Vec<u8> {
         let mut fbb = FlatBufferBuilder::with_capacity(512);
@@ -882,12 +881,6 @@ pub mod machine {
             .collect();
         let assigned_vector = fbb.create_vector(&assigned_strings);
 
-        let distributed_strings: Vec<_> = shares_distributed
-            .iter()
-            .map(|p| fbb.create_string(p))
-            .collect();
-        let distributed_vector = fbb.create_vector(&distributed_strings);
-
         let manifest_cid_off = manifest_cid.map(|c| fbb.create_string(c));
 
         let status_response = TaskStatusResponse::create(
@@ -896,8 +889,8 @@ pub mod machine {
                 task_id: Some(task_id_off),
                 state: Some(state_off),
                 assigned_peers: Some(assigned_vector),
-                shares_distributed: Some(distributed_vector),
                 manifest_cid: manifest_cid_off,
+                ..Default::default()
             },
         );
         fbb.finish(status_response, None);
