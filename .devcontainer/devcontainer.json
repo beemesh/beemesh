@@ -4,5 +4,5 @@
     "dockerfile": "Dockerfile"
   },
   "runArgs": ["--privileged"],
-  "postCreateCommand": ".devcontainer/setup-podman-storage.sh"
+  "postCreateCommand": "chmod +x .devcontainer/setup-podman-storage.sh && .devcontainer/setup-podman-storage.sh"
 }
