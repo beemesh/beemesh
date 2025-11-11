@@ -1,23 +1,18 @@
 use base64::Engine;
 use crypto::{encrypt_payload_for_recipient, ensure_keypair_on_disk};
-use log::debug;
-use log::error;
-use log::info;
+use log::{debug, error, info};
 use scheduler::{NodeCandidate, NodeCapabilities, Scheduler, SchedulerConfig, SchedulingStrategy};
-use uuid::Uuid;
-
 use serde_json::Value as JsonValue;
-use serde_yaml;
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 mod flatbuffers;
-use flatbuffers::FlatbufferClient;
+pub use flatbuffers::FlatbufferClient;
 
 mod flatbuffer_envelope;
 
-// Helper function to extract manifest name from JSON
 fn extract_manifest_name_from_json(manifest_json: &serde_json::Value) -> Option<String> {
     manifest_json
         .get("metadata")?
@@ -44,14 +39,12 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
         contents.len()
     );
 
-    // Parse manifest to JSON if possible, else wrap raw
     let manifest_json: JsonValue = match serde_yaml::from_str(&contents) {
         Ok(v) => v,
         Err(_) => serde_json::json!({"raw": contents}),
     };
     debug!("apply_file: manifest parsed successfully");
 
-    // Extract replicas count from manifest (check spec.replicas or top-level replicas, default to 1)
     let replicas = manifest_json
         .get("spec")
         .and_then(|s| s.get("replicas"))
@@ -61,20 +54,15 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
 
     info!("Manifest requires {} replicas", replicas);
 
-    // Ensure CLI keypair - always use persistent keypairs for consistency
     let (pk_bytes, _sk_bytes) = ensure_keypair_on_disk()?;
 
-    // Compute stable manifest_id from owning public key and manifest name only
-    // This allows manifest content to be updated while keeping the same ID for overwriting
     let manifest_id = {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
 
-        // Hash owning public key for security
         pk_bytes.hash(&mut hasher);
 
-        // Extract and hash manifest name - this is the stable identifier
         if let Some(name) = extract_manifest_name_from_json(&manifest_json) {
             debug!("CLI: Using manifest name '{}' for manifest_id", name);
             name.hash(&mut hasher);
@@ -92,7 +80,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
         &pk_bytes[..8]
     );
 
-    // API base URL can be overridden with BEEMESH_API env var
     let base = api_base
         .map(|s| s.to_string())
         .or_else(|| env::var("BEEMESH_API").ok())
@@ -100,12 +87,10 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
     debug!("Creating FlatbufferClient with base URL: {}", base);
     let mut fb_client = FlatbufferClient::new(base)?;
 
-    // Fetch machine's public key for encrypted communication
     debug!("Fetching machine's public key...");
     fb_client.fetch_machine_public_key().await?;
     debug!("Successfully fetched machine's public key");
 
-    // 1) Get candidates for node selection
     debug!("About to call get_candidates...");
     let peers = fb_client.get_candidates(&manifest_id).await?;
     debug!(
@@ -117,7 +102,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
         anyhow::bail!("No candidate nodes available for scheduling");
     }
 
-    // Ensure we have enough peers for the requested replicas
     if peers.len() < replicas {
         anyhow::bail!(
             "Not enough candidate nodes available: need {}, got {}",
@@ -126,8 +110,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
         );
     }
 
-    // 2) Parse peer IDs and public keys from candidates response and use scheduler
-    // Expected format: "peer_id:pubkey_b64"
     let mut node_candidates = Vec::new();
     let mut peer_info_map = HashMap::new();
 
@@ -136,13 +118,11 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
             let peer_id = &peer[..colon_pos];
             let pubkey_b64 = &peer[colon_pos + 1..];
 
-            // Store peer info for later lookup
             peer_info_map.insert(peer_id.to_string(), pubkey_b64.to_string());
 
-            // Create NodeCandidate for scheduler
             let candidate = NodeCandidate {
                 node_id: peer_id.to_string(),
-                load_factor: 0.0, // We don't have load info, assume available
+                load_factor: 0.0,
                 available: true,
                 capabilities: NodeCapabilities::default(),
             };
@@ -160,7 +140,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
         node_candidates.len()
     );
 
-    // 3) Use scheduler to select candidates with round-robin strategy
     let scheduler_config = SchedulerConfig {
         strategy: SchedulingStrategy::RoundRobin,
         max_candidates: None,
@@ -179,7 +158,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
         scheduling_plan.selected_candidates
     );
 
-    // 4) Build selected_nodes list from scheduling plan
     let mut selected_nodes: Vec<(String, String)> = Vec::new();
     for candidate_idx in scheduling_plan.selected_candidates {
         let candidate = &node_candidates[candidate_idx];
@@ -199,7 +177,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
     );
     debug!("Selected nodes with pubkeys: {:?}", selected_nodes);
 
-    // Create encrypted tasks for each node sequentially with same manifest_id
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -207,8 +184,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
 
     let mut created_task_ids = Vec::new();
 
-    // Create and assign tasks for each node sequentially to avoid store conflicts
-    // Send the original manifest without modification - each node will handle replica count
     let original_manifest_str = serde_json::to_string(&manifest_json)?;
 
     for (node_id, node_pubkey) in &selected_nodes {
@@ -220,41 +195,36 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
                 anyhow::anyhow!("Failed to decode node public key for {}: {}", node_id, e)
             })?;
 
-        // Encrypt the original manifest for the recipient using KEM
         let encrypted_blob =
             encrypt_payload_for_recipient(&node_pubkey_bytes, original_manifest_str.as_bytes())?;
 
-        // Create a simple envelope containing the encrypted payload
         let encrypted_manifest_bytes = protocol::machine::build_envelope_canonical_with_peer(
             &encrypted_blob,
-            "manifest",   // payload_type
-            "",           // nonce (empty for now)
-            ts,           // timestamp
-            "ml-kem-512", // algorithm
-            "",           // peer_id (empty for now)
-            None,         // pubkey
+            "manifest",
+            "",
+            ts,
+            "ml-kem-512",
+            "",
+            None,
         );
 
-        // 4) Send ApplyRequest directly to the target peer via the forwarding endpoint
         debug!(
             "Sending ApplyRequest directly to node {} with manifest_id {}",
             node_id, manifest_id
         );
 
-        // Build ApplyRequest with the encrypted manifest
         let operation_id = Uuid::new_v4().to_string();
         let manifest_json_b64 =
             base64::engine::general_purpose::STANDARD.encode(&encrypted_manifest_bytes);
 
         let apply_request_bytes = protocol::machine::build_apply_request(
-            1, // replicas (1 per target peer)
+            1,
             &operation_id,
             &manifest_json_b64,
-            "", // origin_peer (CLI doesn't have peer ID)
+            "",
             &manifest_id,
         );
 
-        // Send via the apply_direct endpoint which forwards to the peer
         let url = format!(
             "{}/apply_direct/{}",
             fb_client.base_url.trim_end_matches('/'),
@@ -265,7 +235,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
             .send_encrypted_request(&url, &apply_request_bytes, "apply_request")
             .await?;
 
-        // Parse response as ApplyResponse
         let apply_response = protocol::machine::root_as_apply_response(&response_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to parse ApplyResponse: {}", e))?;
 
@@ -281,7 +250,6 @@ pub async fn apply_file(path: PathBuf, api_base: Option<&str>) -> anyhow::Result
 
         created_task_ids.push(manifest_id.clone());
 
-        // Add a small delay to avoid task store conflicts
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
@@ -321,27 +289,21 @@ pub async fn delete_file(
         contents.len()
     );
 
-    // Parse manifest to JSON if possible
     let manifest_json: JsonValue = match serde_yaml::from_str(&contents) {
         Ok(v) => v,
         Err(_) => serde_json::json!({"raw": contents}),
     };
     debug!("delete_file: manifest parsed successfully");
 
-    // Ensure CLI keypair - always use persistent keypairs for consistency
     let (pk_bytes, _sk_bytes) = ensure_keypair_on_disk()?;
 
-    // Compute stable manifest_id from owning public key and manifest name only
-    // This matches the same logic as apply_file for consistency
     let manifest_id = {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
 
-        // Hash owning public key for security
         pk_bytes.hash(&mut hasher);
 
-        // Extract and hash manifest name - this is the stable identifier
         if let Some(name) = extract_manifest_name_from_json(&manifest_json) {
             debug!("CLI: Using manifest name '{}' for manifest_id", name);
             name.hash(&mut hasher);
@@ -359,7 +321,6 @@ pub async fn delete_file(
         &pk_bytes[..8]
     );
 
-    // API base URL can be overridden with BEEMESH_API env var
     let base = api_base
         .map(|s| s.to_string())
         .or_else(|| env::var("BEEMESH_API").ok())
@@ -367,21 +328,14 @@ pub async fn delete_file(
     debug!("Creating FlatbufferClient with base URL: {}", base);
     let mut fb_client = FlatbufferClient::new(base)?;
 
-    // Fetch machine's public key for encrypted communication
     debug!("Fetching machine's public key...");
     fb_client.fetch_machine_public_key().await?;
     debug!("Successfully fetched machine's public key");
 
-    // Build delete request
     let operation_id = Uuid::new_v4().to_string();
-    let delete_request_bytes = protocol::machine::build_delete_request(
-        &manifest_id,
-        &operation_id,
-        "", // origin_peer (CLI doesn't have peer ID)
-        force,
-    );
+    let delete_request_bytes =
+        protocol::machine::build_delete_request(&manifest_id, &operation_id, "", force);
 
-    // Send delete request via REST API
     let url = format!(
         "{}/tasks/{}",
         fb_client.base_url.trim_end_matches('/'),
@@ -394,7 +348,6 @@ pub async fn delete_file(
         .send_delete_request(&url, &delete_request_bytes)
         .await?;
 
-    // Parse response as DeleteResponse
     let delete_response = protocol::machine::root_as_delete_response(&response_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to parse DeleteResponse: {}", e))?;
 
@@ -420,7 +373,6 @@ mod tests {
 
     #[test]
     fn test_candidate_parsing_and_scheduling() {
-        // Test data in the format returned by get_candidates
         let peers = vec![
             "peer1:dGVzdF9wdWJrZXlfMQ==".to_string(),
             "peer2:dGVzdF9wdWJrZXlfMg==".to_string(),
@@ -428,7 +380,6 @@ mod tests {
             "peer4:dGVzdF9wdWJrZXlfNA==".to_string(),
         ];
 
-        // Parse candidates
         let mut node_candidates = Vec::new();
         let mut peer_info_map = HashMap::new();
 
@@ -449,7 +400,6 @@ mod tests {
             }
         }
 
-        // Test scheduler with round-robin
         let scheduler_config = SchedulerConfig {
             strategy: SchedulingStrategy::RoundRobin,
             max_candidates: None,
@@ -457,7 +407,6 @@ mod tests {
         };
         let scheduler = Scheduler::new(scheduler_config);
 
-        // Schedule 2 replicas
         let replicas = 2;
         let scheduling_plan = scheduler
             .schedule_workload(&node_candidates, replicas)
@@ -470,7 +419,6 @@ mod tests {
             SchedulingStrategy::RoundRobin
         );
 
-        // Verify selected nodes can be mapped back to peer info
         for candidate_idx in &scheduling_plan.selected_candidates {
             let candidate = &node_candidates[*candidate_idx];
             assert!(peer_info_map.contains_key(&candidate.node_id));
@@ -481,7 +429,6 @@ mod tests {
     fn test_invalid_peer_format() {
         let peers = vec!["invalid_peer_format".to_string()];
 
-        // This should result in a format error when parsing
         let mut node_candidates = Vec::new();
         let mut has_error = false;
 

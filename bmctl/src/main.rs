@@ -1,9 +1,9 @@
+use bmctl::{apply_file, delete_file};
 use clap::{Parser, Subcommand};
-use cli::{apply_file, delete_file};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "beemesh", about = "beemesh CLI")]
+#[command(name = "bmctl", about = "Beemesh CLI")]
 struct Cli {
     /// REST API base URL (can also be set via BEEMESH_API)
     #[arg(long = "api-url", env = "BEEMESH_API", value_name = "URL")]

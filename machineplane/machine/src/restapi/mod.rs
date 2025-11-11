@@ -748,8 +748,7 @@ pub async fn get_task_status(
         );
         return create_response_with_fallback(&response_data).await;
     }
-    let error_response =
-        protocol::machine::build_task_status_response("", "Error", &[], None);
+    let error_response = protocol::machine::build_task_status_response("", "Error", &[], None);
     create_response_with_fallback(&error_response).await
 }
 

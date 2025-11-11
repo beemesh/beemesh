@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 machine = { path = "../machine" }
-cli = { path = "../cli" }
+bmctl = { path = "../../bmctl" }
 crypto = { path = "../crypto" }
 scheduler = { path = "../scheduler" }
 tokio = { workspace = true }

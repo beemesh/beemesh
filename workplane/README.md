@@ -284,10 +284,10 @@ workplane:
 
 ---
 
-## 12. CLI Interactions (`beectl`)
+## 12. CLI Interactions (`bmctl`)
 
-* `beectl get pods` **SHOULD** aggregate readiness from WP Agent and WDHT presence.
-* `beectl delete pod` **MUST** trigger WP Agent shutdown hook to remove ServiceRecord before exit.
+* `bmctl get pods` **SHOULD** aggregate readiness from WP Agent and WDHT presence.
+* `bmctl delete pod` **MUST** trigger WP Agent shutdown hook to remove ServiceRecord before exit.
 
 ---
 

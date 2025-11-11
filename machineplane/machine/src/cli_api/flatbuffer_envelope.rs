@@ -6,7 +6,6 @@ use protocol::machine::{
     root_as_envelope,
 };
 
-/// Helper for building flatbuffer Envelopes instead of JSON
 pub struct FlatbufferEnvelopeBuilder {
     peer_id: String,
     public_key: String,
@@ -21,7 +20,6 @@ impl FlatbufferEnvelopeBuilder {
         }
     }
 
-    /// Build a signed manifest envelope containing encrypted manifest payload
     #[allow(dead_code)]
     pub fn build_manifest_envelope(
         &mut self,
@@ -33,8 +31,6 @@ impl FlatbufferEnvelopeBuilder {
         sk_bytes: &[u8],
         pk_bytes: &[u8],
     ) -> Result<Vec<u8>> {
-        // Simply use the ciphertext directly in an envelope
-        // No need for EncryptedManifest flatbuffer structure
         let payload_bytes = ciphertext;
 
         let envelope_nonce: [u8; 16] = rand::random();
@@ -44,7 +40,6 @@ impl FlatbufferEnvelopeBuilder {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // Create canonical bytes for signing
         let canonical_bytes = build_envelope_canonical(
             &payload_bytes,
             "manifest",
@@ -54,10 +49,8 @@ impl FlatbufferEnvelopeBuilder {
             None,
         );
 
-        // Sign the canonical bytes
         let (sig_b64, _pub_b64) = sign_envelope(sk_bytes, pk_bytes, &canonical_bytes)?;
 
-        // Create signed envelope directly
         Ok(build_envelope_signed_with_peer(
             &payload_bytes,
             "manifest",
@@ -72,7 +65,6 @@ impl FlatbufferEnvelopeBuilder {
         ))
     }
 
-    /// Build a simple envelope with just payload and type
     #[allow(dead_code)]
     pub fn build_simple_envelope(
         &mut self,
@@ -99,7 +91,6 @@ impl FlatbufferEnvelopeBuilder {
         ))
     }
 
-    /// Add signature and pubkey to an existing envelope
     #[allow(dead_code)]
     pub fn sign_envelope(
         &self,
@@ -107,15 +98,11 @@ impl FlatbufferEnvelopeBuilder {
         sk_bytes: &[u8],
         pk_bytes: &[u8],
     ) -> Result<Vec<u8>> {
-        // Sign flatbuffer envelope
-        // Fall back to flatbuffer handling - reconstruct canonical bytes for signing (same as verification)
         let envelope = root_as_envelope(envelope_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to parse envelope: {}", e))?;
 
-        // Build signed envelope using protocol helper
         let payload_bytes = envelope.payload().map(|v| v.bytes()).unwrap_or(&[]);
 
-        // Reconstruct canonical bytes using the same method as verification
         let canonical_bytes = protocol::machine::build_envelope_canonical(
             payload_bytes,
             envelope.payload_type().unwrap_or(""),
@@ -135,7 +122,7 @@ impl FlatbufferEnvelopeBuilder {
             "ml-dsa-65",
             "ml-dsa-65",
             &sig_b64,
-            &self.public_key, // Use the stored public key instead of pub_b64
+            &self.public_key,
             &self.peer_id,
             None,
         ))

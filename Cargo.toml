@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-	"machineplane/protocol",
-	"machineplane/machine",
-	"machineplane/cli",
-	"machineplane/tests",
-	"machineplane/crypto",
+        "machineplane/protocol",
+        "machineplane/machine",
+        "machineplane/tests",
+        "machineplane/crypto",
+    "bmctl",
     "workplane"
 ]
 

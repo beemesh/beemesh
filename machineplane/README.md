@@ -55,7 +55,7 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 ```mermaid
 sequenceDiagram
   autonumber
-  participant P as Producer (beectl/controller)
+  participant P as Producer (bmctl/controller)
   participant N1 as Node A
   participant N2 as Node B
   participant MDHT as Machine DHT
@@ -290,11 +290,11 @@ machineplane:
 
 ---
 
-## 10. CLI Integration (`beectl`)
+## 10. CLI Integration (`bmctl`)
 
-* `beectl create -f app.yaml` **MUST** publish a Task to `scheduler-tasks`.
-* `beectl get pods` **SHOULD** read from local node/runtime and/or observe `scheduler-events` for status aggregation (best-effort).
-* `beectl delete pod <name>` **MUST** publish a cancellation Task or send a secure stream command to the owning node.
+* `bmctl create -f app.yaml` **MUST** publish a Task to `scheduler-tasks`.
+* `bmctl get pods` **SHOULD** read from local node/runtime and/or observe `scheduler-events` for status aggregation (best-effort).
+* `bmctl delete pod <name>` **MUST** publish a cancellation Task or send a secure stream command to the owning node.
 
 ---
 
