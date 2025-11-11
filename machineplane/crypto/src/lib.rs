@@ -276,7 +276,7 @@ pub fn encrypt_manifest(
     let nonce = Nonce::from(nonce_bytes);
     let plaintext = serde_json::to_vec(manifest_json)?;
     let ciphertext = cipher
-    .encrypt(&nonce, plaintext.as_ref())
+        .encrypt(&nonce, plaintext.as_ref())
         .map_err(|e| anyhow::anyhow!("aes-gcm encrypt error: {}", e))?;
     Ok((ciphertext, nonce_bytes.to_vec(), sym, nonce_bytes))
 }
@@ -296,7 +296,7 @@ pub fn encrypt_payload_for_recipient(
     rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from(nonce_bytes);
     let ciphertext = cipher
-    .encrypt(&nonce, payload)
+        .encrypt(&nonce, payload)
         .map_err(|e| anyhow::anyhow!("aes-gcm encrypt error: {}", e))?;
 
     let mut blob =

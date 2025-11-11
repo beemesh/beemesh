@@ -15,7 +15,7 @@ curl localhost:3000/debug/dht/peers
 
 Apply manifest
 ```
-./target/debug/beectl --api-url http://localhost:3000 apply -f tests/sample_manifests/nginx.yml
+./target/debug/bmctl --api-url http://localhost:3000 apply -f tests/sample_manifests/nginx.yml
 ```
 
 Verify status for a "beemesh-${id}-pod"
@@ -25,5 +25,5 @@ podman pod ls
 
 Delete manifest
 ```
-./target/debug/beectl --api-url http://localhost:3000 delete -f tests/sample_manifests/nginx.yml
+./target/debug/bmctl --api-url http://localhost:3000 delete -f tests/sample_manifests/nginx.yml
 ```

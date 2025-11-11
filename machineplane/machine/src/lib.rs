@@ -4,6 +4,7 @@ use clap::Parser;
 use env_logger::Env;
 use std::io::Write;
 
+pub mod cli_api;
 pub mod hostapi;
 pub mod libp2p_beemesh;
 mod pod_communication;
@@ -13,6 +14,8 @@ pub mod restapi;
 pub mod runtime;
 pub mod workload_integration;
 pub mod workload_manager;
+
+pub use cli_api::{apply_file, delete_file};
 
 /// beemesh Host Agent
 #[derive(Parser, Debug)]
