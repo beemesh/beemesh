@@ -1,6 +1,6 @@
 # **Beemesh: Global Mesh Computing**
 
-> **Beemesh** is decentralized orchestration that turns any device — cloud, on-prem, edge, or IoT — into an interchangeable compute resource.
+> **Beemesh** is scale-out fabric orchestration that turns any device — cloud, on-prem, edge, or IoT — into an interchangeable compute resource.
 > It scales out by eliminating the centralized control plane, enabling **secure, self-healing workloads** across highly dynamic environments.
 
 ---
@@ -15,10 +15,10 @@ Modern orchestrators like Kubernetes and Nomad are powerful but **inherently lim
 
 Beemesh rethinks orchestration from the ground up:
 
-* **No central control plane** — fully peer-to-peer coordination.
+* **No central control plane** — fully scale-out fabric coordination.
 * **Workload-scoped consistency** — each application carries its own state management.
 * **Separate security and discovery planes** — machines and workloads each operate on their own DHT with independent trust domains.
-* **Scale out** — limited only by network capacity (`libp2p`).
+* **Scale out** — limited only by network capacity.
 
 ---
 
@@ -26,7 +26,7 @@ Beemesh rethinks orchestration from the ground up:
 
 | Problem in Legacy Systems                                                | Beemesh Solution                                                                   |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| Scaling beyond 5,000–10,000 nodes is hard due to control plane overhead. | **Fully decentralized coordination** using `libp2p` DHT + Pub/Sub.                 |
+| Scaling beyond 5,000–10,000 nodes is hard due to control plane overhead. | **Fully decentralized coordination** using DHT + Pub/Sub.                          |
 | Machine failures destabilize cluster state.                              | Machines are **fungible, disposable resources**; state lives **inside workloads**. |
 | High operational complexity (etcd, API servers, Raft quorums).           | **Single lightweight daemon** (\~50–80 MB RAM).                                    |
 | Weak identity and trust at scale.                                        | **Separate Peer IDs for machines and workloads**, mutually authenticated streams.  |
@@ -115,7 +115,7 @@ All communication in Beemesh is **mutually authenticated** and **end-to-end encr
 | Kubernetes  | Centralized (etcd + API server) | \~5,000 nodes / 150,000 pods | Strong consistency cluster-wide     | Rich ecosystem but control-plane limited         |
 | Nomad       | Centralized Raft quorum         | Thousands of nodes           | Strong consistency global scheduler | Lighter than K8s but still infra-bound           |
 | Swarm       | Raft manager nodes              | \~1,000 nodes                | Strong consistency cluster-wide     | Simple but infra-coupled                         |
-| **Beemesh** | **None – peer-to-peer**         | **Tens of thousands+**       | **Consistency scoped to workload**  | Scale out; only stateful workloads run Raft |
+| **Beemesh** | **None – scale-out fabric**     | **Tens of thousands+**       | **Consistency scoped to workload**  | Scale out; only stateful workloads run Raft |
 
 ---
 
@@ -180,7 +180,7 @@ The **Machine Plane** manages infrastructure resources and scheduling, with **no
 
 * Node discovery via **Machine DHT**.
 * Decentralized workload scheduling using ephemeral task negotiations.
-* Peer-to-peer coordination through secure, mutually authenticated streams.
+* Fabric-level coordination through secure, mutually authenticated streams.
 * Resource offer/bidding, capability advertisement, and local policy enforcement.
 * Lifecycle hooks to start/stop workloads via the runtime (e.g., **Podman**).
 
@@ -192,7 +192,7 @@ The **Machine Plane** manages infrastructure resources and scheduling, with **no
 
 Traditional schedulers maintain global cluster state and enforce consensus (Raft, etcd), creating bottlenecks.
 
-Beemesh uses **ephemeral scheduling**: **tasks are never persisted** and scheduling happens dynamically across the mesh.
+Beemesh uses **ephemeral scheduling**: **tasks are never persisted** and scheduling happens dynamically across the scale-out fabric.
 
 #### **Step-by-Step Flow**
 
@@ -353,7 +353,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 
    * Eliminates `etcd` and cluster-wide Raft bottlenecks.
 
-3. **Peer-to-Peer Foundation**
+3. **Scale-out Fabric Foundation**
 
    * Built on `libp2p`, proven to scale to **tens of thousands of peers**.
    * **Scale is bounded primarily by network capacity (`libp2p`).**
@@ -379,7 +379,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 1. **Install** the single Beemesh daemon on any machines (on-prem VMs, bare metal, cloud instances).
 2. **Join** the Machine DHT (via bootstrap peers or offline bundles for air-gapped).
 3. **Submit** workloads (Kubernetes-style `Deployment`/`StatefulSet` manifests supported).
-4. **Watch** the mesh schedule, run, and heal—across providers—**without a control plane**.
+4. **Watch** the fabric schedule, run, and heal—across providers—**without a control plane**.
 
 > Day-2 is basically **image rotation + key management**. That’s the point.
 
@@ -396,7 +396,7 @@ Beemesh represents a **paradigm shift** in orchestration:
 * Scales to **tens of thousands of nodes**, ideal for edge, IoT, cloud, **multicloud**, and **air-gapped** environments.
 * **Disposable, fully decoupled Machine Plane** → autonomous, low-toil operations.
 
-> **Beemesh isn’t just another orchestrator—it's a secure, decentralized mesh for the future of global computing.**
+> **Beemesh isn’t just another orchestrator—it's a secure, scale-out fabric for the future of global computing.**
 
 ---
 
@@ -419,3 +419,12 @@ Beemesh represents a **paradigm shift** in orchestration:
 | Enterprise Suitability                  | Excellent         | Excellent         | **Excellent (+air-gapped)** |
 
 ---
+
+## **Community & Support**
+
+- **GitHub**: [github.com/beemesh/beemesh](https://github.com/beemesh/beemesh)
+- **Documentation**: [docs.beemesh.io](https://docs.beemesh.io)
+
+---
+
+**License**: Apache 2.0
