@@ -1,6 +1,6 @@
 # **Beemesh: Global Mesh Computing**
 
-> **Beemesh** is scale-out fabric orchestration that turns any device — cloud, on-prem, edge, or IoT — into an interchangeable compute resource.
+> **Beemesh** is scale-out fabric orchestration that turns any device - cloud, on-prem, edge, or IoT - into an interchangeable compute resource.
 > It scales out by eliminating the centralized control plane, enabling **secure, self-healing workloads** across highly dynamic environments.
 
 ---
@@ -15,10 +15,10 @@ Modern orchestrators like Kubernetes and Nomad are powerful but **inherently lim
 
 Beemesh rethinks orchestration from the ground up:
 
-* **No central control plane** — fully scale-out fabric coordination.
-* **Workload-scoped consistency** — each application carries its own state management.
-* **Separate security and discovery planes** — machines and workloads each operate on their own DHT with independent trust domains.
-* **Scale out** — limited only by network capacity.
+* **No central control plane** - fully scale-out fabric coordination.
+* **Workload-scoped consistency** - each application carries its own state management.
+* **Separate security and discovery planes** - machines and workloads each operate on their own DHT with independent trust domains.
+* **Scale out** - limited only by network capacity.
 
 ---
 
@@ -174,7 +174,7 @@ flowchart TB
 
 ### **6.2 Machine Plane**
 
-The **Machine Plane** manages infrastructure resources and scheduling, with **no persistent state**. It is **disposable, fully decoupled, and autonomous**—rebuild at will.
+The **Machine Plane** manages infrastructure resources and scheduling, with **no persistent state**. It is **disposable, fully decoupled, and autonomous** - rebuild at will.
 
 #### **Responsibilities (explicit)**
 
@@ -184,7 +184,7 @@ The **Machine Plane** manages infrastructure resources and scheduling, with **no
 * Resource offer/bidding, capability advertisement, and local policy enforcement.
 * Lifecycle hooks to start/stop workloads via the runtime (e.g., **Podman**).
 
-> **Operational impact:** no etcd, no API servers, no manager quorum, no backups—**near-zero operational toll.**
+> **Operational impact:** no etcd, no API servers, no manager quorum, no backups - **near-zero operational toll.**
 
 ---
 
@@ -303,7 +303,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 
 ### 8.3 Active-active global services
 
-* Run replicas across **AWS + Azure + GCP** regions simultaneously. If a provider browns out, the Work Plane routes to healthy workloads—**no failover controller** required.
+* Run replicas across **AWS + Azure + GCP** regions simultaneously. If a provider browns out, the Work Plane routes to healthy workloads - **no failover controller** required.
 
 ### 8.4 Sovereign + public hybrid
 
@@ -322,8 +322,8 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 ## **9. Air-Gapped & Disconnected Enterprises**
 
 * **Works fully offline**: discovery and scheduling occur entirely inside the isolated network.
-* **Bootstrap** via pre-shared keys/offline identity distribution—**no external CA dependency** required.
-* **Controlled sync**: when/if connectivity exists, bridge selected workloads or artifacts via tightly scoped gateways—**by policy, not necessity**.
+* **Bootstrap** via pre-shared keys/offline identity distribution - **no external CA dependency** required.
+* **Controlled sync**: when/if connectivity exists, bridge selected workloads or artifacts via tightly scoped gateways - **by policy, not necessity**.
 * **DR without SaaS**: replicate only **workload state** that matters; machines remain disposable.
 
 ---
@@ -333,7 +333,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 | Scenario                     | Why Beemesh Works                                                            |
 | ---------------------------- | ---------------------------------------------------------------------------- |
 | **Edge & IoT Networks**      | Operates in unreliable, partitioned networks with minimal resources.         |
-| **Multicloud Microservices** | One service mesh across on-prem + Azure + AWS + GCP—no vendor lock-in.       |
+| **Multicloud Microservices** | One service mesh across on-prem + Azure + AWS + GCP - no vendor lock-in.       |
 | **Global Analytics/Batch**   | Elastic bursts across providers; ephemeral scheduling matches queue spikes.  |
 | **Smart Cities / Telco**     | Millions of devices with frequent churn; Machine Plane is throwaway.         |
 | **Enterprise Databases**     | State lives with the workload’s own quorum; infra failures don’t corrupt it. |
@@ -379,7 +379,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 1. **Install** the single Beemesh daemon on any machines (on-prem VMs, bare metal, cloud instances).
 2. **Join** the Machine DHT (via bootstrap peers or offline bundles for air-gapped).
 3. **Submit** workloads (Kubernetes-style `Deployment`/`StatefulSet` manifests supported).
-4. **Watch** the fabric schedule, run, and heal—across providers—**without a control plane**.
+4. **Watch** the fabric schedule, run, and heal - across providers - **without a control plane**.
 
 > Day-2 is basically **image rotation + key management**. That’s the point.
 
@@ -396,7 +396,7 @@ Beemesh represents a **paradigm shift** in orchestration:
 * Scales to **tens of thousands of nodes**, ideal for edge, IoT, cloud, **multicloud**, and **air-gapped** environments.
 * **Disposable, fully decoupled Machine Plane** → autonomous, low-toil operations.
 
-> **Beemesh isn’t just another orchestrator—it's a secure, scale-out fabric for the future of global computing.**
+> **Beemesh isn’t just another orchestrator - it's a secure, scale-out fabric for the future of global computing.**
 
 ---
 
