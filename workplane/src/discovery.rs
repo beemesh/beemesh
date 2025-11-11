@@ -47,17 +47,20 @@ pub fn put(record: ServiceRecord, ttl: Duration) -> bool {
 
     purge_expired(namespace_map);
 
-    let entry = namespace_map.entry(record.peer_id.clone());
-    let should_store = match entry.get() {
+    let peer_id = record.peer_id.clone();
+    let should_store = match namespace_map.get(&peer_id) {
         None => true,
         Some(existing) => should_replace(&existing.record, &record),
     };
 
     if should_store {
-        entry.insert(RecordEntry {
+        namespace_map.insert(
+            peer_id,
+            RecordEntry {
             record,
             expires_at: Instant::now() + ttl,
-        });
+        },
+        );
         true
     } else {
         false
