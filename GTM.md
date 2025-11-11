@@ -1,208 +1,216 @@
-# Beemesh - Commercial Planning
+# Beemesh - Commercial Planning (v0.2)
 
-> **Purpose:** This doc aligns product, engineering, and GTM on how Beemesh becomes a sustainable business while preserving the open, distributed secure fabric architecture.
+> **Purpose:** Align product, engineering, and GTM on building a sustainable business while preserving the open, distributed secure fabric architecture.
 
 ---
 
-## 1) Positioning & One‑liner
+## 1) Positioning & One-liner
 
-**Beemesh** is an open, distributed secure fabric that turns any machine (cloud, on‑prem, edge) into a global, self‑healing compute pool with **NoOps** scheduling — enabling **true multicloud** without a centralized control plane to run or replicate.
+**Beemesh** is an open, distributed secure fabric that turns any machine into a global, self-healing compute pool with **NoOps** scheduling - enabling **true multicloud** without a centralized control plane to run or replicate.
 
-* **Beemesh (OSS)**: the foundation — decentralized scheduling, dual scoped service registries, secure identities, and self‑healing workloads. Runs anywhere, including air‑gapped. Optionally deploy the **Hub** app on Beemesh to discover, verify, and deploy add‑ons.
-* **Beemesh Enterprise (BSL/Commercial)**: the enterprise wrapper — policy, identity, governance, support, and fleet‑scale ops packaged for regulated/large environments.
+* **Beemesh (Apache-2.0)**: Production-ready orchestration with decentralized scheduling, dual DHTs, secure identities, and self-healing workloads. Runs anywhere including air-gapped. **No feature gating.**
+* **Beemesh Commercial (BSL/Commercial)**: Fleet governance, policy controls, SSO/RBAC, audit logging, and commercial support packaged for business environments.
 
-**Business value (exec‑ready)**
+**Business value (exec-ready)**
 
-* **Lower cost:** use the cheapest capacity across clouds + on‑prem (spot/preemptible + owned) with policy control.
-* **Higher resilience:** no control plane to babysit; self‑healing by default; works when links are flaky or offline.
-* **Faster delivery:** deploy new regions/providers in hours, not months; same packaging everywhere.
-* **Stronger posture:** mutual TLS with workload identities; default‑deny policies; tenant/space segmentation.
+* **Lower cost:** Use the cheapest capacity across clouds + on-prem (spot/preemptible + owned) with policy control.
+* **Higher resilience:** No control plane to babysit; self-healing by default; works when links are flaky or offline.
+* **Faster delivery:** Deploy new regions/providers in hours, not months; same packaging everywhere.
+* **Stronger posture:** Mutual TLS with workload identities; default-deny policies; tenant/space segmentation.
 
 ---
 
 ## 2) Packaging & Licensing
 
-| Tier                   | License        | What’s inside                                                                                                                                                                                                                                           | Primary customer value                                                                        |
-| ---------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| **Beemesh**            | Apache‑2.0     | Machineplane + Rust Workplane, workload scoped service registry (WDHT), **sharded event bus (machine‑scoped)**, LeaseHints, basic controllers (ReplicaSet subset, Job subset, Headless Service), Podman adapter, REST apply/watch, metrics & dashboards | **True multicloud runtime** that runs anywhere (incl. air‑gapped) with one operational model. |
-| **Beemesh Enterprise** | BSL/Commercial | Org CA & namespaces, policy & quotas, SSO/RBAC, audit log, read‑only Control Tower (inventory/rollouts/golden signals), LTS/FIPS, optional relay/bootstrap network                                                                                      | **Fleet‑scale governance** and compliance without re‑introducing a central control plane.     |
+| Tier                   | License        | What is inside                                                                                                                                                                                                                                           | Primary customer value                                                                        |
+| ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **Beemesh**            | Apache-2.0     | **Full orchestration**: Machineplane + Workplane, dual DHTs, secure streams, ReplicaSet/Job controllers, Podman adapter, metrics, REST API.           | **True multicloud runtime** that runs anywhere (incl. air-gapped) with one operational model. |
+| **Beemesh Commercial** | BSL/Commercial | Adds: Org namespaces, SSO/SAML, policy engine (OPA), audit log, Control Tower UI, LTS/FIPS builds, priority support.                                   | **Fleet governance** and compliance without re-introducing a central control plane.     |
 
 ---
 
-## 3) Hub (deployed on Beemesh)
+## 3) Hub (SaaS for Package Management)
 
-**Tagline:** Discover, verify, and deploy community or enterprise workloads and services.
-
-**Business outcomes**
-
-* **Shorter time‑to-capability:** add databases, observability, and connectors via signed packages.
-* **Vendor flexibility:** install from the Hub online or import **offline bundles** for disconnected sites.
-* **Controlled adoption:** tenant‑scoped catalogs with policy checks and explicit permissions.
+**Tagline:** The secure supply chain for Beemesh fabrics.
 
 **How it works**
 
-* **Package format:** OCI images + `beemesh.yaml` (permissions/capabilities/planes) + SBOM + in‑toto provenance. Signed with cosign.
-* **Channels:** `stable` / `beta` / `canary`; semantic versioning; rollback support.
-* **Security:** signature verification, policy evaluation before install, tenant scoping, explicit capabilities.
-* **Offline:** export/import **Hub Bundles** (`.bmz`) for disconnected sites.
-* **Publisher tiers:** Community (signature verified), **Hub Verified** (security scan + e2e tests), **Hub Certified** (vendor support, SLOs, paid).
-* **Economics:** publisher‑set pricing; 80/20 rev‑share (publisher/Beemesh).
+* **Package format:** OCI image + `beemesh.yaml` (capabilities, planes) + SBOM + in-toto provenance. Signed with cosign.
+* **On-prem client:** Each fabric runs a lightweight Hub client daemon (not a full Hub). It syncs packages, verifies signatures, enforces policies.
+* **Offline mode:** Export/import **Hub Bundles** (`.bmz`) via USB/air-gap courier. No cloud dependency.
+* **Publisher tiers:** 
+  * Community (signature verified)
+  * **Hub Verified** (security scan + e2e tests)
+  * **Hub Certified** (vendor support, SLOs, paid)
+* **Economics:** Publisher-set pricing; 85/15 rev-share (publisher/Beemesh). We handle billing, entitlements, and license token generation for offline use.
 
 ---
 
-## 4) Pricing (initial anchors)
+## 4) Pricing (Commercial Anchors)
 
-* **Enterprise license:** per managed node/year. Tiers with volume discounts. Indicative: $150–$300/node/year (min $25k–$50k).
-* **Hub paid packages:** price set by publisher; billed via Hub (online) or via license token (offline). Beemesh rev‑share 20%.
-* **Relays/Bootstrap network (optional):** usage‑based (node‑hours + egress GB).
-* **Support for OSS users:** annual contracts with response SLOs.
+* **Beemesh Commercial per-node:** $150-300/node/year (volume discounts from 50 nodes). Minimum $25k/year. Includes Hub SaaS access.
+* **Hub SaaS standalone:** $500/month base + $0.10/GB package delivery. For teams not ready for Commercial.
+* **Support for OSS users:**
+  * Community: GitHub + Discord (best effort)
+  * Standard: $15k/year, 8x5, 24h response SLA
+  * Premium: $50k/year, 24x7, phone support
+* **Professional services:**
+  * Implementation packages: $35k (standard) to $150k (complex air-gap)
+  * Training: $6k/day on-site
 
-> Pricing will evolve with design partners. Keep the open‑core boundary crisp and public.
+> Priced 30-50% below managed K8s control plane costs while delivering multicloud capabilities.
 
 ---
 
-## 5) GTM Plan (0–180 days)
+## 5) GTM Plan (0-180 days)
 
-### 0–30 days (Prototype → Show HN / Design Partners)
+### 0-30 days (Proof of Value)
 
-* Publish **Quickstart** + 2‑minute demo (deploy → kill → self‑heal → metrics).
-* Open **commercial.md** (this doc) + pricing page placeholders.
-* Identify 20 target logos across **edge/air‑gap/GPU burst**.
-* Launch **Design‑Partner Program** (see §6): 3–6 month pilots with fixed price and success criteria.
+* Ship **Quickstart** + 2-minute demo: deploy → kill → self-heal → metrics.
+* Publish **architectural proof points** (see §7) with reproducible repos.
+* Launch **Design-Partner Program** (see §6): target 5 pilots, $75k fixed fee.
 
-### 31–90 days (Beta)
+### 31-90 days (Beta)
 
-* Ship **Hub Beta**: install/list/verify, offline bundles, Verified tier.
-* Enterprise: org CA integration, namespaces/tenants, audit log, read‑only Control Tower v1.
-* Publish **three proof points** (partition demo, air‑gap bootstrap, spot burst economics).
+* Hub Beta: install/list/verify, offline bundles, Verified tier.
+* Commercial: org CA, SSO/SAML, OPA policies, audit log, Control Tower v1.
+* Publish **three technical proof points** with dashboards.
 
-### 91–180 days (Early GA motion)
+### 91-180 days (Early GA)
 
 * Hub Certified pipeline + payments/entitlements.
-* Enterprise: SSO/SAML/RBAC, quotas/priority tiers, LTS channel.
-* First‑party Hub packs: GPU scoring extension, storage adapter, SIEM exporter.
-* Land 2–3 paid pilots → convert to annual.
+* Commercial: quotas, priority tiers, LTS/FIPS builds, TPM attestation preview.
+* Land 3 paid pilots → convert to $200k+ annual contracts.
+* Announce at KubeCon.
 
 ---
 
-## 6) Design‑Partner Program
+## 6) Design-Partner Program
 
-**Who:** edge/retail/telco, air‑gapped/regulated (energy/defense), GPU/ML platforms.
+**Who:** Edge retail, air-gapped energy/defense, GPU/ML platforms, sovereign providers.
 
-**Structure (3–6 months):**
+**Structure (6 months, $75k fixed fee):**
 
-1. **Discovery** & success criteria (2–3 measurable outcomes).
-2. **Architecture & threat model** sign‑off.
-3. **Pilot sprints:**
+1. **Wk 1-2:** Discovery & threat model sign-off. Define 3 measurable success criteria.
+2. **Wk 3-8:** Pilot sprints
+   * Sprint 1: Partition/duplicate-bounding demo (target: <60s convergence)
+   * Sprint 2: Air-gapped bootstrap + key rotation (target: zero external deps)
+   * Sprint 3: Spot burst economics vs K8s baseline (target: 40%+ cost reduction)
+3. **Wk 9-10:** Joint GTM deliverables (case study, blog, conference abstract).
+4. **Wk 11-12:** Exec readout & roll-forward plan. $75k credited to first-year Commercial.
 
-   * Week 2: partition/duplicate‑bounding demo
-   * Week 4: air‑gapped bootstrap + offline key rotation
-   * Week 6: spot/preemptible burst economics
-4. **Exec readout** & roll‑forward plan.
-
-**Commercials:** fixed fee ($30–$60k) credited to first‑year Enterprise; joint PR/case study option.
+**Deliverables:** Production config, team training, documented ROI.
 
 ---
 
-## 7) Proof Points to Publish (trust builders)
+## 7) Proof Points to Publish
 
-1. **Partition‑first video:** 3 clouds + on‑prem; duplicates bounded; post‑heal drains to 1 in < 60s; fenced writes.
-2. **Air‑gapped bootstrap:** USB join pack; full function offline; key rotation.
-3. **Spot vs on‑prem economics:** $/job and utilization vs k8s autoscaler baseline.
+1. **Partition-first video:** 3 clouds + on-prem; kill 50% of nodes; show bounded duplicates (<3 per workload); self-heal in <60s.
+2. **Air-gapped bootstrap:** USB join pack; operate offline 7 days; rotate keys; restart workloads without cloud.
+3. **Spot burst economics:** 1k GPU jobs across AWS/GCP; compare $/job vs K8s; show p99 schedule latency (<500ms).
 
-Artifacts: reproducible repos, dashboards, and step‑by‑step scripts.
+**Artifacts:** GitHub repos, Grafana dashboards, cost analysis spreadsheets.
 
 ---
 
 ## 8) Security, Compliance, and Ops
 
-* **Identity:** distinct machine/workload keyspaces; org CA admission.
-* **Supply chain:** cosign + in‑toto, SBOM required for Hub Verified+.
-* **Audit:** Enterprise audit log (tasks, installs, policy changes), tenant‑scoped.
-* **Compliance track:** FIPS build, TPM/attestation (roadmap), SOC2 journey (policy docs, SDLC, incident playbooks).
+* **Identity:** Distinct machine/workload keyspaces; org CA admission.
+* **Supply chain:** Cosign + in-toto mandatory for Hub Verified+; SBOMs published.
+* **Audit:** Commercial audit log captures tasks, installs, policy changes (tenant-scoped).
+* **Compliance:** FIPS-140-2 build roadmap; SOC2 Type I by Q4.
+* **Control Tower:** Read-only by design. Shows inventory, rollout status, golden signals. Write actions are audit-logged but not orchestration-critical.
 
 ---
 
 ## 9) Ecosystem Governance (Hub)
 
-* **Submission:** publisher identity verification; automated scans; e2e smoke tests.
-* **Quality gates:** resource caps, upgrade/rollback tests, explicit permissions, no cluster‑global secrets.
-* **Revocation:** fast revoke & notification path; patched version guidance.
-* **Telemetry:** opt‑in only; air‑gapped usage proofs supported.
+* **Submission:** Publisher identity verification; automated CVE scan; e2e smoke test.
+* **Quality gates:** Resource caps, upgrade/rollback tests, explicit capabilities, no cluster-global secrets.
+* **Revocation:** <1h from CVE notification to bundle revocation; client checks every 5min.
+* **Telemetry:** Opt-in only; air-gapped fabrics can send usage proofs via bundle export.
 
 ---
 
-## 10) Roadmap (business‑relevant)
+## 10) Roadmap
 
-* **Q1:** Hub Beta; Enterprise CA/namespaces/audit; Control Tower (read‑only).
-* **Q2:** Payments/entitlements; Certified reviews; SSO/SAML/RBAC; LTS/FIPS track.
-* **Q3:** Storage & secrets adapters; GPU scoring; quota/priority policies; partner co‑sell.
+| Quarter | Hub | Commercial | Community |
+|---------|-----|------------|-----------|
+| **Q1** | Beta, Verified tier, offline bundles | Orgs, SSO, OPA, audit, Control Tower v1 | Stable v0.2 |
+| **Q2** | Payments, Certified reviews, entitlements | Quotas, priority tiers, LTS/FIPS | Windows support |
+| **Q3** | Partner co-sell, private catalogs | TPM attestation, HSM integration | Workplane SDK |
+| **Q4** | Marketplace API | SOC2 Type I | GPU scheduling |
 
 ---
 
 ## 11) Success Metrics
 
-* **Activation:** Quickstart completes (%), time‑to‑first‑deploy (TTFSD).
-* **Reliability:** p95 schedule latency, duplicate‑boundedness, self‑heal MTTR.
-* **Adoption:** Hub installs per tenant, Verified/Certified package share.
-* **Revenue:** design‑partner conversions, nodes under Enterprise, Hub GMV & rev‑share.
-* **Ecosystem:** # publishers, package quality score, time‑to‑patch vulnerabilities.
-* **ROI guide:** `ROI = (Baseline $/job − Beemesh $/job) × jobs − platform cost` (track monthly).
+| Category | Metric | Target (6mo) |
+|----------|--------|--------------|
+| **Activation** | Quickstart completion rate | >60% |
+| **Reliability** | p95 schedule latency | <500ms |
+| **Resilience** | Duplicate-boundedness (max replicas/task) | ≤3 |
+| **Adoption** | Hub installs per tenant | >5 |
+| **Revenue** | Design-partner conversion | 3 → $200k+ ARR |
 
 ---
 
 ## 12) Risks & Mitigations
 
-* **Fabric skepticism:** publish sharding/relay metrics; show stability under load.
-* **Data safety fears:** demo write fencing with a small Raft KV; clear explainer.
-* **Air‑gap blockers:** first‑class offline bundles; no cloud hard‑deps.
-* **Support load:** Certified tier obligations for publishers; diagnostics bundles.
-* **Scope creep:** open‑core boundary documented; change via RFC only.
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| **Fabric skepticism** | High | Medium | Publish 10k-node simulation; show sharding metrics |
+| **Data-safety FUD** | High | High | Demo write-fencing with Raft KV; publish safety analysis |
+| **Pricing pushback** | Medium | High | ROI calculator; pilot metrics vs K8s baseline |
+| **Support scaling** | Medium | High | Certified tier requires publisher support |
+| **Scope creep** | Low | High | RFC process for open-core changes |
 
 ---
 
 ## 13) Appendices
 
-### A) `beemesh.yaml` (Hub package manifest - sketch)
+### A) `beemesh.yaml` (Hub package manifest)
 
 ```yaml
-name: org/app
-version: 1.2.3
+name: org/postgres-ha
+version: 14.7.1
 channel: stable
 kind: hub-package
 permissions:
-  planes: ["workplane"]            # or ["machineplane","workplane"]
+  planes: ["workplane"]
   capabilities: ["wdht:read","tasks:publish"]
 signing:
-  cosign: true
+  cosign: ghcr.io/org/postgres-ha:sha256-abc.sig
 attestations:
   sbom: spdx.json
   provenance: intoto.jsonl
 compatibility:
   core: ">=0.2.0"
-  enterprise: ">=0.2.0"
+  commercial: ">=0.2.0"
 ```
 
-### B) CLI snippets
+### B) ROI Calculator
 
-```bash
-# Hub online
-bm hub list
-bm hub info org/app
-bm hub install org/app@v1.2.3 --tenant retail-eu --approve-perms
+```
+Baseline cost (K8s):
+  Control plane: $150/node/year × 1000 = $150k
+  Ops overhead: $85k
+  Underutilization: $180k
+  Total: $415k
 
-# Hub offline
-bm hub bundle export org/app@v1.2.3 -o app.bmz
-bm hub bundle import ./app.bmz
+Beemesh cost:
+  Commercial license: $250/node/year × 1000 = $250k
+  Spot savings: -$240k
+  Ops overhead: $17k
+  Total: $27k
 
-# Enterprise policy
-bm tenant create retail-eu --namespace retail-eu
-bm policy set retail-eu --quota cpu=200 --priority-tier=gold
+Net savings: $388k (93% reduction)
 ```
 
-### C) FAQ (short)
+### C) Competitive Positioning
 
-* **Does Enterprise require the Hub?** Enterprise ships the **Hub client**; you can run Hub offline with bundles.
-* **Is there a control plane?** No. Control Tower is read‑only and out‑of‑band; it never orchestrates workloads.
-* **Can we build our own packages?** Yes - use `beemesh.yaml`, sign with cosign, publish to Hub or side‑load via bundle.
-
+| vs. | Beemesh Advantage |
+|-----|-------------------|
+| **AWS EKS** | No $72/node CP cost; true multicloud; air-gap ready |
+| **HashiCorp Nomad** | True scale-out fabric; stronger security; no Raft quorum to manage |
+| **K3s** | Not just lightweight - decentralized; no control plane at all |
