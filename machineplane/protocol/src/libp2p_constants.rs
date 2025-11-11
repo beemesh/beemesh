@@ -2,9 +2,6 @@
 //!
 //! This module contains all protocol constants to eliminate duplication across crates.
 
-/// Ident topic used for gossipsub in the beemesh cluster.
-pub const BEEMESH_CLUSTER: &str = "beemesh-cluster";
-
 // === GOSSIPSUB TOPICS ===
 
 /// Protocol name for request-response RPCs (ApplyRequest/ApplyResponse).
@@ -18,9 +15,9 @@ pub const SCHEDULER_EVENTS_TOPIC: &str = "scheduler-events";
 pub const TOPIC_EVENTS: &str = SCHEDULER_EVENTS_TOPIC;
 
 /// Topic used for scheduler proposals / capacity requests
-pub const SCHEDULER_PROPOSALS_TOPIC: &str = "scheduler-proposal";
+pub const SCHEDULER_PROPOSALS_TOPIC: &str = "scheduler-proposals";
 /// Alias for backwards compatibility
-pub const TOPIC_PROPOSALS: &str = "scheduler-proposals";
+pub const TOPIC_PROPOSALS: &str = SCHEDULER_PROPOSALS_TOPIC;
 
 // === MESSAGE PREFIXES ===
 
@@ -49,7 +46,7 @@ pub const DEFAULT_SELECTION_WINDOW_MS: u64 = 250;
 
 /// Default lease TTL in milliseconds
 pub const DEFAULT_LEASE_TTL_MS: u64 = 3000;
-    
+
 // === MANIFEST FIELDS ===
 
 /// JSON field name used for replica count in manifests (top-level `replicas`).
