@@ -46,7 +46,7 @@ Beemesh divides orchestration into **two planes**:
 | **Machine Plane** | Node-level coordination, scheduling, and resource management.         | **A/P** – Availability & Partition Tolerance |
 | **Work Plane**    | Application-level self-healing, service discovery, secure networking. | **C/P** – Consistency & Partition Tolerance  |
 
-This separation eliminates cross-cutting concerns and allows **each plane to optimize independently**.
+This separation eliminates cross-cutting concerns and allows **each plane to optimize independently**. Scoping each plane to its domain prevents the monolithic anti-patterns that control-plane–centric platforms preserve.
 
 ---
 
@@ -75,7 +75,7 @@ Traditional systems bind **consistency to infrastructure**:
 * **Infrastructure is stateless** and ephemeral.
 * Each **stateful workload carries its own consensus cluster** (e.g., a Raft group for a database).
 
-> Infra failures never corrupt workload state and enable scaling to **tens of thousands of nodes**.
+> Infra failures never corrupt workload state and enable scale out to **tens of thousands of nodes**.
 
 ---
 
@@ -400,7 +400,7 @@ Beemesh represents a **paradigm shift** in orchestration:
 
 ---
 
-## **Appendix: a) Comparison Matrix**
+## **Appendix: Comparison Matrix**
 
 > *Note on “Mutually Authenticated Streams”: legacy systems may add this via optional plugins/sidecars, but it’s **not** default cluster behavior.*
 
@@ -419,42 +419,3 @@ Beemesh represents a **paradigm shift** in orchestration:
 | Enterprise Suitability                  | Excellent         | Excellent         | **Excellent (+air-gapped)** |
 
 ---
-
-## **Appendix: b) Capability Matrix**
-
-| Capability                              | Description                              | Machine Plane (A/P) | Work Plane (C/P) | Notes                                         |
-| --------------------------------------- | ---------------------------------------- | :-----------------: | :--------------: | --------------------------------------------- |
-| Machine identity                        | Unique cryptographic ID per node         |          ✓          |         —        | `libp2p` Peer ID (machine keyspace)           |
-| Workload identity                       | Unique cryptographic ID per pod/replica  |          —          |         ✓        | Separate keyspace from machines               |
-| Mutual auth (mTLS over Noise/TLS)       | Authenticated, encrypted streams         |          ✓          |         ✓        | Separate trust domains                        |
-| NAT traversal / transport               | QUIC/TCP + hole-punch/relays             |          ✓          |         ✓        | If using libp2p transports                    |
-| **Machine DHT (MDHT)**                  | Node discovery, transient metadata       |          ✓          |         —        | LeaseHints & minimal node metadata            |
-| **Workload DHT (WDHT)**                 | Service discovery for workloads          |          —          |         ✓        | No machine metadata stored here               |
-| Pub/Sub fanout                          | Broadcast tasks/bids/events              |          ✓          |         —        | `scheduler-*` topics                          |
-| Task publication                        | Emit scheduling intents                  |          ✓          |         —        | Stateless, write-once best-effort             |
-| Bid & scoring                           | Local eval & proposal to run             |          ✓          |         —        | Deterministic scoring/tie-breaks              |
-| LeaseHint (non-exclusive)               | Short-TTL deployment hint                |          ✓          |         —        | Enables duplicate-tolerant starts             |
-| Deployment (runtime adapter)            | Start/stop workloads via runtime         |          ✓          |         —        | Podman default; pluggable                     |
-| Resource accounting/limits              | Reserve/release; cgroups via runtime     |          ✓          |         —        | Overcommit by policy                          |
-| Preemption                              | Evict lower-priority, republish task     |          ✓          |         —        | Emits `Preempted`                             |
-| Workload self-healing                   | Replace missing/unhealthy replicas       |          —          |         ✓        | Reconcile loop publishes Tasks                |
-| Service discovery                       | Register/query peers                     |          —          |         ✓        | WDHT `ServiceRecord` with TTL                 |
-| Secure workload sessions                | mTLS streams between pods                |          —          |         ✓        | Based on Workload Peer IDs                    |
-| Workload-scoped consensus               | Raft/leader orchestration                |          —          |         ✓        | Optional driver/hook                          |
-| Write fencing (placement token)         | Prevent stale leaders from writing       |          —          |         ✓        | Highest token gates writes                    |
-| Health probes (liveness/readiness)      | Probe app, gate readiness                |          —          |         ✓        | Drives reconcile & WDHT readiness             |
-| Partition handling                      | Keep scheduling; tolerate duplicates     |          ✓          |         ✓        | MP favors availability; WP favors consistency |
-| Anti-abuse (validators, rate-limits)    | Sig/ts/nonce checks, peer caps           |          ✓          |         —        | On `scheduler-*` topics                       |
-| Admission policy (allow/deny)           | Identity-based admission                 |          ✓          |         ✓        | Separate policies per plane                   |
-| Key rotation & revocation               | Rotate keys; honor revocations           |          ✓          |         ✓        | Tombstones/CA chains; hot-reload              |
-| Observability: metrics                  | Prometheus-style counters                |          ✓          |         ✓        | Distinct metric families per plane            |
-| Observability: events                   | `Deployed/Failed/Preempted/...`          |          ✓          |         ✓        | WP emits `Replica*` events                    |
-| Status pull / RPC                       | Idempotent status queries                |          ✓          |         —        | Complements Pub/Sub                           |
-| K8s manifest compat                     | Accept Deployment/StatefulSet            |          ✓          |         ✓        | MP executes; WP interprets desired state      |
-| Air-gapped operation                    | Full function offline                    |          ✓          |         ✓        | Bootstrap bundles + local DHT rings           |
-| Topic sharding                          | Scale Pub/Sub audiences                  |          ✓          |         —        | Keeps ≤~2k peers per shard                    |
-| Rate limiting / backpressure            | Avoid overload bidding/runs              |          ✓          |         —        | Includes runtime-queue feedback               |
-| Policy: cross-namespace deny-by-default | Default isolation between services       |          —          |         ✓        | Opt-in allow rules                            |
-| Duplicate drain                         | Prefer healthy deployment; retire extras |          —          |         ✓        | Post-heal duplicate bounding                  |
-
-**Legend:** ✓ = leveraged by that plane; — = not in scope for that plane.
