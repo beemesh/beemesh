@@ -55,7 +55,7 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 ```mermaid
 sequenceDiagram
   autonumber
-  participant P as Producer (bmctl/controller)
+  participant P as Producer (beectl/controller)
   participant N1 as Node A
   participant N2 as Node B
   participant MDHT as Machine DHT
@@ -290,12 +290,11 @@ machineplane:
 
 ---
 
-## 10. Kubernetes API Compatibility
+## 10. CLI Integration (`beectl`)
 
-* The Machineplane **MUST** expose a Kubernetes-compatible REST surface for the core subset of workload operations.
-* `kubectl apply -f deployment.yaml` **MUST** upsert an `apps/v1` Deployment by translating it into a Machineplane task.
-* `kubectl delete deployment <name>` **MUST** remove the corresponding manifest and trigger workload teardown.
-* `kubectl get deployments` **SHOULD** reflect the Machineplane task store, returning synthetic status derived from local state.
+* `beectl create -f app.yaml` **MUST** publish a Task to `scheduler-tasks`.
+* `beectl get pods` **SHOULD** read from local node/runtime and/or observe `scheduler-events` for status aggregation (best-effort).
+* `beectl delete pod <name>` **MUST** publish a cancellation Task or send a secure stream command to the owning node.
 
 ---
 

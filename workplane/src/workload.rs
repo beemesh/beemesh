@@ -22,7 +22,7 @@ pub struct Workload {
 }
 
 impl Workload {
-    pub fn new(mut cfg: Config, manifest: Vec<u8>) -> Result<Self> {
+    pub fn new(cfg: Config, manifest: Vec<u8>) -> Result<Self> {
         if cfg.private_key.is_empty() {
             return Err(anyhow!("config: private key is required"));
         }

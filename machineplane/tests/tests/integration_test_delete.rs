@@ -6,10 +6,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 mod test_utils;
-use test_utils::{
-    kubectl_apply_manifest, kubectl_delete_manifest, make_test_cli, set_env_var,
-    setup_cleanup_hook, start_nodes,
-};
+use test_utils::{make_test_cli, set_env_var, setup_cleanup_hook, start_nodes};
 
 async fn setup_test_environment() -> Vec<u16> {
     // Setup cleanup hook and initialize logger
@@ -55,19 +52,27 @@ async fn test_delete_task_endpoint() {
     ));
 
     // First apply the manifest to have something to delete
-    let task_id_result = kubectl_apply_manifest(manifest_path.clone(), None).await;
+    let task_id_result = beectl::apply_file(manifest_path.clone(), None).await;
     println!("Apply result: {:?}", task_id_result);
 
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
 
     // Now try to delete it using CLI
-    match kubectl_delete_manifest(manifest_path, false, None).await {
-        Ok(()) => {
-            println!("Delete command succeeded");
+    let delete_result = beectl::delete_file(manifest_path, false, None).await;
+
+    match delete_result {
+        Ok(manifest_id) => {
+            println!(
+                "Delete CLI command succeeded with manifest_id: {}",
+                manifest_id
+            );
+            assert!(!manifest_id.is_empty());
         }
         Err(e) => {
-            println!("Delete command failed: {}", e);
+            println!("Delete CLI command failed: {}", e);
+            // For now, we accept this as the DHT provider discovery is mocked
+            // The important thing is that the CLI command executes without panicking
         }
     }
 }
@@ -92,16 +97,28 @@ async fn test_delete_task_with_force() {
     ));
 
     // First apply the manifest to have something to delete
-    let task_id_result = kubectl_apply_manifest(manifest_path.clone(), None).await;
+    let task_id_result = beectl::apply_file(manifest_path.clone(), None).await;
     println!("Apply result: {:?}", task_id_result);
 
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
 
     // Now try to delete it with force flag using CLI
-    match kubectl_delete_manifest(manifest_path, true, None).await {
-        Ok(()) => println!("Force delete command succeeded"),
-        Err(e) => println!("Force delete command failed: {}", e),
+    let delete_result = beectl::delete_file(manifest_path, true, None).await;
+
+    match delete_result {
+        Ok(manifest_id) => {
+            println!(
+                "Force delete CLI command succeeded with manifest_id: {}",
+                manifest_id
+            );
+            assert!(!manifest_id.is_empty());
+        }
+        Err(e) => {
+            println!("Force delete CLI command failed: {}", e);
+            // For now, we accept this as the DHT provider discovery is mocked
+            // The important thing is that the CLI command executes without panicking
+        }
     }
 }
 
@@ -125,12 +142,20 @@ async fn test_delete_nonexistent_task() {
     ));
 
     // Try to delete without applying first (should find no providers)
-    match kubectl_delete_manifest(manifest_path, false, None).await {
-        Ok(()) => {
-            println!("Delete nonexistent task command succeeded");
+    let delete_result = beectl::delete_file(manifest_path, false, None).await;
+
+    match delete_result {
+        Ok(manifest_id) => {
+            println!(
+                "Delete nonexistent task CLI command succeeded with manifest_id: {}",
+                manifest_id
+            );
+            assert!(!manifest_id.is_empty());
+            // This is expected since the REST API returns success for "no providers found"
         }
         Err(e) => {
-            println!("Delete nonexistent task command failed: {}", e);
+            println!("Delete nonexistent task CLI command failed: {}", e);
+            // This is also acceptable depending on how we handle "no providers found"
         }
     }
 }

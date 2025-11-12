@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -47,20 +47,25 @@ pub fn put(record: ServiceRecord, ttl: Duration) -> bool {
 
     purge_expired(namespace_map);
 
-    let entry = namespace_map.entry(record.peer_id.clone());
-    let should_store = match entry.get() {
-        None => true,
-        Some(existing) => should_replace(&existing.record, &record),
-    };
-
-    if should_store {
-        entry.insert(RecordEntry {
-            record,
-            expires_at: Instant::now() + ttl,
-        });
-        true
-    } else {
-        false
+    match namespace_map.entry(record.peer_id.clone()) {
+        Entry::Occupied(mut occupied) => {
+            if should_replace(&occupied.get().record, &record) {
+                occupied.insert(RecordEntry {
+                    record,
+                    expires_at: Instant::now() + ttl,
+                });
+                true
+            } else {
+                false
+            }
+        }
+        Entry::Vacant(vacant) => {
+            vacant.insert(RecordEntry {
+                record,
+                expires_at: Instant::now() + ttl,
+            });
+            true
+        }
     }
 }
 

@@ -32,13 +32,14 @@ impl SelfHealer {
         manifest: Arc<Vec<u8>>,
         manifest_spec: Arc<WorkloadManifest>,
     ) -> Self {
+        let timeout = config.health_probe_timeout;
         Self {
             network,
             config,
             manifest,
             manifest_spec,
             http: Client::builder()
-                .timeout(config.health_probe_timeout)
+                .timeout(timeout)
                 .build()
                 .expect("reqwest client"),
             stop_tx: None,

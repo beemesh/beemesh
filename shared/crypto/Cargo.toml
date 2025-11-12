@@ -5,12 +5,8 @@ edition = "2024"
 description = "Crypto parts of Beemesh"
 
 [dependencies]
-clap = { workspace = true }
-tokio = { workspace = true }
 anyhow = { workspace = true }
-serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 rand = { workspace = true }
 base64 = { workspace = true }
 dirs = { workspace = true }

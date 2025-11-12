@@ -8,7 +8,6 @@ use integration::apply_common::{
     check_workload_deployment, get_peer_ids, setup_test_environment, start_cluster_nodes,
     wait_for_mesh_formation,
 };
-use integration::test_utils::kubectl_apply_manifest;
 
 #[serial]
 #[tokio::test]
@@ -31,9 +30,9 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
         .await
         .expect("Failed to read manifest for verification");
 
-    let task_id = kubectl_apply_manifest(manifest_path.clone(), None)
+    let task_id = beectl::apply_file(manifest_path.clone(), None)
         .await
-        .expect("kubectl apply should succeed");
+        .expect("apply_file should succeed");
 
     sleep(Duration::from_secs(6)).await;
 
@@ -84,11 +83,11 @@ async fn test_scheduling_fails_when_all_nodes_disabled() {
         env!("CARGO_MANIFEST_DIR")
     ));
 
-    let apply_result = kubectl_apply_manifest(manifest_path.clone(), None).await;
+    let apply_result = beectl::apply_file(manifest_path.clone(), None).await;
 
     assert!(
         apply_result.is_err(),
-        "kubectl apply should fail when no schedulable nodes are available"
+        "apply_file should fail when no schedulable nodes are available"
     );
 
     let err_msg = apply_result.unwrap_err().to_string();

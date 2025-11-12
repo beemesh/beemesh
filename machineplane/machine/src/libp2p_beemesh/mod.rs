@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
-use protocol::libp2p_constants::SCHEDULER_PROPOSALS_TOPIC;
+use protocol::libp2p_constants::BEEMESH_CLUSTER;
 
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
@@ -209,8 +209,8 @@ pub fn setup_libp2p_node(
 
     register_scheduling_preference(swarm.local_peer_id().clone(), disable_scheduling);
 
-    let topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS_TOPIC);
-    debug!("Subscribing to scheduler proposals topic: {}", topic.hash());
+    let topic = gossipsub::IdentTopic::new(BEEMESH_CLUSTER);
+    debug!("Subscribing to topic: {}", topic.hash());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
     // Ensure local host is an explicit mesh peer for the topic so publish() finds at least one subscriber
     let local_peer = swarm.local_peer_id().clone();

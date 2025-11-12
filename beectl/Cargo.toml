@@ -1,0 +1,31 @@
+[package]
+name = "beectl"
+version = "0.1.0"
+edition = "2024"
+description = "Command-line interface for beemesh"
+
+[lib]
+name = "beectl"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { workspace = true, features = ["env"] }
+tokio = { workspace = true }
+reqwest = {  workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+dirs = { workspace = true }
+saorsa-pqc = { workspace = true }
+crypto = { workspace = true }
+protocol = { workspace = true }
+scheduler = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+uuid = { workspace = true }
+
+[[bin]]
+name = "beectl"
+path = "src/main.rs"

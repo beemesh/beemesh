@@ -21,7 +21,6 @@ use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
 
 pub mod envelope_handler;
-pub mod kube;
 use envelope_handler::{
     EnvelopeHandler, create_encrypted_response_with_key, create_response_for_envelope_metadata,
     create_response_with_fallback,
@@ -124,22 +123,6 @@ pub fn build_router(
         task_store: Arc::new(RwLock::new(HashMap::new())),
         envelope_handler,
     };
-    let kube_core = kube::core_router();
-    let kube_apps_v1 = kube::apps_v1_router();
-
-    let secure_routes = Router::new()
-        .route("/tasks/{task_id}/manifest_id", get(get_task_manifest_id))
-        .route("/tasks", post(create_task))
-        .route("/tasks/{task_id}", get(get_task_status))
-        .route("/tasks/{task_id}", delete(delete_task))
-        .route("/tasks/{task_id}/candidates", post(get_candidates))
-        .route("/apply_direct/{peer_id}", post(apply_direct))
-        .route("/nodes", get(get_nodes))
-        .layer(middleware::from_fn_with_state(
-            state.envelope_handler.clone(),
-            envelope_handler::envelope_middleware,
-        ));
-
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/kem_pubkey", get(get_kem_public_key))
@@ -154,11 +137,19 @@ pub fn build_router(
             get(debug_workloads_by_peer),
         )
         .route("/debug/local_peer_id", get(debug_local_peer_id))
-        .route("/apis", get(kube::api_group_list))
-        .route("/version", get(kube::version))
-        .nest("/api", kube_core)
-        .nest("/apis/apps/v1", kube_apps_v1)
-        .merge(secure_routes)
+        .route("/tasks/{task_id}/manifest_id", get(get_task_manifest_id))
+        .route("/tasks", post(create_task))
+        .route("/tasks/{task_id}", get(get_task_status))
+        .route("/tasks/{task_id}", delete(delete_task))
+        .route("/tasks/{task_id}/candidates", post(get_candidates))
+        .route("/apply_direct/{peer_id}", post(apply_direct))
+        .route("/nodes", get(get_nodes))
+        // Add envelope middleware to decrypt incoming requests and extract peer keys
+        .layer(middleware::from_fn_with_state(
+            state.envelope_handler.clone(),
+            envelope_handler::envelope_middleware,
+        ))
+        // state
         .with_state(state)
 }
 
@@ -288,18 +279,6 @@ pub async fn get_candidates(
 }
 
 #[derive(Debug, Clone)]
-pub struct KubeResourceRecord {
-    pub api_version: String,
-    pub kind: String,
-    pub namespace: String,
-    pub name: String,
-    pub uid: String,
-    pub resource_version: u64,
-    pub manifest: serde_json::Value,
-    pub creation_timestamp: std::time::SystemTime,
-}
-
-#[derive(Debug, Clone)]
 pub struct TaskRecord {
     pub manifest_bytes: Vec<u8>,
     pub created_at: std::time::SystemTime,
@@ -310,7 +289,6 @@ pub struct TaskRecord {
     // store last generated operation id for manifest id computation
     pub last_operation_id: Option<String>,
     pub owner_pubkey: Vec<u8>,
-    pub kube: Option<KubeResourceRecord>,
 }
 
 pub async fn create_task(
@@ -440,7 +418,6 @@ pub async fn create_task(
         manifest_cid: Some(manifest_id.clone()),
         last_operation_id: Some(operation_id),
         owner_pubkey: owner_pubkey.clone(),
-        kube: None,
     };
     {
         let mut store = state.task_store.write().await;
@@ -771,7 +748,8 @@ pub async fn get_task_status(
         );
         return create_response_with_fallback(&response_data).await;
     }
-    let error_response = protocol::machine::build_task_status_response("", "Error", &[], None);
+    let error_response =
+        protocol::machine::build_task_status_response("", "Error", &[], None);
     create_response_with_fallback(&error_response).await
 }
 

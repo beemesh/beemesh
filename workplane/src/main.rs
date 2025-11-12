@@ -121,7 +121,7 @@ async fn run() -> Result<()> {
     let mut workload = Workload::new(cfg, manifest_bytes)?;
     workload.start();
 
-    info!("workplane started", %workload_name, %pod_name);
+    info!(%workload_name, %pod_name, "workplane started");
 
     signal::ctrl_c().await.context("wait for ctrl+c")?;
 
