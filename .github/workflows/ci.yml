@@ -40,6 +40,7 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR=/run/user/$UID
           mkdir -p $XDG_RUNTIME_DIR
+          mkdir -p $XDG_RUNTIME_DIR/podman
           podman system service --time=0 unix:///run/user/$UID/podman/podman.sock &
           echo "PODMAN_HOST=unix:///run/user/$UID/podman/podman.sock" >> $GITHUB_ENV
 
