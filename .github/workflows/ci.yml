@@ -9,6 +9,8 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    container:
+      image: quay.io/podman/stable
 
     steps:
       - name: Check out repository
