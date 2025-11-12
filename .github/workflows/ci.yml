@@ -30,6 +30,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install build-essential pkg-config libssl-dev
+
       - name: Cargo build
         run: cargo build --workspace --all-targets --locked
 
