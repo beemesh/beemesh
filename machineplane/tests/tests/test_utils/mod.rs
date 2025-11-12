@@ -84,6 +84,11 @@ pub fn make_test_cli(
     libp2p_quic_port: u16,
     disable_scheduling: bool,
 ) -> Cli {
+    let podman_socket = std::env::var("PODMAN_HOST")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "/run/podman/podman.sock".to_string());
+
     Cli {
         ephemeral: true,
         rest_api_host: "127.0.0.1".to_string(),
@@ -98,7 +103,7 @@ pub fn make_test_cli(
         libp2p_host: "0.0.0.0".to_string(),
         disable_scheduling,
         mock_only_runtime: true,
-        podman_socket: Some("/run/podman/podman.sock".to_string()),
+        podman_socket: Some(podman_socket),
         signing_ephemeral: true,
         kem_ephemeral: true,
         ephemeral_keys: true,

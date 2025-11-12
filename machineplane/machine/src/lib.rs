@@ -49,8 +49,8 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub mock_only_runtime: bool,
 
-    /// Override the Podman socket URL used by runtime engines
-    #[arg(long)]
+    /// Override the Podman socket URL used by runtime engines (defaults to PODMAN_HOST env)
+    #[arg(long, env = "PODMAN_HOST")]
     pub podman_socket: Option<String>,
 
     /// Use ephemeral signing keys instead of writing to disk
