@@ -290,11 +290,12 @@ machineplane:
 
 ---
 
-## 10. CLI Integration (`bmctl`)
+## 10. Kubernetes API Compatibility
 
-* `bmctl create -f app.yaml` **MUST** publish a Task to `scheduler-tasks`.
-* `bmctl get pods` **SHOULD** read from local node/runtime and/or observe `scheduler-events` for status aggregation (best-effort).
-* `bmctl delete pod <name>` **MUST** publish a cancellation Task or send a secure stream command to the owning node.
+* The Machineplane **MUST** expose a Kubernetes-compatible REST surface for the core subset of workload operations.
+* `kubectl apply -f deployment.yaml` **MUST** upsert an `apps/v1` Deployment by translating it into a Machineplane task.
+* `kubectl delete deployment <name>` **MUST NOT** be advertised as supported until Machineplane can reliably tear workloads down; the API **MUST** respond with a clear `Status` failure or `501`-class error documenting the limitation.
+* `kubectl get deployments` **SHOULD** reflect only the last applied manifests held in-memory, clearly marking that runtime reconciliation is not implemented.
 
 ---
 

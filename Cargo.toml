@@ -5,7 +5,6 @@ members = [
         "machineplane/machine",
         "machineplane/tests",
         "machineplane/crypto",
-    "bmctl",
     "workplane"
 ]
 

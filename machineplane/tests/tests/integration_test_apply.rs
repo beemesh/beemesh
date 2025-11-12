@@ -5,11 +5,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
 
+use serde_json;
+use serde_yaml;
+
 use integration::apply_common::{
     check_workload_deployment, get_peer_ids, setup_test_environment, start_cluster_nodes,
     wait_for_mesh_formation,
 };
-use integration::test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
+use integration::test_utils::{
+    NodeGuard, kubectl_apply_manifest, kubectl_delete_manifest, make_test_cli, setup_cleanup_hook,
+    start_nodes,
+};
 
 #[serial]
 #[tokio::test]
@@ -35,9 +41,9 @@ async fn test_apply_functionality() {
         .await
         .expect("Failed to read original manifest file for verification");
 
-    let task_id = bmctl::apply_file(manifest_path.clone(), None)
+    let task_id = kubectl_apply_manifest(manifest_path.clone(), None)
         .await
-        .expect("apply_file should succeed");
+        .expect("kubectl apply should succeed");
 
     // Wait for direct delivery and deployment to complete
     sleep(Duration::from_secs(6)).await;
@@ -99,9 +105,9 @@ async fn test_apply_with_real_podman() {
         .await
         .expect("Failed to read original manifest file for verification");
 
-    let task_id = bmctl::apply_file(manifest_path.clone(), None)
+    let task_id = kubectl_apply_manifest(manifest_path.clone(), None)
         .await
-        .expect("apply_file should succeed with real Podman");
+        .expect("kubectl apply should succeed with real Podman");
 
     // Wait for direct delivery and Podman deployment to complete (longer timeout for real containers)
     sleep(Duration::from_secs(5)).await;
@@ -115,7 +121,7 @@ async fn test_apply_with_real_podman() {
         "Podman deployment verification failed - no matching pods found"
     );
 
-    let _delete_result = bmctl::delete_file(manifest_path, true, None).await;
+    let _delete_result = kubectl_delete_manifest(manifest_path, true, None).await;
     sleep(Duration::from_secs(5)).await;
 
     let podman_verification_successful =
@@ -126,7 +132,17 @@ async fn test_apply_with_real_podman() {
     );
 
     // Clean up Podman resources before test cleanup
-    cleanup_podman_resources(&task_id).await;
+    let manifest_name = serde_yaml::from_str::<serde_yaml::Value>(&original_content)
+        .ok()
+        .and_then(|yaml| serde_json::to_value(yaml).ok())
+        .and_then(|json| {
+            json.get("metadata")
+                .and_then(|meta| meta.get("name"))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+        })
+        .unwrap_or_else(|| task_id.clone());
+
+    cleanup_podman_resources(&task_id, &manifest_name).await;
 
     // Clean up nodes
     guard.cleanup().await;
@@ -156,9 +172,9 @@ async fn test_apply_nginx_with_replicas() {
         .await
         .expect("Failed to read nginx_with_replicas manifest file for verification");
 
-    let task_id = bmctl::apply_file(manifest_path.clone(), None)
+    let task_id = kubectl_apply_manifest(manifest_path.clone(), None)
         .await
-        .expect("apply_file should succeed for nginx_with_replicas");
+        .expect("kubectl apply should succeed for nginx_with_replicas");
 
     // Wait for direct delivery and deployment to complete
     sleep(Duration::from_secs(5)).await;
@@ -274,10 +290,23 @@ async fn is_podman_available() -> bool {
     }
 }
 
-async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> bool {
-    // The pod name should now be in the format "beemesh-{manifest_id}-pod"
-    // Podman adds "-pod" suffix when creating pods from Kubernetes Deployment manifests
-    let expected_pod_name = format!("beemesh-{}-pod", task_id);
+async fn verify_podman_deployment(task_id: &str, original_content: &str) -> bool {
+    let manifest_name = serde_yaml::from_str::<serde_yaml::Value>(original_content)
+        .ok()
+        .and_then(|yaml| serde_json::to_value(yaml).ok())
+        .and_then(|json| {
+            json.get("metadata")
+                .and_then(|meta| meta.get("name"))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+        })
+        .unwrap_or_else(|| format!("beemesh-{}", task_id));
+
+    let candidate_names = vec![
+        format!("beemesh-{}-pod", task_id),
+        format!("beemesh-{}", task_id),
+        format!("{}-pod", manifest_name),
+        manifest_name.clone(),
+    ];
 
     // Check if the pod was created by Podman
     let output = tokio::process::Command::new("podman")
@@ -294,8 +323,7 @@ async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> boo
                 if let Some(pods_array) = pods.as_array() {
                     for pod in pods_array {
                         if let Some(name) = pod.get("Name").and_then(|n| n.as_str()) {
-                            // Check if this pod name matches our expected pattern
-                            if name == expected_pod_name {
+                            if candidate_names.iter().any(|candidate| candidate == name) {
                                 log::info!("Found matching Podman pod: {}", name);
                                 return true;
                             }
@@ -323,7 +351,10 @@ async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> boo
                                 {
                                     for name in names {
                                         if let Some(name_str) = name.as_str() {
-                                            if name_str.contains(&format!("beemesh-{}", task_id)) {
+                                            if candidate_names
+                                                .iter()
+                                                .any(|candidate| name_str.contains(candidate))
+                                            {
                                                 log::info!(
                                                     "Found matching Podman container: {}",
                                                     name_str
@@ -348,27 +379,27 @@ async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> boo
     }
 }
 
-async fn cleanup_podman_resources(task_id: &str) {
-    log::info!("Cleaning up Podman resources for task: {}", task_id);
-
-    // Try to remove the specific pod by the expected name (with -pod suffix)
-    let expected_pod_name = format!("beemesh-{}-pod", task_id);
-    let _ = tokio::process::Command::new("podman")
-        .args(&["pod", "rm", "-f", &expected_pod_name])
-        .output()
-        .await;
-    log::info!("Attempted to clean up Podman pod: {}", expected_pod_name);
-
-    // Also try the name without -pod suffix (fallback)
-    let expected_pod_name_alt = format!("beemesh-{}", task_id);
-    let _ = tokio::process::Command::new("podman")
-        .args(&["pod", "rm", "-f", &expected_pod_name_alt])
-        .output()
-        .await;
+async fn cleanup_podman_resources(task_id: &str, manifest_name: &str) {
     log::info!(
-        "Attempted to clean up Podman pod: {}",
-        expected_pod_name_alt
+        "Cleaning up Podman resources for task: {} (manifest: {})",
+        task_id,
+        manifest_name
     );
+
+    let candidate_names = vec![
+        format!("beemesh-{}-pod", task_id),
+        format!("beemesh-{}", task_id),
+        format!("{}-pod", manifest_name),
+        manifest_name.to_string(),
+    ];
+
+    for name in &candidate_names {
+        let _ = tokio::process::Command::new("podman")
+            .args(&["pod", "rm", "-f", name])
+            .output()
+            .await;
+        log::info!("Attempted to clean up Podman pod: {}", name);
+    }
 
     // Also try to remove pods by name pattern (fallback)
     let output = tokio::process::Command::new("podman")

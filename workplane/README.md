@@ -284,10 +284,10 @@ workplane:
 
 ---
 
-## 12. CLI Interactions (`bmctl`)
+## 12. CLI Interactions (`kubectl`)
 
-* `bmctl get pods` **SHOULD** aggregate readiness from WP Agent and WDHT presence.
-* `bmctl delete pod` **MUST** trigger WP Agent shutdown hook to remove ServiceRecord before exit.
+* `kubectl get pods` **SHOULD** aggregate readiness from WP Agent and WDHT presence.
+* `kubectl delete pod` is **NOT YET SUPPORTED** while Machineplane lacks workload teardown; the agent **MUST** surface a clear error rather than silently succeeding.
 
 ---
 
