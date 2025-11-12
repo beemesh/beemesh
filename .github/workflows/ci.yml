@@ -9,8 +9,6 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    container:
-      image: quay.io/podman/stable
 
     steps:
       - name: Check out repository
@@ -30,13 +28,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get -y install build-essential pkg-config libssl-dev
-
       - name: Cargo build
         run: cargo build --workspace --all-targets --locked
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install podman
+
+      - name: Start Podman service
+        run: |
+          export XDG_RUNTIME_DIR=/run/user/$UID
+          mkdir -p $XDG_RUNTIME_DIR
+          podman system service --time=0 unix:///run/user/$UID/podman/podman.sock &
+          echo "PODMAN_HOST=unix:///run/user/$UID/podman/podman.sock" >> $GITHUB_ENV
+
       - name: Cargo test
+        env:
+          PODMAN_HOST: ${{ env.PODMAN_HOST }}
         run: cargo test --workspace --locked
