@@ -1,4 +1,9 @@
+use anyhow::{Result, anyhow};
 use machine::{Cli, start_machine};
+use reqwest::Client;
+use serde_json::Value as JsonValue;
+use serde_yaml;
+use std::path::PathBuf;
 use std::sync::Once;
 use std::time::Duration;
 use tokio::process::{Child, Command};
@@ -258,4 +263,96 @@ pub fn global_cleanup() {
     }
 
     eprintln!("Global cleanup completed");
+}
+
+fn parse_deployment_manifest(contents: &str) -> Result<(JsonValue, String, String)> {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(contents)?;
+    let manifest = serde_json::to_value(yaml)?;
+    let metadata = manifest
+        .get("metadata")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow!("manifest missing metadata"))?;
+    let name = metadata
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("manifest missing metadata.name"))?
+        .to_string();
+    let namespace = metadata
+        .get("namespace")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default")
+        .to_string();
+    Ok((manifest, namespace, name))
+}
+
+fn resolve_api_base(api_base: Option<&str>) -> String {
+    api_base
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
+}
+
+pub async fn kubectl_apply_manifest(path: PathBuf, api_base: Option<&str>) -> Result<String> {
+    let contents = tokio::fs::read_to_string(&path).await?;
+    let (_manifest, namespace, name) = parse_deployment_manifest(&contents)?;
+    let base = resolve_api_base(api_base);
+    let url = format!(
+        "{}/apis/apps/v1/namespaces/{}/deployments/{}",
+        base, namespace, name
+    );
+
+    let client = Client::new();
+    let response = client
+        .patch(url)
+        .header("Content-Type", "application/apply-patch+yaml")
+        .query(&[("fieldManager", "kubectl-beemesh")])
+        .body(contents)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!("kubectl apply failed ({}): {}", status, body));
+    }
+
+    let body: JsonValue = response.json().await?;
+    let manifest_id = body
+        .get("manifest_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            body.get("metadata")
+                .and_then(|meta| meta.get("uid"))
+                .and_then(|v| v.as_str())
+        })
+        .ok_or_else(|| anyhow!("response missing manifest identifier"))?;
+
+    Ok(manifest_id.to_string())
+}
+
+pub async fn kubectl_delete_manifest(
+    path: PathBuf,
+    force: bool,
+    api_base: Option<&str>,
+) -> Result<()> {
+    let contents = tokio::fs::read_to_string(&path).await?;
+    let (_manifest, namespace, name) = parse_deployment_manifest(&contents)?;
+    let base = resolve_api_base(api_base);
+    let mut url = format!(
+        "{}/apis/apps/v1/namespaces/{}/deployments/{}",
+        base, namespace, name
+    );
+
+    if force {
+        url.push_str("?gracePeriodSeconds=0");
+    }
+
+    let client = Client::new();
+    let response = client.delete(url).send().await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!("kubectl delete failed ({}): {}", status, body));
+    }
+
+    Ok(())
 }
