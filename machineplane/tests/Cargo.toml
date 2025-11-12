@@ -7,7 +7,6 @@ publish = false
 
 [dependencies]
 machine = { path = "../machine" }
-bmctl = { path = "../../bmctl" }
 crypto = { path = "../crypto" }
 scheduler = { path = "../scheduler" }
 tokio = { workspace = true }
@@ -17,4 +16,5 @@ futures = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 serde_yaml = { workspace = true }
+anyhow = { workspace = true }
 serial_test = "3.0"
