@@ -14,6 +14,7 @@ The machineplane consists of the following crates:
 * cli: consists of the beectl cli similar to kubectl that allows to interact with beemesh
 * crypto: the common library that offers helper functions for the cli and machine
 * machine: containts the libp2p machine implementation offering scheduling and managing lifecycle of the workload, similar to kubelet
+* workplane: contains the workload plane implementation
 * protocol: contains the flatbuffers that are used for messaging between the nodes in the machine plane
 
 ## Workflow
@@ -42,17 +43,6 @@ The complete architecture is described in the [Architecture Document](../README.
 
 ## Build and Run Instructions
 
-Refer to [build instructions](../docs/build.md) for detailed build instructions.
+Use ```cargo build``` and ```cargo test``` to build and test the code.
 
-Every time you change the code, make sure that the code compiles by running the respective commands:
-
-### Machineplane:
-```bash
-cargo build
-```
-
-To run the unit tests for the API, run:
-
-```bash
-cargo test
-```
+Every time you change the code, make sure that the code compiles and tests run successfully.
