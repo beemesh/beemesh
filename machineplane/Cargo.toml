@@ -1,18 +1,43 @@
-[workspace.dependencies]
-libp2p = { workspace = true }
+[package]
+name = "beemesh-machineplane"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+description = "Beemesh machineplane daemon"
+
+[lib]
+name = "machine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "machine"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
 tokio = { workspace = true }
-reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-env_logger = { workspace = true }
-log = { workspace = true }
-once_cell = { workspace = true }
-base64 = { workspace = true }
-anyhow = { workspace = true }
-saorsa-pqc = { workspace = true }
+libp2p = { workspace = true }
 futures = { workspace = true }
-dirs = { workspace = true }
+clap = { workspace = true, features = ["env"] }
+once_cell = { workspace = true }
 uuid = { workspace = true }
+flatbuffers = { workspace = true }
+base64 = { workspace = true }
+async-trait = "0.1"
+log = { workspace = true }
+env_logger = { workspace = true }
+saorsa-pqc = { workspace = true }
+dirs = { workspace = true }
+anyhow = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
-clap = { workspace = true }
+time = { version = "0.3", features = ["formatting"] }
+reqwest = { workspace = true }
+aes-gcm = "0.10"
+zeroize = "1.5"
+
+[dev-dependencies]
+serial_test = "3.0"
