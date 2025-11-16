@@ -33,11 +33,11 @@ pub fn apps_v1_router() -> Router<RestState> {
     Router::new()
         .route("/", get(apps_v1_resources))
         .route(
-            "/namespaces/:namespace/deployments",
+            "/namespaces/{namespace}/deployments",
             get(list_deployments).post(create_deployment),
         )
         .route(
-            "/namespaces/:namespace/deployments/:name",
+            "/namespaces/{namespace}/deployments/{name}",
             get(get_deployment)
                 .patch(apply_deployment)
                 .put(replace_deployment)

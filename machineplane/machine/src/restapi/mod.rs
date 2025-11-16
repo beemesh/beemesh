@@ -129,7 +129,7 @@ pub fn build_router(
         .route("/version", get(kube::version))
         .route("/apis", get(kube::api_group_list))
         .nest("/api", kube::core_router())
-        .nest("/apis/apps", kube::apps_v1_router());
+        .nest("/apis/apps/v1", kube::apps_v1_router());
 
     Router::new()
         .route("/health", get(|| async { "ok" }))
