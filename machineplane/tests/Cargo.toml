@@ -7,7 +7,6 @@ publish = false
 
 [dependencies]
 machine = { workspace = true }
-beectl = { workspace = true }
 crypto = { workspace = true }
 scheduler = { workspace = true }
 tokio = { workspace = true }
@@ -18,3 +17,4 @@ log = { workspace = true }
 env_logger = { workspace = true }
 serde_yaml = { workspace = true }
 serial_test = "3.0"
+anyhow = { workspace = true }

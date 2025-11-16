@@ -12,6 +12,7 @@ use base64::Engine;
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use protocol::libp2p_constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_MS};
+use serde_json::Value;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
 
 pub mod envelope_handler;
+pub mod kube;
 use envelope_handler::{
     EnvelopeHandler, create_encrypted_response_with_key, create_response_for_envelope_metadata,
     create_response_with_fallback,
@@ -123,6 +125,12 @@ pub fn build_router(
         task_store: Arc::new(RwLock::new(HashMap::new())),
         envelope_handler,
     };
+    let kube_routes = Router::new()
+        .route("/version", get(kube::version))
+        .route("/apis", get(kube::api_group_list))
+        .nest("/api", kube::core_router())
+        .nest("/apis/apps/v1", kube::apps_v1_router());
+
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/kem_pubkey", get(get_kem_public_key))
@@ -144,6 +152,7 @@ pub fn build_router(
         .route("/tasks/{task_id}/candidates", post(get_candidates))
         .route("/apply_direct/{peer_id}", post(apply_direct))
         .route("/nodes", get(get_nodes))
+        .merge(kube_routes)
         // Add envelope middleware to decrypt incoming requests and extract peer keys
         .layer(middleware::from_fn_with_state(
             state.envelope_handler.clone(),
@@ -165,101 +174,7 @@ pub async fn get_candidates(
         task_id
     );
 
-    // For direct delivery, simply query available nodes with their public keys
-    let request_id = format!(
-        "{}:{}:{}",
-        FREE_CAPACITY_PREFIX,
-        task_id,
-        uuid::Uuid::new_v4()
-    );
-    let capacity_fb = protocol::machine::build_capacity_request(
-        500u32,
-        512u64 * 1024 * 1024,
-        10u64 * 1024 * 1024 * 1024,
-        1u32, // Just need 1 winning node
-    );
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
-    let _ = state.control_tx.send(
-        crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
-            request_id: request_id.clone(),
-            reply_tx: reply_tx.clone(),
-            payload: capacity_fb,
-        },
-    );
-
-    let mut responders: Vec<String> = Vec::new();
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_millis(FREE_CAPACITY_TIMEOUT_MS);
-    log::info!(
-        "get_candidates: waiting for capacity responses, timeout={}ms",
-        FREE_CAPACITY_TIMEOUT_MS
-    );
-
-    while start.elapsed() < timeout {
-        let remaining = timeout.saturating_sub(start.elapsed());
-        match tokio::time::timeout(remaining, reply_rx.recv()).await {
-            Ok(Some(peer)) => {
-                log::info!(
-                    "get_candidates: received response from peer: {}",
-                    &peer[..16]
-                );
-                if !responders.contains(&peer) {
-                    responders.push(peer);
-                    // Get a few candidates to choose from
-                    if responders.len() >= 5 {
-                        log::info!(
-                            "get_candidates: got {} candidates, that's enough",
-                            responders.len()
-                        );
-                        break;
-                    }
-                }
-            }
-            Ok(None) => {
-                log::warn!("get_candidates: channel closed");
-                break;
-            }
-            Err(_) => {
-                log::info!(
-                    "get_candidates: reached timeout waiting for responses, got {} responders",
-                    responders.len()
-                );
-                break;
-            }
-        }
-    }
-
-    log::info!(
-        "get_candidates: finished with {} responders",
-        responders.len()
-    );
-
-    // Parse candidates with their public keys
-    let mut candidates: Vec<(String, String)> = Vec::new();
-    for peer_with_key in &responders {
-        if let Some(colon_pos) = peer_with_key.find(':') {
-            let peer_id_str = &peer_with_key[..colon_pos];
-            let pubkey_b64 = &peer_with_key[colon_pos + 1..];
-            if !pubkey_b64.is_empty() {
-                candidates.push((peer_id_str.to_string(), pubkey_b64.to_string()));
-                log::info!(
-                    "get_candidates: added candidate {} with public key",
-                    peer_id_str
-                );
-            } else {
-                log::warn!(
-                    "get_candidates: peer {} has no public key, skipping",
-                    peer_id_str
-                );
-            }
-        } else {
-            log::warn!(
-                "get_candidates: no public key separator found for: {}, skipping",
-                peer_with_key
-            );
-        }
-    }
-
+    let candidates = collect_candidate_pubkeys(&state, &task_id, 5).await?;
     let response_data = protocol::machine::build_candidates_response_with_keys(true, &candidates);
 
     // Use KEM key from envelope metadata for secure response encryption if available
@@ -278,6 +193,97 @@ pub async fn get_candidates(
     }
 }
 
+pub(crate) async fn collect_candidate_pubkeys(
+    state: &RestState,
+    task_id: &str,
+    max_candidates: usize,
+) -> Result<Vec<(String, String)>, axum::http::StatusCode> {
+    let request_id = format!(
+        "{}:{}:{}",
+        FREE_CAPACITY_PREFIX,
+        task_id,
+        uuid::Uuid::new_v4()
+    );
+    let capacity_fb = protocol::machine::build_capacity_request(
+        500u32,
+        512u64 * 1024 * 1024,
+        10u64 * 1024 * 1024 * 1024,
+        1u32,
+    );
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
+    let _ = state.control_tx.send(
+        crate::libp2p_beemesh::control::Libp2pControl::QueryCapacityWithPayload {
+            request_id: request_id.clone(),
+            reply_tx: reply_tx.clone(),
+            payload: capacity_fb,
+        },
+    );
+
+    let mut responders: Vec<String> = Vec::new();
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_millis(FREE_CAPACITY_TIMEOUT_MS);
+    log::info!(
+        "collect_candidate_pubkeys: waiting for responses, timeout={}ms",
+        FREE_CAPACITY_TIMEOUT_MS
+    );
+
+    while start.elapsed() < timeout {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        match tokio::time::timeout(remaining, reply_rx.recv()).await {
+            Ok(Some(peer)) => {
+                if !responders.contains(&peer) {
+                    responders.push(peer);
+                    if responders.len() >= max_candidates {
+                        break;
+                    }
+                }
+            }
+            Ok(None) => {
+                log::warn!("collect_candidate_pubkeys: channel closed");
+                break;
+            }
+            Err(_) => {
+                break;
+            }
+        }
+    }
+
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for peer_with_key in responders {
+        if let Some(colon_pos) = peer_with_key.find(':') {
+            let peer_id_str = &peer_with_key[..colon_pos];
+            let pubkey_b64 = &peer_with_key[colon_pos + 1..];
+            if !pubkey_b64.is_empty() {
+                candidates.push((peer_id_str.to_string(), pubkey_b64.to_string()));
+            } else {
+                log::warn!(
+                    "collect_candidate_pubkeys: peer {} has no public key, skipping",
+                    peer_id_str
+                );
+            }
+        } else {
+            log::warn!(
+                "collect_candidate_pubkeys: invalid peer entry: {}",
+                peer_with_key
+            );
+        }
+    }
+
+    Ok(candidates)
+}
+
+#[derive(Debug, Clone)]
+pub struct KubeResourceRecord {
+    pub api_version: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+    pub uid: String,
+    pub resource_version: u64,
+    pub manifest: Value,
+    pub creation_timestamp: std::time::SystemTime,
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskRecord {
     pub manifest_bytes: Vec<u8>,
@@ -289,6 +295,7 @@ pub struct TaskRecord {
     // store last generated operation id for manifest id computation
     pub last_operation_id: Option<String>,
     pub owner_pubkey: Vec<u8>,
+    pub kube: Option<KubeResourceRecord>,
 }
 
 pub async fn create_task(
@@ -418,6 +425,7 @@ pub async fn create_task(
         manifest_cid: Some(manifest_id.clone()),
         last_operation_id: Some(operation_id),
         owner_pubkey: owner_pubkey.clone(),
+        kube: None,
     };
     {
         let mut store = state.task_store.write().await;
@@ -748,8 +756,7 @@ pub async fn get_task_status(
         );
         return create_response_with_fallback(&response_data).await;
     }
-    let error_response =
-        protocol::machine::build_task_status_response("", "Error", &[], None);
+    let error_response = protocol::machine::build_task_status_response("", "Error", &[], None);
     create_response_with_fallback(&error_response).await
 }
 
@@ -1054,7 +1061,7 @@ async fn find_manifest_providers(task_id: &str, state: &RestState) -> Result<Vec
 }
 
 /// Send a delete request to a specific peer
-async fn send_delete_request_to_peer(
+pub(crate) async fn send_delete_request_to_peer(
     state: &RestState,
     peer_id: &str,
     delete_request: &[u8],
