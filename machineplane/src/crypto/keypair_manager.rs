@@ -353,6 +353,7 @@ impl KeypairManager {
 mod tests {
     use super::*;
     use std::sync::OnceLock;
+    use crate::crypto::{set_keypair_config, KeypairConfig, KeypairMode};
 
     // Mutex for PQC tests to avoid races
     static PQC_TEST_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
@@ -390,22 +391,22 @@ mod tests {
 
     #[test]
     fn test_default_storage_mode() {
-        super::set_keypair_config(super::KeypairConfig::default());
+        set_keypair_config(KeypairConfig::default());
         assert_eq!(
             KeypairManager::default_storage_mode(),
             StorageMode::Persistent
         );
 
-        super::set_keypair_config(super::KeypairConfig {
-            signing_mode: super::KeypairMode::Ephemeral,
-            kem_mode: super::KeypairMode::Ephemeral,
+        set_keypair_config(KeypairConfig {
+            signing_mode: KeypairMode::Ephemeral,
+            kem_mode: KeypairMode::Ephemeral,
             key_directory: None,
         });
         assert_eq!(
             KeypairManager::default_storage_mode(),
             StorageMode::Ephemeral
         );
-        super::set_keypair_config(super::KeypairConfig::default());
+        set_keypair_config(KeypairConfig::default());
     }
 
     #[test]
