@@ -6,14 +6,15 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 mod test_utils;
-use test_utils::{make_test_cli, set_env_var, setup_cleanup_hook, start_nodes};
+use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
+use integration::kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 
-async fn setup_test_environment() -> Vec<u16> {
+async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
     // Setup cleanup hook and initialize logger
     setup_cleanup_hook();
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
-    vec![3000u16, 3100u16]
+    (reqwest::Client::new(), vec![3000u16, 3100u16])
 }
 
 async fn start_test_nodes() -> test_utils::NodeGuard {
@@ -36,14 +37,11 @@ async fn start_test_nodes() -> test_utils::NodeGuard {
 #[tokio::test]
 #[serial]
 async fn test_delete_task_endpoint() {
-    let _ports = setup_test_environment().await;
+    let (client, ports) = setup_test_environment().await;
     let _node_guard = start_test_nodes().await;
 
     // Give nodes time to start up and connect
     sleep(Duration::from_secs(2)).await;
-
-    // Set API endpoint for CLI to use
-    set_env_var("BEEMESH_API", "http://127.0.0.1:3000");
 
     // Create a test manifest file path using CARGO_MANIFEST_DIR
     let manifest_path = PathBuf::from(format!(
@@ -52,14 +50,15 @@ async fn test_delete_task_endpoint() {
     ));
 
     // First apply the manifest to have something to delete
-    let task_id_result = beectl::apply_file(manifest_path.clone(), None).await;
+    let task_id_result = apply_manifest_via_kube_api(&client, ports[0], &manifest_path).await;
     println!("Apply result: {:?}", task_id_result);
 
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
 
     // Now try to delete it using CLI
-    let delete_result = beectl::delete_file(manifest_path, false, None).await;
+    let delete_result =
+        delete_manifest_via_kube_api(&client, ports[0], &manifest_path, false).await;
 
     match delete_result {
         Ok(manifest_id) => {
@@ -81,14 +80,13 @@ async fn test_delete_task_endpoint() {
 #[tokio::test]
 #[serial]
 async fn test_delete_task_with_force() {
-    let _ports = setup_test_environment().await;
+    let (client, ports) = setup_test_environment().await;
     let _node_guard = start_test_nodes().await;
 
     // Give nodes time to start up and connect
     sleep(Duration::from_secs(2)).await;
 
     // Set API endpoint for CLI to use
-    set_env_var("BEEMESH_API", "http://127.0.0.1:3000");
 
     // Create a test manifest file path using CARGO_MANIFEST_DIR
     let manifest_path = PathBuf::from(format!(
@@ -97,14 +95,15 @@ async fn test_delete_task_with_force() {
     ));
 
     // First apply the manifest to have something to delete
-    let task_id_result = beectl::apply_file(manifest_path.clone(), None).await;
+    let task_id_result = apply_manifest_via_kube_api(&client, ports[0], &manifest_path).await;
     println!("Apply result: {:?}", task_id_result);
 
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
 
     // Now try to delete it with force flag using CLI
-    let delete_result = beectl::delete_file(manifest_path, true, None).await;
+    let delete_result =
+        delete_manifest_via_kube_api(&client, ports[0], &manifest_path, true).await;
 
     match delete_result {
         Ok(manifest_id) => {
@@ -126,14 +125,13 @@ async fn test_delete_task_with_force() {
 #[tokio::test]
 #[serial]
 async fn test_delete_nonexistent_task() {
-    let _ports = setup_test_environment().await;
+    let (client, ports) = setup_test_environment().await;
     let _node_guard = start_test_nodes().await;
 
     // Give nodes time to start up and connect
     sleep(Duration::from_secs(5)).await;
 
     // Set API endpoint for CLI to use
-    set_env_var("BEEMESH_API", "http://127.0.0.1:3000");
 
     // Create a test manifest file path using CARGO_MANIFEST_DIR
     let manifest_path = PathBuf::from(format!(
@@ -142,7 +140,8 @@ async fn test_delete_nonexistent_task() {
     ));
 
     // Try to delete without applying first (should find no providers)
-    let delete_result = beectl::delete_file(manifest_path, false, None).await;
+    let delete_result =
+        delete_manifest_via_kube_api(&client, ports[0], &manifest_path, false).await;
 
     match delete_result {
         Ok(manifest_id) => {

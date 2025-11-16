@@ -10,6 +10,7 @@ use integration::apply_common::{
     wait_for_mesh_formation,
 };
 use integration::test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
+use integration::kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 
 #[serial]
 #[tokio::test]
@@ -35,9 +36,9 @@ async fn test_apply_functionality() {
         .await
         .expect("Failed to read original manifest file for verification");
 
-    let task_id = beectl::apply_file(manifest_path.clone(), None)
+    let task_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
         .await
-        .expect("apply_file should succeed");
+        .expect("kubectl apply should succeed");
 
     // Wait for direct delivery and deployment to complete
     sleep(Duration::from_secs(6)).await;
@@ -83,7 +84,7 @@ async fn test_apply_with_real_podman() {
         return;
     }
 
-    let (_client, _ports) = setup_test_environment_for_podman().await;
+    let (client, ports) = setup_test_environment_for_podman().await;
     let mut guard = start_test_nodes_for_podman().await;
 
     sleep(Duration::from_secs(3)).await;
@@ -99,9 +100,9 @@ async fn test_apply_with_real_podman() {
         .await
         .expect("Failed to read original manifest file for verification");
 
-    let task_id = beectl::apply_file(manifest_path.clone(), None)
+    let task_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
         .await
-        .expect("apply_file should succeed with real Podman");
+        .expect("kubectl apply should succeed with real Podman");
 
     // Wait for direct delivery and Podman deployment to complete (longer timeout for real containers)
     sleep(Duration::from_secs(5)).await;
@@ -115,7 +116,8 @@ async fn test_apply_with_real_podman() {
         "Podman deployment verification failed - no matching pods found"
     );
 
-    let _delete_result = beectl::delete_file(manifest_path, true, None).await;
+    let _ = delete_manifest_via_kube_api(&client, ports[0], &manifest_path, true)
+        .await;
     sleep(Duration::from_secs(5)).await;
 
     let podman_verification_successful =
@@ -156,9 +158,9 @@ async fn test_apply_nginx_with_replicas() {
         .await
         .expect("Failed to read nginx_with_replicas manifest file for verification");
 
-    let task_id = beectl::apply_file(manifest_path.clone(), None)
+    let task_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
         .await
-        .expect("apply_file should succeed for nginx_with_replicas");
+        .expect("kubectl apply should succeed for nginx_with_replicas");
 
     // Wait for direct delivery and deployment to complete
     sleep(Duration::from_secs(5)).await;

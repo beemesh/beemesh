@@ -4,7 +4,6 @@ members = [
     "machineplane/machine",
     "machineplane/tests",
     "workplane",
-    "beectl",
     "shared/crypto",
     "shared/protocol",
 ]
@@ -28,7 +27,6 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 thiserror = "1.0"
 clap = { version = "4", features = ["derive"] }
-beectl = { path = "./beectl" }
 crypto = { path = "./shared/crypto" }
 protocol = { path = "./shared/protocol" }
 scheduler = { path = "./machineplane/scheduler" }

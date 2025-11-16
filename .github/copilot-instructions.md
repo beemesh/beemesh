@@ -11,7 +11,7 @@ Beemesh is a decentralized, lock-free orchestration system that turns any device
 
 ## Code Layout
 The machineplane consists of the following crates:
-* cli: consists of the beectl cli similar to kubectl that allows to interact with beemesh
+* cli: relies on the upstream Kubernetes `kubectl` binary to talk to the machineplane's compatible API surface
 * crypto: the common library that offers helper functions for the cli and machine
 * machine: containts the libp2p machine implementation offering scheduling and managing lifecycle of the workload, similar to kubelet
 * workplane: contains the workload plane implementation
