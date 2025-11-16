@@ -30,7 +30,7 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
         .await
         .expect("Failed to read manifest for verification");
 
-    let task_id = beectl::apply_file(manifest_path.clone(), None)
+    let task_id = kubectl::apply_file(manifest_path.clone(), None)
         .await
         .expect("apply_file should succeed");
 
@@ -83,7 +83,7 @@ async fn test_scheduling_fails_when_all_nodes_disabled() {
         env!("CARGO_MANIFEST_DIR")
     ));
 
-    let apply_result = beectl::apply_file(manifest_path.clone(), None).await;
+    let apply_result = kubectl::apply_file(manifest_path.clone(), None).await;
 
     assert!(
         apply_result.is_err(),

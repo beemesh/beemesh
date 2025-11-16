@@ -4,7 +4,7 @@ use axum::{
     body::Bytes,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{delete, get, patch, post, put},
+    routing::get,
 };
 use serde_json::{Map, Value, json};
 use serde_yaml;

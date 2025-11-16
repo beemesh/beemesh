@@ -55,7 +55,7 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 ```mermaid
 sequenceDiagram
   autonumber
-  participant P as Producer (beectl/controller)
+  participant P as Producer (kubectl/controller)
   participant N1 as Node A
   participant N2 as Node B
   participant MDHT as Machine DHT
@@ -290,11 +290,12 @@ machineplane:
 
 ---
 
-## 10. CLI Integration (`beectl`)
+## 10. CLI Integration (`kubectl`)
 
-* `beectl create -f app.yaml` **MUST** publish a Task to `scheduler-tasks`.
-* `beectl get pods` **SHOULD** read from local node/runtime and/or observe `scheduler-events` for status aggregation (best-effort).
-* `beectl delete pod <name>` **MUST** publish a cancellation Task or send a secure stream command to the owning node.
+* `kubectl create -f app.yaml` **MUST** publish a Task to `scheduler-tasks`.
+* `kubectl get pods` **SHOULD** read from local node/runtime and/or observe `scheduler-events` for status aggregation (best-effort).
+* `kubectl delete pod <name>` **MUST** publish a cancellation Task or send a secure stream command to the owning node.
+* The Machineplane daemon **MUST** expose Kubernetes-compatible REST endpoints (`/version`, `/api`, `/apis/apps/v1/...`) so that the upstream `kubectl` binary can talk to it using its normal HTTP flow.
 
 ---
 

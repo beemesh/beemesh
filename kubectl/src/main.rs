@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
-use beectl::{apply_file, delete_file};
+use kubectl::{apply_file, delete_file};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "beemesh", about = "beemesh CLI")]
+#[command(name = "kubectl", about = "kubectl CLI")]
 struct Cli {
     /// REST API base URL (can also be set via BEEMESH_API)
     #[arg(long = "api-url", env = "BEEMESH_API", value_name = "URL")]

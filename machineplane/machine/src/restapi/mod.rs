@@ -9,6 +9,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::Engine;
+use serde_json::Value;
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use protocol::libp2p_constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_MS};
@@ -21,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
 
 pub mod envelope_handler;
+pub mod kube;
 use envelope_handler::{
     EnvelopeHandler, create_encrypted_response_with_key, create_response_for_envelope_metadata,
     create_response_with_fallback,
@@ -123,6 +125,12 @@ pub fn build_router(
         task_store: Arc::new(RwLock::new(HashMap::new())),
         envelope_handler,
     };
+    let kube_routes = Router::new()
+        .route("/version", get(kube::version))
+        .route("/apis", get(kube::api_group_list))
+        .nest("/api", kube::core_router())
+        .nest("/apis/apps", kube::apps_v1_router());
+
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/kem_pubkey", get(get_kem_public_key))
@@ -144,6 +152,7 @@ pub fn build_router(
         .route("/tasks/{task_id}/candidates", post(get_candidates))
         .route("/apply_direct/{peer_id}", post(apply_direct))
         .route("/nodes", get(get_nodes))
+        .merge(kube_routes)
         // Add envelope middleware to decrypt incoming requests and extract peer keys
         .layer(middleware::from_fn_with_state(
             state.envelope_handler.clone(),
@@ -279,6 +288,18 @@ pub async fn get_candidates(
 }
 
 #[derive(Debug, Clone)]
+pub struct KubeResourceRecord {
+    pub api_version: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+    pub uid: String,
+    pub resource_version: u64,
+    pub manifest: Value,
+    pub creation_timestamp: std::time::SystemTime,
+}
+
+#[derive(Debug, Clone)]
 pub struct TaskRecord {
     pub manifest_bytes: Vec<u8>,
     pub created_at: std::time::SystemTime,
@@ -289,6 +310,7 @@ pub struct TaskRecord {
     // store last generated operation id for manifest id computation
     pub last_operation_id: Option<String>,
     pub owner_pubkey: Vec<u8>,
+    pub kube: Option<KubeResourceRecord>,
 }
 
 pub async fn create_task(
@@ -418,6 +440,7 @@ pub async fn create_task(
         manifest_cid: Some(manifest_id.clone()),
         last_operation_id: Some(operation_id),
         owner_pubkey: owner_pubkey.clone(),
+        kube: None,
     };
     {
         let mut store = state.task_store.write().await;
