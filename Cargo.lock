@@ -342,6 +342,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55248b47b0caf0546f7988906588779981c43bb1bc9d0c44087278f80cdb44ba"
 
 [[package]]
+name = "beemesh-machineplane"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.21.7",
+ "clap",
+ "dirs",
+ "env_logger",
+ "flatbuffers",
+ "futures",
+ "libp2p",
+ "log",
+ "once_cell",
+ "rand 0.8.5",
+ "reqwest",
+ "saorsa-pqc",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "serial_test",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "bincode"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -637,24 +668,6 @@ name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
-
-[[package]]
-name = "crypto"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "base64 0.21.7",
- "dirs",
- "libp2p",
- "log",
- "once_cell",
- "rand 0.8.5",
- "saorsa-pqc",
- "serde_json",
- "thiserror 1.0.69",
- "zeroize",
-]
 
 [[package]]
 name = "crypto-bigint"
@@ -1733,24 +1746,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "integration"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crypto",
- "env_logger",
- "futures",
- "log",
- "machine",
- "reqwest",
- "scheduler",
- "serde_json",
- "serde_yaml",
- "serial_test",
- "tokio",
-]
-
-[[package]]
 name = "ipconfig"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2275,36 +2270,6 @@ name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
-
-[[package]]
-name = "machine"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.21.7",
- "clap",
- "crypto",
- "dirs",
- "env_logger",
- "flatbuffers",
- "futures",
- "libp2p",
- "log",
- "once_cell",
- "protocol",
- "rand 0.8.5",
- "saorsa-pqc",
- "scheduler",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "uuid",
-]
 
 [[package]]
 name = "match-lookup"
@@ -2838,18 +2803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "protocol"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.21.7",
- "crypto",
- "flatbuffers",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "quick-protobuf"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3347,14 +3300,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46e6f046b7fef48e2660c57ed794263155d713de679057f2d0c169bfc6e756cc"
 dependencies = [
  "sdd",
-]
-
-[[package]]
-name = "scheduler"
-version = "0.1.0"
-dependencies = [
- "log",
- "tokio",
 ]
 
 [[package]]
