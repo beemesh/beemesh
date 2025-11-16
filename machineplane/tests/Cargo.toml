@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 machine = { workspace = true }
-kubectl = { workspace = true }
+beectl = { workspace = true }
 crypto = { workspace = true }
 scheduler = { workspace = true }
 tokio = { workspace = true }

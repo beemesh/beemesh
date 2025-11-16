@@ -1,11 +1,11 @@
 [package]
-name = "kubectl"
+name = "beectl"
 version = "0.1.0"
 edition = "2024"
 description = "Command-line interface for beemesh"
 
 [lib]
-name = "kubectl"
+name = "beectl"
 path = "src/lib.rs"
 
 [dependencies]
@@ -27,5 +27,5 @@ env_logger = { workspace = true }
 uuid = { workspace = true }
 
 [[bin]]
-name = "kubectl"
+name = "beectl"
 path = "src/main.rs"
