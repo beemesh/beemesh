@@ -364,6 +364,7 @@ mod tests {
 
     #[test]
     fn test_nonce_replay_protection() {
+        crate::crypto::flatbuffer_envelope::reset_nonce_store();
         let nonce = "test-nonce-unique";
         let window = Duration::from_secs(60);
 
@@ -376,6 +377,7 @@ mod tests {
 
     #[test]
     fn test_signature_prefix_handling() {
+        crate::crypto::flatbuffer_envelope::reset_nonce_store();
         // Test with prefix
         let sig_with_prefix = "ml-dsa-65:dGVzdA=="; // "test" in base64
         let decoded = normalize_and_decode_signature(Some(sig_with_prefix)).unwrap();

@@ -10,6 +10,13 @@ fn nonce_store() -> &'static Mutex<HashMap<String, HashMap<String, Instant>>> {
     NONCE_STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(test)]
+pub(crate) fn reset_nonce_store() {
+    if let Some(store) = NONCE_STORE.get() {
+        store.lock().unwrap().clear();
+    }
+}
+
 /// Accept a signature string potentially prefixed (e.g. "ml-dsa-65:<b64>") and return decoded bytes.
 /// Keeps prefix-handling logic centralized.
 pub fn normalize_and_decode_signature(sig_opt: Option<&str>) -> anyhow::Result<Vec<u8>> {
@@ -66,6 +73,7 @@ mod tests {
 
     #[test]
     fn test_nonce_replay_protection() {
+        reset_nonce_store();
         let nonce = "test-nonce-unique";
         let window = Duration::from_secs(60);
 
@@ -78,6 +86,7 @@ mod tests {
 
     #[test]
     fn test_signature_prefix_handling() {
+        reset_nonce_store();
         // Test with prefix
         let sig_with_prefix = "ml-dsa-65:dGVzdA=="; // "test" in base64
         let decoded = normalize_and_decode_signature(Some(sig_with_prefix)).unwrap();
