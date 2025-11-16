@@ -6,12 +6,19 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
+use base64::Engine;
+use crypto::encrypt_payload_for_recipient;
+use log::{error, warn};
+use scheduler::{NodeCandidate, NodeCapabilities, Scheduler, SchedulerConfig, SchedulingStrategy};
 use serde_json::{Map, Value, json};
 use serde_yaml;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use tokio::sync::mpsc;
+use tokio::time::{Duration, timeout};
+use uuid::Uuid;
 
 const DEPLOYMENT_KIND: &str = "Deployment";
 const APPS_V1: &str = "apps/v1";
@@ -215,64 +222,288 @@ fn compute_manifest_id(namespace: &str, name: &str, kind: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+fn desired_replicas(manifest: &Value) -> usize {
+    manifest
+        .get("spec")
+        .and_then(|spec| spec.get("replicas"))
+        .and_then(|replicas| replicas.as_u64())
+        .unwrap_or(1) as usize
+}
+
+async fn send_apply_to_peer(
+    state: &RestState,
+    peer_id: &str,
+    peer_pubkey_b64: &str,
+    manifest_json: &str,
+    manifest_id: &str,
+) -> Result<(), StatusCode> {
+    let node_pubkey_bytes = base64::engine::general_purpose::STANDARD
+        .decode(peer_pubkey_b64)
+        .map_err(|e| {
+            warn!("Failed to decode peer pubkey for {}: {}", peer_id, e);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    let encrypted_blob =
+        encrypt_payload_for_recipient(&node_pubkey_bytes, manifest_json.as_bytes()).map_err(
+            |e| {
+                error!("Failed to encrypt manifest for {}: {}", peer_id, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            },
+        )?;
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let envelope = protocol::machine::build_envelope_canonical_with_peer(
+        &encrypted_blob,
+        "manifest",
+        "",
+        ts,
+        "ml-kem-512",
+        peer_id,
+        None,
+    );
+
+    let operation_id = Uuid::new_v4().to_string();
+    let manifest_json_b64 = base64::engine::general_purpose::STANDARD.encode(&envelope);
+    let apply_request_bytes = protocol::machine::build_apply_request(
+        1,
+        &operation_id,
+        &manifest_json_b64,
+        "",
+        manifest_id,
+    );
+
+    let target_peer_id: libp2p::PeerId = peer_id.parse().map_err(|e| {
+        warn!("Invalid peer id {}: {}", peer_id, e);
+        StatusCode::BAD_REQUEST
+    })?;
+
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
+    state
+        .control_tx
+        .send(
+            crate::libp2p_beemesh::control::Libp2pControl::SendApplyRequest {
+                peer_id: target_peer_id,
+                manifest: apply_request_bytes,
+                reply_tx,
+            },
+        )
+        .map_err(|e| {
+            error!("Failed to dispatch apply to {}: {}", peer_id, e);
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    match timeout(Duration::from_secs(15), reply_rx.recv()).await {
+        Ok(Some(Ok(_))) => Ok(()),
+        Ok(Some(Err(e))) => {
+            warn!("Apply request failed for {}: {}", peer_id, e);
+            Err(StatusCode::BAD_GATEWAY)
+        }
+        Ok(None) => {
+            warn!("Apply channel closed for {}", peer_id);
+            Err(StatusCode::BAD_GATEWAY)
+        }
+        Err(_) => {
+            warn!("Timed out sending apply to {}", peer_id);
+            Err(StatusCode::GATEWAY_TIMEOUT)
+        }
+    }
+}
+
+async fn schedule_deployment(
+    state: &RestState,
+    manifest_id: &str,
+    manifest: &Value,
+) -> Result<Vec<String>, StatusCode> {
+    let replicas = std::cmp::max(1, desired_replicas(manifest));
+    let manifest_str =
+        serde_json::to_string(manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let max_candidates = std::cmp::max(replicas * 2, 5);
+    let candidates = super::collect_candidate_pubkeys(state, manifest_id, max_candidates).await?;
+    if candidates.len() < replicas {
+        warn!(
+            "schedule_deployment: insufficient candidates (need {}, got {})",
+            replicas,
+            candidates.len()
+        );
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    let node_candidates: Vec<NodeCandidate> = candidates
+        .iter()
+        .map(|(peer_id, _)| NodeCandidate {
+            node_id: peer_id.clone(),
+            load_factor: 0.0,
+            available: true,
+            capabilities: NodeCapabilities::default(),
+        })
+        .collect();
+
+    let scheduler_config = SchedulerConfig {
+        strategy: SchedulingStrategy::RoundRobin,
+        max_candidates: None,
+        enable_load_balancing: false,
+    };
+    let scheduler = Scheduler::new(scheduler_config);
+    let plan = scheduler
+        .schedule_workload(&node_candidates, replicas)
+        .map_err(|e| {
+            error!("schedule_deployment: scheduler error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut assigned = Vec::new();
+    for idx in plan.selected_candidates {
+        if let Some((peer_id, pubkey)) = candidates.get(idx) {
+            send_apply_to_peer(state, peer_id, pubkey, &manifest_str, manifest_id).await?;
+            assigned.push(peer_id.clone());
+        }
+    }
+
+    Ok(assigned)
+}
+
+async fn delete_manifest_from_peers(state: &RestState, manifest_id: &str, peers: &[String]) {
+    if peers.is_empty() {
+        return;
+    }
+
+    let operation_id = Uuid::new_v4().to_string();
+    let delete_request =
+        protocol::machine::build_delete_request(manifest_id, &operation_id, "", true);
+
+    for peer in peers {
+        if let Err(e) = super::send_delete_request_to_peer(state, peer, &delete_request).await {
+            warn!("Failed to send delete to {}: {}", peer, e);
+        }
+    }
+}
+
+async fn cleanup_old_assignments(
+    state: &RestState,
+    manifest_id: &str,
+    previous: &[String],
+    current: &[String],
+) {
+    if previous.is_empty() {
+        return;
+    }
+
+    let stale: Vec<String> = previous
+        .iter()
+        .filter(|peer| !current.contains(peer))
+        .cloned()
+        .collect();
+
+    delete_manifest_from_peers(state, manifest_id, &stale).await;
+}
+
 async fn upsert_deployment(
     state: &RestState,
     namespace: &str,
     name: &str,
     manifest: Value,
 ) -> Result<Value, StatusCode> {
-    let mut store = state.task_store.write().await;
-    let existing_key = store
-        .iter()
-        .find(|(_, rec)| {
-            rec.kube
-                .as_ref()
-                .map(|k| k.kind == DEPLOYMENT_KIND && k.namespace == namespace && k.name == name)
-                .unwrap_or(false)
-        })
-        .map(|(k, _)| k.clone());
-
-    if let Some(key) = existing_key {
-        if let Some(record) = store.get_mut(&key) {
-            if let Some(kube) = record.kube.as_mut() {
-                kube.resource_version += 1;
-                kube.manifest = manifest.clone();
-            }
-            record.manifest_bytes =
-                serde_json::to_vec(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            record.manifest_cid = Some(key.clone());
-            let response = build_deployment_response(&key, record);
-            return Ok(response);
-        }
-    }
+    let existing_snapshot = {
+        let store = state.task_store.read().await;
+        find_deployment(&store, namespace, name).map(|(id, rec)| (id.clone(), rec.clone()))
+    };
 
     let manifest_id = compute_manifest_id(namespace, name, DEPLOYMENT_KIND);
-    let uid = manifest_id.clone();
-    let creation_timestamp = SystemTime::now();
-    let kube_record = KubeResourceRecord {
-        api_version: APPS_V1.to_string(),
-        kind: DEPLOYMENT_KIND.to_string(),
-        namespace: namespace.to_string(),
-        name: name.to_string(),
-        uid: uid.clone(),
-        resource_version: 1,
-        manifest: manifest.clone(),
-        creation_timestamp,
+    let record_key = existing_snapshot
+        .as_ref()
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| manifest_id.clone());
+    let creation_timestamp = existing_snapshot
+        .as_ref()
+        .and_then(|(_, rec)| rec.kube.as_ref().map(|k| k.creation_timestamp))
+        .unwrap_or_else(SystemTime::now);
+    let created_at = existing_snapshot
+        .as_ref()
+        .map(|(_, rec)| rec.created_at)
+        .unwrap_or(creation_timestamp);
+    let previous_assignments = existing_snapshot
+        .as_ref()
+        .and_then(|(_, rec)| rec.assigned_peers.clone())
+        .unwrap_or_default();
+    let resource_version = existing_snapshot
+        .as_ref()
+        .and_then(|(_, rec)| rec.kube.as_ref().map(|k| k.resource_version + 1))
+        .unwrap_or(1);
+
+    let assigned_peers = schedule_deployment(state, &record_key, &manifest).await?;
+    let last_operation_id = format!(
+        "kube:apps/v1:Deployment:{}:{}:{}",
+        namespace,
+        name,
+        Uuid::new_v4()
+    );
+    super::store_operation_manifest_mapping(&last_operation_id, &record_key).await;
+
+    let manifest_bytes =
+        serde_json::to_vec(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let response_value = {
+        let mut store = state.task_store.write().await;
+        if let Some(record) = store.get_mut(&record_key) {
+            record.manifest_bytes = manifest_bytes.clone();
+            record.created_at = created_at;
+            record.assigned_peers = Some(assigned_peers.clone());
+            record.manifest_cid = Some(record_key.clone());
+            record.last_operation_id = Some(last_operation_id.clone());
+            if let Some(kube_meta) = record.kube.as_mut() {
+                kube_meta.manifest = manifest.clone();
+                kube_meta.resource_version = resource_version;
+                kube_meta.creation_timestamp = creation_timestamp;
+            } else {
+                record.kube = Some(KubeResourceRecord {
+                    api_version: APPS_V1.to_string(),
+                    kind: DEPLOYMENT_KIND.to_string(),
+                    namespace: namespace.to_string(),
+                    name: name.to_string(),
+                    uid: record_key.clone(),
+                    resource_version,
+                    manifest: manifest.clone(),
+                    creation_timestamp,
+                });
+            }
+            build_deployment_response(&record_key, record)
+        } else {
+            let kube_record = KubeResourceRecord {
+                api_version: APPS_V1.to_string(),
+                kind: DEPLOYMENT_KIND.to_string(),
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+                uid: record_key.clone(),
+                resource_version,
+                manifest: manifest.clone(),
+                creation_timestamp,
+            };
+            let task_record = TaskRecord {
+                manifest_bytes: manifest_bytes.clone(),
+                created_at,
+                manifests_distributed: HashMap::new(),
+                assigned_peers: Some(assigned_peers.clone()),
+                manifest_cid: Some(record_key.clone()),
+                last_operation_id: Some(last_operation_id.clone()),
+                owner_pubkey: existing_snapshot
+                    .as_ref()
+                    .map(|(_, rec)| rec.owner_pubkey.clone())
+                    .unwrap_or_default(),
+                kube: Some(kube_record),
+            };
+            store.insert(record_key.clone(), task_record);
+            let record = store.get(&record_key).unwrap();
+            build_deployment_response(&record_key, record)
+        }
     };
-    let task_record = TaskRecord {
-        manifest_bytes: serde_json::to_vec(&manifest)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-        created_at: creation_timestamp,
-        manifests_distributed: HashMap::new(),
-        assigned_peers: None,
-        manifest_cid: Some(manifest_id.clone()),
-        last_operation_id: Some(format!("kube:apps/v1:Deployment:{}:{}", namespace, name)),
-        owner_pubkey: Vec::new(),
-        kube: Some(kube_record),
-    };
-    store.insert(manifest_id.clone(), task_record);
-    let record = store.get(&manifest_id).unwrap();
-    Ok(build_deployment_response(&manifest_id, record))
+
+    cleanup_old_assignments(state, &record_key, &previous_assignments, &assigned_peers).await;
+    Ok(response_value)
 }
 
 fn find_deployment<'a>(
@@ -396,8 +627,14 @@ async fn delete_deployment(
         .map(|(k, _)| k.clone());
 
     if let Some(key) = key_opt {
-        store.remove(&key);
+        let record = store.remove(&key);
         drop(store);
+
+        if let Some(record) = record {
+            let assigned = record.assigned_peers.unwrap_or_default();
+            delete_manifest_from_peers(&state, &key, &assigned).await;
+        }
+
         let _ = crate::workload_integration::remove_workloads_by_manifest_id(&key).await;
         return Ok(Json(json!({
             "kind": "Status",
