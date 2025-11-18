@@ -9,7 +9,7 @@ use serde_json::{Map, json};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 use tokio::{select, sync::watch};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -169,6 +169,17 @@ async fn reconcile_replicas(
 
     healthy.sort_by(|a, b| rank_records(a, b));
     unhealthy.sort_by(|a, b| rank_records(a, b));
+
+    info!(
+        healthy = healthy.len(),
+        unhealthy = unhealthy.len(),
+        desired = desired_replicas,
+        namespace = %cfg.namespace,
+        workload = %cfg.workload_name,
+        "replica health evaluated"
+    );
+    metrics::gauge!("workplane.replicas.healthy", healthy.len() as f64);
+    metrics::gauge!("workplane.replicas.unhealthy", unhealthy.len() as f64);
 
     // For stateful workloads, ensure we only keep one healthy replica per ordinal.
     let mut duplicates = Vec::new();
@@ -451,6 +462,7 @@ fn wdht_healthtest(record: &ServiceRecord) -> bool {
     let request = RPCRequest {
         method: "healthz".to_string(),
         body: Map::new(),
+        leader_only: false,
     };
     match send_request(record, request) {
         Ok(response) => response.ok,

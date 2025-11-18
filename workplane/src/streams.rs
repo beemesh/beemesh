@@ -10,6 +10,8 @@ pub struct RPCRequest {
     pub method: String,
     #[serde(default)]
     pub body: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub leader_only: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

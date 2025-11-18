@@ -6,7 +6,7 @@ use libp2p::identity::Keypair;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -161,6 +161,46 @@ impl Network {
         }
 
         if changed {
+            self.publish_current_record()?;
+        }
+        Ok(())
+    }
+
+    pub fn update_leader_endpoint(&self, active: bool, epoch: u64) -> Result<()> {
+        let mut should_publish = false;
+        {
+            let mut record = self.inner.local_record.write().expect("record write lock");
+            let mut changed = false;
+            if record.ready != active {
+                record.ready = active;
+                changed = true;
+            }
+            let leader_value = serde_json::Value::Bool(active);
+            if record.caps.get("leader") != Some(&leader_value) {
+                record.caps.insert("leader".into(), leader_value);
+                changed = true;
+            }
+            let epoch_value = serde_json::Value::Number(serde_json::Number::from(epoch));
+            if record.caps.get("leader_epoch") != Some(&epoch_value) {
+                record.caps.insert("leader_epoch".into(), epoch_value);
+                changed = true;
+            }
+            if changed {
+                record.version = record.version.saturating_add(1);
+                record.ts = current_millis();
+                record.nonce = Uuid::new_v4().to_string();
+                should_publish = true;
+            }
+        }
+
+        if should_publish {
+            if active {
+                info!(epoch, "advertising leader endpoint");
+                metrics::increment_counter!("workplane.network.leader_advertisements");
+            } else {
+                info!(epoch, "withdrawing leader endpoint");
+                metrics::increment_counter!("workplane.network.leader_withdrawals");
+            }
             self.publish_current_record()?;
         }
         Ok(())
