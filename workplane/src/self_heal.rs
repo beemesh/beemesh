@@ -88,14 +88,25 @@ impl SelfHealer {
                         }
 
                         if now.duration_since(last_replica_check) >= cfg.replica_check_interval {
-                            if let Err(err) = reconcile_replicas(
+                            match reconcile_replicas(
                                 &network,
                                 &cfg,
                                 &client,
                                 &manifest,
                                 &manifest_spec,
-                            ).await {
-                                warn!(error = %err, "replica reconciliation failed");
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    metrics::gauge!("workplane.reconciliation.failures", 0.0);
+                                }
+                                Err(err) => {
+                                    metrics::increment_counter!(
+                                        "workplane.reconciliation.failures"
+                                    );
+                                    metrics::gauge!("workplane.reconciliation.failures", 1.0);
+                                    warn!(error = %err, "replica reconciliation failed");
+                                }
                             }
                             last_replica_check = now;
                         }
@@ -142,14 +153,19 @@ async fn reconcile_replicas(
     manifest: &Arc<Vec<u8>>,
     manifest_spec: &Arc<WorkloadManifest>,
 ) -> Result<()> {
+    metrics::gauge!("workplane.reconciliation.scale_up", 0.0);
+    metrics::gauge!("workplane.reconciliation.scale_down", 0.0);
     if !policy_allows_workload(cfg, &cfg.namespace, &cfg.workload_name) {
         debug!(
             namespace = %cfg.namespace,
             workload = %cfg.workload_name,
             "skipping reconciliation due to workload policy",
         );
+        metrics::gauge!("workplane.reconciliation.skipped_due_to_policy", 1.0);
+        metrics::increment_counter!("workplane.reconciliation.skipped_due_to_policy");
         return Ok(());
     }
+    metrics::gauge!("workplane.reconciliation.skipped_due_to_policy", 0.0);
     let desired_replicas = desired_replica_count(cfg, manifest_spec);
     let relevant_records = current_workload_records(network, cfg);
     let evaluated_records = relevant_records
@@ -201,6 +217,8 @@ async fn reconcile_replicas(
     // Determine deficit by only counting healthy replicas.
     if healthy.len() < desired_replicas {
         let deficit = desired_replicas - healthy.len();
+        metrics::gauge!("workplane.reconciliation.scale_up", deficit as f64);
+        metrics::increment_counter!("workplane.reconciliation.scale_up", deficit);
         if manifest_spec.kind.is_stateful() {
             let missing_ordinals = missing_stateful_ordinals(desired_replicas, &healthy);
             for ordinal in missing_ordinals.into_iter().take(deficit) {
@@ -232,6 +250,12 @@ async fn reconcile_replicas(
         }
     }
 
+    let removal_total = removal_candidates.len();
+    metrics::gauge!("workplane.reconciliation.scale_down", removal_total as f64);
+    if removal_total > 0 {
+        metrics::increment_counter!("workplane.reconciliation.scale_down", removal_total);
+    }
+
     for record in removal_candidates {
         if let Err(err) = remove_replica(cfg, client, &record).await {
             warn!(
@@ -247,6 +271,15 @@ async fn reconcile_replicas(
     Ok(())
 }
 
+/// Publish a clone request to the machineplane scheduler.
+///
+/// The machineplane exposes `POST /v1/publish_task` for workload scheduling. Each request must
+/// include a unique `task_id`, the workload `kind` (StatelessWorkload or StatefulWorkload via
+/// [`WorkloadManifest::kind`]), and set `clone_request=true` so the scheduler knows this task is an
+/// idempotent "add replica" instruction. The API is duplicate-tolerant as long as new task IDs are
+/// used for each scale-up and it responds with any `2xx` on acceptance. Non-successful status codes
+/// are treated as errors so the caller can retry until the request succeeds or the backoff policy is
+/// exhausted.
 async fn publish_clone_task(
     cfg: &Config,
     client: &Client,
@@ -303,6 +336,13 @@ struct ReplicaRemovalRequest {
     pod_name: Option<String>,
 }
 
+/// Request a replica removal from the machineplane and eagerly purge the WDHT entry on success.
+///
+/// The machineplane exposes `POST /v1/remove_replica` which accepts a [`ReplicaRemovalRequest`]
+/// describing the namespace, workload, peer, and optional pod that should be terminated. A `2xx`
+/// response means the machineplane accepted the removal and we immediately delete the WDHT record so
+/// the service discovery surface reflects the pending removal. Any non-success response is treated
+/// as a hard error so callers can retry until the removal is acknowledged.
 async fn remove_replica(cfg: &Config, client: &Client, record: &ServiceRecord) -> Result<()> {
     let base = cfg.beemesh_api.trim_end_matches('/');
     let url = format!("{base}/v1/remove_replica");
