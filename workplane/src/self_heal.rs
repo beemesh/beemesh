@@ -142,6 +142,14 @@ async fn reconcile_replicas(
     manifest: &Arc<Vec<u8>>,
     manifest_spec: &Arc<WorkloadManifest>,
 ) -> Result<()> {
+    if !policy_allows_workload(cfg, &cfg.namespace, &cfg.workload_name) {
+        debug!(
+            namespace = %cfg.namespace,
+            workload = %cfg.workload_name,
+            "skipping reconciliation due to workload policy",
+        );
+        return Ok(());
+    }
     let desired_replicas = desired_replica_count(cfg, manifest_spec);
     let relevant_records = current_workload_records(network, cfg);
     let evaluated_records = relevant_records
@@ -397,7 +405,28 @@ fn current_workload_records(network: &Network, cfg: &Config) -> Vec<ServiceRecor
         .find_service_peers()
         .into_iter()
         .filter(|record| record.workload_id == workload_id)
+        .filter(|record| policy_allows_workload(cfg, &record.namespace, &record.workload_name))
         .collect()
+}
+
+fn policy_allows_workload(cfg: &Config, namespace: &str, workload_name: &str) -> bool {
+    let workload_id = format!("{namespace}/{workload_name}");
+    if cfg
+        .denied_workloads
+        .iter()
+        .any(|denied| denied == &workload_id)
+    {
+        return false;
+    }
+    if !cfg.allow_cross_namespace && namespace != cfg.namespace {
+        return false;
+    }
+    if cfg.allowed_workloads.is_empty() {
+        return true;
+    }
+    cfg.allowed_workloads
+        .iter()
+        .any(|allowed| allowed == &workload_id)
 }
 
 fn rank_records(a: &ServiceRecord, b: &ServiceRecord) -> std::cmp::Ordering {
