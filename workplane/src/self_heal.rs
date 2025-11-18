@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Map, json};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 use tokio::{select, sync::watch};
@@ -17,6 +17,7 @@ use crate::discovery;
 use crate::discovery::ServiceRecord;
 use crate::manifest::WorkloadManifest;
 use crate::network::Network;
+use crate::streams::{RPCRequest, send_request};
 use crate::task::Task;
 
 pub struct SelfHealer {
@@ -143,8 +144,18 @@ async fn reconcile_replicas(
 ) -> Result<()> {
     let desired_replicas = desired_replica_count(cfg, manifest_spec);
     let relevant_records = current_workload_records(network, cfg);
+    let evaluated_records = relevant_records
+        .into_iter()
+        .map(|mut record| {
+            if record.ready && record.healthy && !wdht_healthtest(&record) {
+                record.ready = false;
+                record.healthy = false;
+            }
+            record
+        })
+        .collect::<Vec<_>>();
 
-    let (mut healthy, mut unhealthy): (Vec<ServiceRecord>, Vec<ServiceRecord>) = relevant_records
+    let (mut healthy, mut unhealthy): (Vec<ServiceRecord>, Vec<ServiceRecord>) = evaluated_records
         .into_iter()
         .partition(|record| record.ready && record.healthy);
 
@@ -404,6 +415,17 @@ fn rank_records(a: &ServiceRecord, b: &ServiceRecord) -> std::cmp::Ordering {
     match key(b).cmp(&key(a)) {
         Ordering::Equal => b.peer_id.cmp(&a.peer_id),
         other => other,
+    }
+}
+
+fn wdht_healthtest(record: &ServiceRecord) -> bool {
+    let request = RPCRequest {
+        method: "healthz".to_string(),
+        body: Map::new(),
+    };
+    match send_request(record, request) {
+        Ok(response) => response.ok,
+        Err(_) => false,
     }
 }
 
