@@ -462,6 +462,7 @@ fn wdht_healthtest(record: &ServiceRecord) -> bool {
     let request = RPCRequest {
         method: "healthz".to_string(),
         body: Map::new(),
+        leader_only: false,
     };
     match send_request(record, request) {
         Ok(response) => response.ok,

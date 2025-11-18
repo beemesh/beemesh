@@ -18,6 +18,12 @@ pub enum RaftRole {
     Detached,
 }
 
+impl Default for RaftRole {
+    fn default() -> Self {
+        RaftRole::Detached
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LeadershipUpdate {
     pub leader_id: Option<String>,
@@ -84,7 +90,7 @@ impl RaftManager {
     }
 
     pub fn update_from_records(&mut self, records: &[ServiceRecord]) -> LeadershipUpdate {
-        let mut ranked = rank_records(records.to_vec());
+        let ranked = rank_records(records.to_vec());
         let new_members: Vec<String> = ranked.iter().map(|r| r.peer_id.clone()).collect();
         self.members = new_members;
         let previous_leader = self.leader_id.clone();
