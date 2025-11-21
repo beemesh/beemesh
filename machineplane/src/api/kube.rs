@@ -236,8 +236,8 @@ async fn send_apply_to_peer(
     manifest_id: &str,
 ) -> Result<(), StatusCode> {
     let operation_id = Uuid::new_v4().to_string();
-    let manifest_json_b64 = base64::engine::general_purpose::STANDARD
-        .encode(manifest_json.as_bytes());
+    let manifest_json_b64 =
+        base64::engine::general_purpose::STANDARD.encode(manifest_json.as_bytes());
     let apply_request_bytes = crate::messages::machine::build_apply_request(
         1,
         &operation_id,
@@ -254,13 +254,11 @@ async fn send_apply_to_peer(
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
     state
         .control_tx
-        .send(
-            crate::network::control::Libp2pControl::SendApplyRequest {
-                peer_id: target_peer_id,
-                manifest: apply_request_bytes,
-                reply_tx,
-            },
-        )
+        .send(crate::network::control::Libp2pControl::SendApplyRequest {
+            peer_id: target_peer_id,
+            manifest: apply_request_bytes,
+            reply_tx,
+        })
         .map_err(|e| {
             error!("Failed to dispatch apply to {}: {}", peer_id, e);
             StatusCode::BAD_GATEWAY
@@ -329,7 +327,10 @@ async fn delete_manifest_from_peers(_state: &RestState, manifest_id: &str, peers
         crate::messages::machine::build_delete_request(manifest_id, &operation_id, "", true);
 
     for peer in peers {
-        warn!("Delete request sending not implemented for peer {} (skipping)", peer);
+        warn!(
+            "Delete request sending not implemented for peer {} (skipping)",
+            peer
+        );
     }
 }
 
@@ -585,7 +586,7 @@ async fn delete_deployment(
             delete_manifest_from_peers(&state, &key, &assigned).await;
         }
 
-        let _ = crate::run::remove_workloads_by_manifest_id(&key).await;
+        let _ = crate::scheduler::remove_workloads_by_manifest_id(&key).await;
         return Ok(Json(json!({
             "kind": "Status",
             "apiVersion": "v1",

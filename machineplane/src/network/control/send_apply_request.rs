@@ -23,7 +23,7 @@ pub async fn handle_send_apply_request(
         debug!("libp2p: handling self-apply locally for peer {}", peer_id);
 
         // Use the new workload manager integration for self-apply as well
-        crate::run::process_enhanced_self_apply_request(&manifest, swarm).await;
+        crate::scheduler::process_enhanced_self_apply_request(&manifest, swarm).await;
 
         let _ = reply_tx.send(Ok(format!("Apply request handled locally for {}", peer_id)));
         return;
@@ -33,23 +33,24 @@ pub async fn handle_send_apply_request(
     // Before sending the apply, create a capability token tied to this manifest and
     // send it to the target peer so they can store it in their keystore.
     // Compute a manifest_id deterministically when possible (follow same heuristic as apply_message)
-    let _manifest_id = if let Ok(apply_req) = crate::messages::machine::root_as_apply_request(&manifest) {
-        if !apply_req.operation_id.is_empty() && !apply_req.manifest_json.is_empty() {
-            let mut hasher = DefaultHasher::new();
-            apply_req.operation_id.hash(&mut hasher);
-            apply_req.manifest_json.hash(&mut hasher);
-            format!("{:x}", hasher.finish())
+    let _manifest_id =
+        if let Ok(apply_req) = crate::messages::machine::root_as_apply_request(&manifest) {
+            if !apply_req.operation_id.is_empty() && !apply_req.manifest_json.is_empty() {
+                let mut hasher = DefaultHasher::new();
+                apply_req.operation_id.hash(&mut hasher);
+                apply_req.manifest_json.hash(&mut hasher);
+                format!("{:x}", hasher.finish())
+            } else {
+                // Fallback to hashing raw bytes
+                let mut hasher = DefaultHasher::new();
+                manifest.hash(&mut hasher);
+                format!("{:x}", hasher.finish())
+            }
         } else {
-            // Fallback to hashing raw bytes
             let mut hasher = DefaultHasher::new();
             manifest.hash(&mut hasher);
             format!("{:x}", hasher.finish())
-        }
-    } else {
-        let mut hasher = DefaultHasher::new();
-        manifest.hash(&mut hasher);
-        format!("{:x}", hasher.finish())
-    };
+        };
 
     // No capability token needed - direct manifest application
 

@@ -7,11 +7,12 @@ use crate::messages::constants::{
     DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
 use crate::messages::machine;
-use crate::messages::types::{Bid, LeaseHint, SchedulerEvent, Task};
 use crate::network::behaviour::MyBehaviour;
-use libp2p::{Swarm, gossipsub};
+use libp2p::gossipsub;
+use libp2p::kad::RecordKey;
+use libp2p::{PeerId, Swarm};
 use log::{debug, error, info, warn};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -24,21 +25,43 @@ pub struct Scheduler {
     /// Active bids we are tracking: TaskID -> BidContext
     active_bids: Arc<Mutex<HashMap<String, BidContext>>>,
     /// Channel to send messages back to the network loop
-    outbound_tx: mpsc::UnboundedSender<(String, Vec<u8>)>,
+    outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
 }
 
 struct BidContext {
     task_id: String,
-    my_bid_score: f64,
-    highest_bid_score: f64,
-    highest_bidder_id: String,
-    selection_window_end: u64,
+    manifest_id: String,
+    placement_metadata: HashMap<String, String>,
+    replicas: u32,
+    bids: Vec<BidEntry>,
+}
+
+#[derive(Clone)]
+struct BidEntry {
+    bidder_id: String,
+    score: f64,
+}
+
+/// Commands emitted by the scheduler for the libp2p network loop to process
+#[derive(Debug, Clone)]
+pub enum SchedulerCommand {
+    Publish {
+        topic: String,
+        payload: Vec<u8>,
+    },
+    AnnouncePlacement {
+        manifest_id: String,
+        metadata: HashMap<String, String>,
+    },
+    WithdrawPlacement {
+        manifest_id: String,
+    },
 }
 
 impl Scheduler {
     pub fn new(
         local_node_id: String,
-        outbound_tx: mpsc::UnboundedSender<(String, Vec<u8>)>,
+        outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
     ) -> Self {
         Self {
             local_node_id,
@@ -73,6 +96,16 @@ impl Scheduler {
                 let task_id = task.id.clone();
                 info!("Received Task: {}", task_id);
 
+                let manifest_id = task.id.clone();
+
+                let replicas = std::cmp::max(1, task.max_parallel_duplicates);
+
+                let mut placement_metadata = HashMap::new();
+                placement_metadata.insert("task_id".to_string(), task_id.clone());
+                placement_metadata.insert("manifest_ref".to_string(), task.manifest_ref.clone());
+                placement_metadata
+                    .insert("placement_token".to_string(), task.placement_token.clone());
+
                 // 1. Evaluate Fit (Capacity Check)
                 // TODO: Connect to CapacityVerifier
                 let capacity_score = 1.0; // Placeholder: assume perfect fit for now
@@ -87,7 +120,6 @@ impl Scheduler {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as u64;
-                let window_end = now + DEFAULT_SELECTION_WINDOW_MS;
 
                 {
                     let mut bids = self.active_bids.lock().unwrap();
@@ -95,10 +127,13 @@ impl Scheduler {
                         task_id.to_string(),
                         BidContext {
                             task_id: task_id.to_string(),
-                            my_bid_score: my_score,
-                            highest_bid_score: my_score, // Start with our score
-                            highest_bidder_id: self.local_node_id.clone(),
-                            selection_window_end: window_end,
+                            manifest_id: manifest_id.clone(),
+                            placement_metadata: placement_metadata.clone(),
+                            replicas,
+                            bids: vec![BidEntry {
+                                bidder_id: self.local_node_id.clone(),
+                                score: my_score,
+                            }],
                         },
                     );
                 }
@@ -114,21 +149,10 @@ impl Scheduler {
                     &[], // Signature placeholder
                 );
 
-                // 4. Publish Bid
-                let bid_bytes = machine::build_bid(
-                    &task_id,
-                    &self.local_node_id,
-                    my_score,
-                    capacity_score,
-                    0.5, // Network locality placeholder
-                    now,
-                    &[], // Signature placeholder
-                );
-
-                if let Err(e) = self
-                    .outbound_tx
-                    .send((SCHEDULER_PROPOSALS.to_string(), bid_bytes))
-                {
+                if let Err(e) = self.outbound_tx.send(SchedulerCommand::Publish {
+                    topic: SCHEDULER_PROPOSALS.to_string(),
+                    payload: bid_bytes,
+                }) {
                     error!("Failed to queue bid for task {}: {}", task_id, e);
                 } else {
                     info!("Queued Bid for task {} with score {:.2}", task_id, my_score);
@@ -138,24 +162,38 @@ impl Scheduler {
                 let active_bids = self.active_bids.clone();
                 let task_id_clone = task_id.to_string();
                 let local_id = self.local_node_id.clone();
+                let placement_sender = self.outbound_tx.clone();
                 // We need a way to trigger deployment, for now just log
                 tokio::spawn(async move {
                     sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
 
-                    let winner = {
+                    let (winners, manifest_id) = {
                         let mut bids = active_bids.lock().unwrap();
                         if let Some(ctx) = bids.remove(&task_id_clone) {
-                            if ctx.highest_bidder_id == local_id {
-                                true
+                            let winners = select_winners(&ctx, &local_id);
+                            if !winners.is_empty() {
+                                let summary = winners
+                                    .iter()
+                                    .map(|w| format!("{} ({:.2})", w.bidder_id, w.score))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                info!(
+                                    "Selected winners for task {} (manifest {}): {}",
+                                    ctx.task_id, ctx.manifest_id, summary
+                                );
                             } else {
-                                false
+                                info!(
+                                    "No qualifying bids for task {} (manifest {})",
+                                    ctx.task_id, ctx.manifest_id
+                                );
                             }
+                            (winners, Some(ctx.manifest_id))
                         } else {
-                            false
+                            (Vec::new(), None)
                         }
                     };
 
-                    if winner {
+                    if winners.iter().any(|bid| bid.bidder_id == local_id) {
                         info!("WON BID for task {}! Proceeding to Lease...", task_id_clone);
 
                         // TODO: Write LeaseHint to MDHT (dht_manager.put_record)
@@ -168,7 +206,22 @@ impl Scheduler {
                         // Trigger Deployment (simulated)
                         info!("Deploying workload for task {}", task_id_clone);
 
-                        // TODO: Call run::deploy_task(...)
+                        if let Some(ctx) = winners.iter().find(|bid| bid.bidder_id == local_id) {
+                            if let Err(e) =
+                                placement_sender.send(SchedulerCommand::AnnouncePlacement {
+                                    manifest_id: manifest_id
+                                        .unwrap_or_else(|| task_id_clone.clone()),
+                                    metadata: ctx.placement_metadata.clone(),
+                                })
+                            {
+                                error!(
+                                    "Failed to queue placement announcement for task {}: {}",
+                                    task_id_clone, e
+                                );
+                            }
+                        }
+
+                        // TODO: Trigger workload deployment via runtime integration
                     } else {
                         info!("Lost bid for task {}.", task_id_clone);
                     }
@@ -193,14 +246,14 @@ impl Scheduler {
 
                 let mut bids = self.active_bids.lock().unwrap();
                 if let Some(ctx) = bids.get_mut(&task_id) {
-                    if score > ctx.highest_bid_score {
-                        info!(
-                            "Saw higher bid for task {}: {:.2} from {}",
-                            task_id, score, bidder_id
-                        );
-                        ctx.highest_bid_score = score;
-                        ctx.highest_bidder_id = bidder_id.to_string();
-                    }
+                    info!(
+                        "Recorded bid for task {}: {:.2} from {}",
+                        task_id, score, bidder_id
+                    );
+                    ctx.bids.push(BidEntry {
+                        bidder_id: bidder_id.to_string(),
+                        score,
+                    });
                 }
             }
             Err(e) => error!("Failed to parse Bid message: {}", e),
@@ -216,9 +269,1240 @@ impl Scheduler {
                     "Received Scheduler Event for task {}: {:?}",
                     task_id, event.event_type
                 );
-                // Handle cancellation etc.
+
+                if event.node_id == self.local_node_id {
+                    use crate::messages::types::EventType;
+
+                    if matches!(
+                        event.event_type,
+                        EventType::Cancelled | EventType::Preempted | EventType::Failed
+                    ) {
+                        if let Err(e) = self.outbound_tx.send(SchedulerCommand::WithdrawPlacement {
+                            manifest_id: task_id.clone(),
+                        }) {
+                            warn!(
+                                "Failed to queue placement withdrawal for task {}: {}",
+                                task_id, e
+                            );
+                        }
+                    }
+                }
             }
             Err(e) => error!("Failed to parse SchedulerEvent message: {}", e),
         }
+    }
+}
+
+#[derive(Clone)]
+struct BidOutcome {
+    bidder_id: String,
+    score: f64,
+    placement_metadata: HashMap<String, String>,
+}
+
+fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> {
+    let mut best_by_node: HashMap<String, BidEntry> = HashMap::new();
+
+    for bid in &context.bids {
+        let entry = best_by_node
+            .entry(bid.bidder_id.clone())
+            .or_insert_with(|| bid.clone());
+
+        if bid.score > entry.score {
+            *entry = bid.clone();
+        }
+    }
+
+    let mut bids: Vec<BidEntry> = best_by_node.into_values().collect();
+    bids.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut selected_nodes = HashSet::new();
+    let mut outcomes = Vec::new();
+
+    for bid in bids.into_iter() {
+        if outcomes.len() as u32 >= context.replicas {
+            break;
+        }
+
+        // Enforce that the local node can never be selected for more than one replica
+        if bid.bidder_id == local_node_id && selected_nodes.contains(local_node_id) {
+            continue;
+        }
+
+        if selected_nodes.insert(bid.bidder_id.clone()) {
+            outcomes.push(BidOutcome {
+                bidder_id: bid.bidder_id,
+                score: bid.score,
+                placement_metadata: context.placement_metadata.clone(),
+            });
+        }
+    }
+
+    outcomes
+}
+
+// ---------------------------------------------------------------------------
+// Placement logic (moved from placement.rs)
+// ---------------------------------------------------------------------------
+
+/// Errors that can occur during placement operations
+#[derive(Debug, thiserror::Error)]
+pub enum PlacementError {
+    #[error("DHT error: {0}")]
+    DhtError(String),
+
+    #[error("Network error: {0}")]
+    NetworkError(String),
+
+    #[error("Placement not found: {0}")]
+    PlacementNotFound(String),
+}
+
+/// Result type for placement operations
+pub type PlacementResult<T> = Result<T, PlacementError>;
+
+/// Information about a manifest placement
+#[derive(Debug, Clone)]
+pub struct PlacementInfo {
+    /// The peer ID of the provider
+    pub peer_id: PeerId,
+    /// The manifest ID being provided
+    pub manifest_id: String,
+    /// When this placement was first announced
+    pub announced_at: SystemTime,
+    /// When this placement was last seen
+    pub last_seen: SystemTime,
+    /// TTL for this placement announcement (in seconds)
+    pub ttl_seconds: u64,
+    /// Additional metadata about the placement
+    pub metadata: HashMap<String, String>,
+}
+
+impl PlacementInfo {
+    /// Check if this placement announcement has expired
+    pub fn is_expired(&self) -> bool {
+        if let Ok(elapsed) = self.announced_at.elapsed() {
+            elapsed.as_secs() > self.ttl_seconds
+        } else {
+            true
+        }
+    }
+
+    /// Update the last seen timestamp
+    pub fn update_last_seen(&mut self) {
+        self.last_seen = SystemTime::now();
+    }
+}
+
+/// Manager for placement announcements
+#[derive(Clone)]
+pub struct PlacementManager {
+    /// Local placements (manifests this node is hosting)
+    local_placements: Arc<Mutex<HashMap<String, PlacementInfo>>>,
+    /// Configuration
+    config: PlacementConfig,
+}
+
+/// Configuration for the placement manager
+#[derive(Debug, Clone)]
+pub struct PlacementConfig {
+    /// Default TTL for placement announcements (in seconds)
+    pub default_ttl_seconds: u64,
+    /// How often to re-announce local placements (in seconds)
+    pub reannounce_interval_seconds: u64,
+}
+
+impl Default for PlacementConfig {
+    fn default() -> Self {
+        Self {
+            default_ttl_seconds: 3600,         // 1 hour
+            reannounce_interval_seconds: 1800, // 30 minutes
+        }
+    }
+}
+
+impl PlacementManager {
+    /// Create a new placement manager
+    pub fn new(config: PlacementConfig) -> Self {
+        Self {
+            local_placements: Arc::new(Mutex::new(HashMap::new())),
+            config,
+        }
+    }
+
+    /// Create a placement manager with default configuration
+    pub fn new_default() -> Self {
+        Self::new(PlacementConfig::default())
+    }
+
+    /// Announce that this node is providing a manifest
+    pub fn announce_placement(
+        &self,
+        swarm: &mut Swarm<MyBehaviour>,
+        manifest_id: &str,
+        metadata: HashMap<String, String>,
+    ) -> PlacementResult<()> {
+        let local_peer_id = *swarm.local_peer_id();
+
+        info!(
+            "Announcing placement for manifest: {} from peer: {}",
+            manifest_id, local_peer_id
+        );
+
+        // Create placement info
+        let placement_info = PlacementInfo {
+            peer_id: local_peer_id,
+            manifest_id: manifest_id.to_string(),
+            announced_at: SystemTime::now(),
+            last_seen: SystemTime::now(),
+            ttl_seconds: self.config.default_ttl_seconds,
+            metadata,
+        };
+
+        // Store locally
+        {
+            let mut local_placements = self.local_placements.lock().unwrap();
+            local_placements.insert(manifest_id.to_string(), placement_info);
+        }
+
+        // Announce via DHT
+        self.announce_via_dht(swarm, manifest_id)?;
+
+        debug!(
+            "Successfully announced placement for manifest: {}",
+            manifest_id
+        );
+        Ok(())
+    }
+
+    /// Stop providing a manifest
+    pub fn stop_providing(&self, manifest_id: &str) -> PlacementResult<()> {
+        info!(
+            "Stopping placement announcement for manifest: {}",
+            manifest_id
+        );
+
+        let mut local_placements = self.local_placements.lock().unwrap();
+        if local_placements.remove(manifest_id).is_some() {
+            debug!("Removed local placement for manifest: {}", manifest_id);
+            Ok(())
+        } else {
+            warn!(
+                "Attempted to stop providing manifest {} but it wasn't being provided",
+                manifest_id
+            );
+            Err(PlacementError::PlacementNotFound(manifest_id.to_string()))
+        }
+    }
+
+    /// Get all manifests this node is providing
+    pub fn get_local_placements(&self) -> Vec<PlacementInfo> {
+        let local_placements = self.local_placements.lock().unwrap();
+        local_placements.values().cloned().collect()
+    }
+
+    /// Re-announce all local placements
+    pub fn reannounce_local_placements(&self, swarm: &mut Swarm<MyBehaviour>) {
+        debug!("Re-announcing local placements");
+
+        let manifest_ids: Vec<String> = {
+            let local_placements = self.local_placements.lock().unwrap();
+            local_placements.keys().cloned().collect()
+        };
+
+        let manifest_count = manifest_ids.len();
+
+        for manifest_id in manifest_ids {
+            if let Err(e) = self.announce_via_dht(swarm, &manifest_id) {
+                warn!(
+                    "Failed to re-announce placement for manifest {}: {}",
+                    manifest_id, e
+                );
+            }
+        }
+
+        debug!("Re-announced {} local placements", manifest_count);
+    }
+
+    /// Start background tasks for placement management
+    pub fn start_background_tasks(&self, _swarm: &mut Swarm<MyBehaviour>) {
+        info!("Started placement manager background tasks");
+    }
+
+    /// Internal method to announce via DHT
+    fn announce_via_dht(
+        &self,
+        swarm: &mut Swarm<MyBehaviour>,
+        manifest_id: &str,
+    ) -> PlacementResult<()> {
+        // Create a provider record key
+        let provider_key = format!("provider:{}", manifest_id);
+        let record_key = RecordKey::new(&provider_key);
+
+        // Start provider announcement
+        match swarm.behaviour_mut().kademlia.start_providing(record_key) {
+            Ok(query_id) => {
+                debug!(
+                    "Started DHT placement announcement for manifest {} (query_id: {:?})",
+                    manifest_id, query_id
+                );
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    "Failed to start DHT placement announcement for manifest {}: {}",
+                    manifest_id, e
+                );
+                Err(PlacementError::DhtError(format!(
+                    "Failed to start providing: {}",
+                    e
+                )))
+            }
+        }
+    }
+
+    /// Get statistics about the placement manager
+    pub fn get_stats(&self) -> PlacementStats {
+        let local_count = self.local_placements.lock().unwrap().len();
+        PlacementStats {
+            local_placements: local_count,
+        }
+    }
+}
+
+/// Statistics about the placement manager
+#[derive(Debug, Clone)]
+pub struct PlacementStats {
+    /// Number of manifests this node is providing
+    pub local_placements: usize,
+}
+
+pub use runtime_integration::*;
+
+// ---------------------------------------------------------------------------
+// Runtime integration and apply handling (merged from run.rs)
+// ---------------------------------------------------------------------------
+
+mod runtime_integration {
+    //! Workload Integration Module
+    //!
+    //! This module provides integration between the existing libp2p apply message handling
+    //! and the new workload manager system. It updates the apply message handler to use
+    //! the runtime engines and provider announcement system.
+
+    use crate::capacity::CapacityVerifier;
+    use crate::messages::machine;
+    use crate::messages::types::ApplyRequest;
+    use crate::network::behaviour::MyBehaviour;
+    use crate::runtimes::{DeploymentConfig, RuntimeRegistry, create_default_registry};
+    use crate::scheduler::{PlacementConfig, PlacementManager};
+    use libp2p::Swarm;
+    use libp2p::request_response;
+    use log::{debug, error, info, warn};
+    use once_cell::sync::Lazy;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    /// Global runtime registry for all available engines
+    static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
+        Lazy::new(|| Arc::new(RwLock::new(None)));
+
+    /// Global placement manager for announcements
+    static PLACEMENT_MANAGER: Lazy<Arc<RwLock<Option<PlacementManager>>>> =
+        Lazy::new(|| Arc::new(RwLock::new(None)));
+
+    /// Global capacity verifier for resource checks
+    static CAPACITY_VERIFIER: Lazy<Arc<CapacityVerifier>> =
+        Lazy::new(|| Arc::new(CapacityVerifier::new()));
+
+    /// Node-local cache mapping manifest IDs to owner public keys.
+    static MANIFEST_OWNER_MAP: Lazy<RwLock<HashMap<String, Vec<u8>>>> =
+        Lazy::new(|| RwLock::new(HashMap::new()));
+
+    /// Initialize the runtime registry and provider manager
+    pub async fn initialize_podman_manager(
+        force_mock_runtime: bool,
+        mock_only_runtime: bool,
+        scheduling_enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !scheduling_enabled {
+            info!(
+                "Scheduling disabled; skipping runtime registry and provider manager initialization"
+            );
+            return Ok(());
+        }
+
+        info!("Initializing runtime registry and placement manager for manifest deployment");
+
+        // Create runtime registry - use mock-only for tests if environment variable is set
+        let use_mock_registry = force_mock_runtime || mock_only_runtime;
+
+        #[cfg(debug_assertions)]
+        let registry = if use_mock_registry {
+            info!("Using mock-only runtime registry for testing");
+            crate::runtimes::create_mock_only_registry().await
+        } else {
+            create_default_registry().await
+        };
+
+        #[cfg(not(debug_assertions))]
+        let registry = {
+            if use_mock_registry {
+                warn!(
+                    "mock runtime requested but not compiled in release build; falling back to default registry"
+                );
+            }
+            create_default_registry().await
+        };
+        let available_engines = registry.check_available_engines().await;
+
+        info!("Available runtime engines: {:?}", available_engines);
+
+        // Store the registry globally
+        {
+            let mut global_registry = RUNTIME_REGISTRY.write().await;
+            *global_registry = Some(registry);
+        }
+
+        // Create placement manager
+        let placement_config = PlacementConfig {
+            default_ttl_seconds: 3600, // 1 hour
+            ..Default::default()
+        };
+        let placement_manager = PlacementManager::new(placement_config);
+
+        {
+            let mut global_placement_manager = PLACEMENT_MANAGER.write().await;
+            *global_placement_manager = Some(placement_manager);
+        }
+
+        // Initialize capacity verifier with system resources
+        info!("Initializing capacity verifier");
+        let verifier = get_global_capacity_verifier();
+        if let Err(e) = verifier.update_system_resources().await {
+            warn!("Failed to update system resources: {}", e);
+        }
+
+        info!("Runtime registry and placement manager initialized successfully");
+        Ok(())
+    }
+
+    /// Record the owner public key for a manifest on this node.
+    pub async fn record_manifest_owner(manifest_id: &str, owner_pubkey: &[u8]) {
+        let mut map = MANIFEST_OWNER_MAP.write().await;
+        map.insert(manifest_id.to_string(), owner_pubkey.to_vec());
+        info!(
+            "record_manifest_owner: stored owner_pubkey len={} for manifest_id={}",
+            owner_pubkey.len(),
+            manifest_id
+        );
+    }
+
+    /// Retrieve the owner public key for a manifest if known.
+    pub async fn get_manifest_owner(manifest_id: &str) -> Option<Vec<u8>> {
+        let map = MANIFEST_OWNER_MAP.read().await;
+        map.get(manifest_id).cloned()
+    }
+
+    /// Remove the owner mapping for a manifest.
+    pub async fn remove_manifest_owner(manifest_id: &str) -> Option<Vec<u8>> {
+        let mut map = MANIFEST_OWNER_MAP.write().await;
+        map.remove(manifest_id)
+    }
+
+    /// Get access to the global runtime registry (for testing and debug endpoints)
+    pub async fn get_global_runtime_registry()
+    -> Option<tokio::sync::RwLockReadGuard<'static, Option<RuntimeRegistry>>> {
+        let registry_guard = RUNTIME_REGISTRY.read().await;
+        if registry_guard.is_some() {
+            Some(registry_guard)
+        } else {
+            None
+        }
+    }
+
+    /// Get access to the global placement manager (for scheduling and deployment events)
+    pub async fn get_global_placement_manager() -> Option<PlacementManager> {
+        let placement_guard = PLACEMENT_MANAGER.read().await;
+        placement_guard.clone()
+    }
+
+    /// Get access to the global capacity verifier
+    pub fn get_global_capacity_verifier() -> Arc<CapacityVerifier> {
+        Arc::clone(&CAPACITY_VERIFIER)
+    }
+
+    /// Enhanced apply message handler that uses the workload manager
+    pub async fn handle_apply_message_with_podman_manager(
+        message: request_response::Message<Vec<u8>, Vec<u8>>,
+        peer: libp2p::PeerId,
+        swarm: &mut Swarm<MyBehaviour>,
+        _local_peer: libp2p::PeerId,
+    ) {
+        match message {
+            request_response::Message::Request {
+                request, channel, ..
+            } => {
+                info!("Received apply request from peer={}", peer);
+
+                // Parse the apply request
+                match machine::root_as_apply_request(&request) {
+                    Ok(apply_req) => {
+                        info!(
+                            "Apply request - operation_id={:?} replicas={}",
+                            apply_req.operation_id, apply_req.replicas
+                        );
+
+                        let owner_pubkey = Vec::new();
+
+                        // Extract and validate manifest
+                        if !apply_req.manifest_json.is_empty() {
+                            let manifest_id = apply_req.manifest_id.as_str();
+                            if manifest_id.is_empty() {
+                                warn!(
+                                    "Apply request missing manifest_id; rejecting from peer={}",
+                                    peer
+                                );
+                                let error_response = machine::build_apply_response(
+                                    false,
+                                    "unknown",
+                                    "missing manifest id",
+                                );
+                                let _ = swarm
+                                    .behaviour_mut()
+                                    .apply_rr
+                                    .send_response(channel, error_response);
+                                return;
+                            }
+
+                            let reservation_ok = get_global_capacity_verifier()
+                                .has_active_reservation_for_manifest(manifest_id)
+                                .await;
+                            if !reservation_ok {
+                                warn!(
+                                    "Apply request for manifest_id={} from peer={} without prior reservation",
+                                    manifest_id, peer
+                                );
+                                let error_response = machine::build_apply_response(
+                                    false,
+                                    manifest_id,
+                                    "no active capacity reservation",
+                                );
+                                let _ = swarm
+                                    .behaviour_mut()
+                                    .apply_rr
+                                    .send_response(channel, error_response);
+                                return;
+                            }
+
+                            match process_manifest_deployment(
+                                swarm,
+                                &apply_req,
+                                &apply_req.manifest_json,
+                                &owner_pubkey,
+                            )
+                            .await
+                            {
+                                Ok(workload_id) => {
+                                    info!(
+                                        "Successfully deployed workload {} for apply request",
+                                        workload_id
+                                    );
+
+                                    // Send success response
+                                    let success_response = machine::build_apply_response(
+                                        true,
+                                        &workload_id,
+                                        "workload deployed successfully",
+                                    );
+                                    let _ = swarm
+                                        .behaviour_mut()
+                                        .apply_rr
+                                        .send_response(channel, success_response);
+                                }
+                                Err(e) => {
+                                    error!("Failed to deploy workload for apply request: {}", e);
+
+                                    // Send error response
+                                    let error_message = format!("deployment failed: {}", e);
+                                    let error_response = machine::build_apply_response(
+                                        false,
+                                        "unknown",
+                                        &error_message,
+                                    );
+                                    let _ = swarm
+                                        .behaviour_mut()
+                                        .apply_rr
+                                        .send_response(channel, error_response);
+                                }
+                            }
+                        } else {
+                            warn!("Apply request missing manifest JSON");
+                            let error_response = machine::build_apply_response(
+                                false,
+                                "unknown",
+                                "missing manifest JSON",
+                            );
+                            let _ = swarm
+                                .behaviour_mut()
+                                .apply_rr
+                                .send_response(channel, error_response);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to parse apply request: {}", e);
+                        let error_response = machine::build_apply_response(
+                            false,
+                            "unknown",
+                            "invalid apply request format",
+                        );
+                        let _ = swarm
+                            .behaviour_mut()
+                            .apply_rr
+                            .send_response(channel, error_response);
+                    }
+                }
+            }
+            request_response::Message::Response { .. } => {
+                debug!("Received apply response from peer={}", peer);
+                // Handle response if needed
+            }
+        }
+    }
+
+    /// Process manifest deployment using the workload manager
+    async fn process_manifest_deployment(
+        swarm: &mut Swarm<MyBehaviour>,
+        apply_req: &ApplyRequest,
+        manifest_json: &str,
+        owner_pubkey: &[u8],
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        info!("Processing manifest deployment");
+
+        // Parse the manifest content (always cleartext)
+        let manifest_content = manifest_json.as_bytes().to_vec();
+
+        // Use the manifest_id from the apply request for placement announcements
+        // This ensures consistency between apply and delete operations
+        let manifest_id = if apply_req.manifest_id.is_empty() {
+            "unknown".to_string()
+        } else {
+            apply_req.manifest_id.clone()
+        };
+
+        info!(
+            "Processing manifest deployment for manifest_id: {}",
+            manifest_id
+        );
+
+        if owner_pubkey.is_empty() {
+            warn!(
+                "process_manifest_deployment: missing owner pubkey for manifest_id={}",
+                manifest_id
+            );
+        } else {
+            record_manifest_owner(&manifest_id, owner_pubkey).await;
+        }
+
+        // Modify manifest to set replicas=1 for this node deployment
+        // The original manifest is stored in DHT, but each node deploys with replicas=1
+        let modified_manifest_content = modify_manifest_replicas(&manifest_content)?;
+
+        // Create deployment configuration
+        let deployment_config = create_deployment_config(apply_req);
+
+        // Select appropriate runtime engine based on manifest type
+        let engine_name = select_runtime_engine(&modified_manifest_content).await?;
+        info!(
+            "Selected runtime engine '{}' for manifest_id: {}",
+            engine_name, manifest_id
+        );
+
+        // Get runtime registry
+        let registry_guard = RUNTIME_REGISTRY.read().await;
+        let registry = registry_guard
+            .as_ref()
+            .ok_or("Runtime registry not initialized")?;
+
+        // Get the selected engine
+        let engine = registry
+            .get_engine(&engine_name)
+            .ok_or(format!("Runtime engine '{}' not available", engine_name))?;
+
+        // Deploy the workload with modified manifest (replicas=1)
+        // use peer-aware deployment for mock engine when compiled in debug builds
+        #[cfg(debug_assertions)]
+        let workload_info = {
+            if engine_name == "mock" {
+                if let Some(mock_engine) = engine
+                    .as_any()
+                    .downcast_ref::<crate::runtimes::mock::MockEngine>()
+                {
+                    debug!("Using peer-aware deployment for mock engine");
+                    mock_engine
+                        .deploy_workload_with_peer(
+                            &manifest_id,
+                            &modified_manifest_content,
+                            &deployment_config,
+                            *swarm.local_peer_id(),
+                        )
+                        .await?
+                } else {
+                    engine
+                        .deploy_workload(
+                            &manifest_id,
+                            &modified_manifest_content,
+                            &deployment_config,
+                        )
+                        .await?
+                }
+            } else {
+                engine
+                    .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
+                    .await?
+            }
+        };
+
+        #[cfg(not(debug_assertions))]
+        let workload_info = {
+            if engine_name == "mock" {
+                warn!(
+                    "mock runtime selected but not included in release build; proceeding with default deployment path"
+                );
+            }
+            engine
+                .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
+                .await?
+        };
+
+        info!(
+            "Workload deployed successfully: {} using engine '{}', status: {:?}",
+            workload_info.id, engine_name, workload_info.status
+        );
+
+        // Announce placement if deployment successful
+        if let Some(placement_manager) = PLACEMENT_MANAGER.read().await.as_ref() {
+            let mut metadata = HashMap::new();
+            metadata.insert("runtime_engine".to_string(), engine_name.clone());
+            metadata.insert("workload_id".to_string(), workload_info.id.clone());
+            metadata.insert("node_type".to_string(), "beemesh-machine".to_string());
+
+            if let Err(e) = placement_manager.announce_placement(swarm, &manifest_id, metadata) {
+                warn!(
+                    "Failed to announce placement for manifest {}: {}",
+                    manifest_id, e
+                );
+            } else {
+                info!(
+                    "Announced placement for manifest_id: {} using engine '{}'",
+                    manifest_id, engine_name
+                );
+            }
+        }
+
+        Ok(workload_info.id)
+    }
+
+    /// Modify the manifest to set replicas=1 for single-node deployment
+    /// Each node in the fabric will deploy one replica of the workload
+    fn modify_manifest_replicas(
+        manifest_content: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let manifest_str = String::from_utf8_lossy(manifest_content);
+
+        // Try to parse as YAML/JSON and modify replicas field
+        if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&manifest_str) {
+            // Check for spec.replicas field (Kubernetes-style)
+            if let Some(spec) = doc.get_mut("spec") {
+                if let Some(spec_map) = spec.as_mapping_mut() {
+                    spec_map.insert(
+                        serde_yaml::Value::String("replicas".to_string()),
+                        serde_yaml::Value::Number(serde_yaml::Number::from(1)),
+                    );
+                }
+            }
+            // Check for top-level replicas field
+            else if doc.get("replicas").is_some() {
+                if let Some(doc_map) = doc.as_mapping_mut() {
+                    doc_map.insert(
+                        serde_yaml::Value::String("replicas".to_string()),
+                        serde_yaml::Value::Number(serde_yaml::Number::from(1)),
+                    );
+                }
+            }
+
+            // Convert back to YAML bytes
+            let modified_yaml = serde_yaml::to_string(&doc)?;
+            info!("Modified manifest to set replicas=1 for single-node deployment");
+            Ok(modified_yaml.into_bytes())
+        } else {
+            // If parsing fails, return original content unchanged
+            warn!("Failed to parse manifest for replica modification, using original");
+            Ok(manifest_content.to_vec())
+        }
+    }
+
+    /// Select the appropriate runtime engine based on manifest content and annotations
+    async fn select_runtime_engine(
+        manifest_content: &[u8],
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let manifest_str = String::from_utf8_lossy(manifest_content);
+
+        // Try to parse as YAML and look for annotations
+        if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&manifest_str) {
+            // Check for runtime engine annotation
+            if let Some(metadata) = doc.get("metadata") {
+                if let Some(annotations) = metadata.get("annotations") {
+                    if let Some(engine) = annotations
+                        .get("beemesh.io/runtime-engine")
+                        .and_then(|v| v.as_str())
+                    {
+                        info!("Found runtime engine annotation: {}", engine);
+                        return Ok(engine.to_string());
+                    }
+                }
+            }
+
+            // Check manifest type - note preferences, but don't hardcode
+            if let Some(kind) = doc.get("kind").and_then(|k| k.as_str()) {
+                match kind {
+                    "Pod" | "Deployment" | "Service" | "ConfigMap" | "Secret" => {
+                        // Kubernetes resources - will prefer Podman below if available
+                        debug!("Detected Kubernetes manifest kind: {}", kind);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check for Docker Compose format - note preference, but don't hardcode
+            if doc.get("services").is_some() && doc.get("version").is_some() {
+                debug!("Detected Docker Compose manifest");
+                // Will prefer Docker below if available
+            }
+        }
+
+        // Get available engines and select the best one
+        if let Some(registry) = RUNTIME_REGISTRY.read().await.as_ref() {
+            let available = registry.check_available_engines().await;
+
+            // Prefer Podman, then Docker, then mock for testing
+            if *available.get("podman").unwrap_or(&false) {
+                return Ok("podman".to_string());
+            } else if *available.get("docker").unwrap_or(&false) {
+                return Ok("docker".to_string());
+            } else if *available.get("mock").unwrap_or(&false) {
+                return Ok("mock".to_string());
+            }
+        }
+
+        Err("No suitable runtime engine available".into())
+    }
+
+    /// Create deployment configuration from apply request
+    fn create_deployment_config(apply_req: &ApplyRequest) -> DeploymentConfig {
+        let mut config = DeploymentConfig::default();
+
+        // Set replicas
+        config.replicas = apply_req.replicas;
+
+        // Metadata from apply request can be added here if needed
+        if !apply_req.operation_id.is_empty() {
+            config.env.insert(
+                "BEEMESH_OPERATION_ID".to_string(),
+                apply_req.operation_id.clone(),
+            );
+        }
+
+        config
+    }
+
+    /// Enhanced self-apply processing with workload manager
+    pub async fn process_enhanced_self_apply_request(
+        manifest: &[u8],
+        swarm: &mut Swarm<MyBehaviour>,
+    ) {
+        debug!(
+            "Processing enhanced self-apply request (manifest len={})",
+            manifest.len()
+        );
+
+        match machine::root_as_apply_request(manifest) {
+            Ok(apply_req) => {
+                debug!(
+                    "Enhanced self-apply request - operation_id={:?} replicas={}",
+                    apply_req.operation_id, apply_req.replicas
+                );
+
+                if !apply_req.manifest_json.is_empty() {
+                    let manifest_json = apply_req.manifest_json.clone();
+                    let owner_pubkey = Vec::new();
+
+                    match process_manifest_deployment(
+                        swarm,
+                        &apply_req,
+                        &manifest_json,
+                        &owner_pubkey,
+                    )
+                    .await
+                    {
+                        Ok(workload_id) => {
+                            info!(
+                                "Successfully deployed self-applied workload: {}",
+                                workload_id
+                            );
+                        }
+                        Err(e) => {
+                            error!("Failed to deploy self-applied workload: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("Self-apply request missing manifest JSON");
+                }
+            }
+            Err(e) => {
+                error!("Failed to parse self-apply request: {}", e);
+            }
+        }
+    }
+
+    /// Get runtime registry statistics
+    pub async fn get_runtime_registry_stats() -> HashMap<String, bool> {
+        if let Some(registry) = RUNTIME_REGISTRY.read().await.as_ref() {
+            registry.check_available_engines().await
+        } else {
+            HashMap::new()
+        }
+    }
+
+    /// List all available runtime engines
+    pub async fn list_available_engines() -> Vec<String> {
+        if let Some(registry) = RUNTIME_REGISTRY.read().await.as_ref() {
+            registry
+                .list_engines()
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Remove a workload by ID (requires engine name)
+    pub async fn remove_workload_by_id(
+        workload_id: &str,
+        engine_name: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let registry_guard = RUNTIME_REGISTRY.read().await;
+        let registry = registry_guard
+            .as_ref()
+            .ok_or("Runtime registry not initialized")?;
+
+        let engine = registry
+            .get_engine(engine_name)
+            .ok_or(format!("Runtime engine '{}' not available", engine_name))?;
+
+        engine.remove_workload(workload_id).await?;
+        info!(
+            "Successfully removed workload: {} from engine: {}",
+            workload_id, engine_name
+        );
+        Ok(())
+    }
+
+    /// Remove workloads by manifest ID - searches through all engines and removes matching workloads
+    pub async fn remove_workloads_by_manifest_id(
+        manifest_id: &str,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        info!(
+            "remove_workloads_by_manifest_id: manifest_id={}",
+            manifest_id
+        );
+
+        let registry_guard = RUNTIME_REGISTRY.read().await;
+        let registry = registry_guard
+            .as_ref()
+            .ok_or("Runtime registry not initialized")?;
+
+        let mut removed_workloads = Vec::new();
+        let mut errors = Vec::new();
+        let engine_names = registry.list_engines();
+
+        for engine_name in &engine_names {
+            if let Some(engine) = registry.get_engine(engine_name) {
+                info!(
+                    "Checking engine '{}' for workloads with manifest_id '{}'",
+                    engine_name, manifest_id
+                );
+
+                // List workloads from this engine
+                match engine.list_workloads().await {
+                    Ok(workloads) => {
+                        // Find workloads that match the manifest_id
+                        for workload in workloads {
+                            if workload.manifest_id == manifest_id {
+                                info!(
+                                    "Found matching workload: {} in engine '{}'",
+                                    workload.id, engine_name
+                                );
+
+                                // Remove the workload
+                                match engine.remove_workload(&workload.id).await {
+                                    Ok(()) => {
+                                        info!(
+                                            "Successfully removed workload: {} from engine '{}'",
+                                            workload.id, engine_name
+                                        );
+                                        removed_workloads.push(workload.id);
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to remove workload {} from engine '{}': {}",
+                                            workload.id, engine_name, e
+                                        );
+                                        errors.push(format!("{}:{}", engine_name, workload.id));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to list workloads from engine '{}': {}",
+                            engine_name, e
+                        );
+                        errors.push(format!("list:{}", engine_name));
+                    }
+                }
+            }
+        }
+
+        // Also withdraw placement announcement if we were providing this manifest
+        if let Some(placement_manager) = PLACEMENT_MANAGER.read().await.as_ref() {
+            if let Err(e) = placement_manager.stop_providing(manifest_id) {
+                warn!(
+                    "Failed to stop providing manifest_id {}: {}",
+                    manifest_id, e
+                );
+            } else {
+                info!("Stopped providing manifest_id: {}", manifest_id);
+            }
+        }
+
+        if errors.is_empty() {
+            // Drop the cached owner once the manifest workloads are removed successfully.
+            if remove_manifest_owner(manifest_id).await.is_some() {
+                info!(
+                    "remove_workloads_by_manifest_id: cleared owner mapping for manifest_id={}",
+                    manifest_id
+                );
+            }
+        } else {
+            warn!(
+                "remove_workloads_by_manifest_id: retaining owner mapping for manifest_id={} due to errors {:?}",
+                manifest_id, errors
+            );
+        }
+
+        info!(
+            "remove_workloads_by_manifest_id completed: removed {} workloads for manifest_id '{}'",
+            removed_workloads.len(),
+            manifest_id
+        );
+        Ok(removed_workloads)
+    }
+
+    /// Get logs from a workload (requires engine name)
+    pub async fn get_workload_logs_by_id(
+        workload_id: &str,
+        engine_name: &str,
+        tail: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let registry_guard = RUNTIME_REGISTRY.read().await;
+        let registry = registry_guard
+            .as_ref()
+            .ok_or("Runtime registry not initialized")?;
+
+        let engine = registry
+            .get_engine(engine_name)
+            .ok_or(format!("Runtime engine '{}' not available", engine_name))?;
+
+        let logs = engine.get_workload_logs(workload_id, tail).await?;
+        Ok(logs)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_runtime_registry_initialization() {
+            let result = initialize_podman_manager(false, false, true).await;
+            assert!(result.is_ok());
+
+            let stats = get_runtime_registry_stats().await;
+            assert!(!stats.is_empty());
+
+            let engines = list_available_engines().await;
+            assert!(!engines.is_empty());
+            assert!(engines.contains(&"mock".to_string()));
+        }
+
+        #[tokio::test]
+        async fn test_runtime_engine_selection() {
+            // Initialize registry for testing
+            let _ = initialize_podman_manager(false, false, true).await;
+
+            // Test Kubernetes manifest
+            let k8s_manifest = r#"
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: test-pod
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+    "#;
+            let engine = select_runtime_engine(k8s_manifest.as_bytes()).await;
+            assert!(engine.is_ok());
+            // Should select mock engine in test environment
+            let engine_name = engine.unwrap();
+            assert!(engine_name == "mock" || engine_name == "podman");
+
+            // Test Docker Compose manifest
+            let docker_manifest = r#"
+    version: '3.8'
+    services:
+      web:
+        image: nginx:latest
+        ports:
+          - "80:80"
+    "#;
+            let engine = select_runtime_engine(docker_manifest.as_bytes()).await;
+            assert!(engine.is_ok());
+            // Should prefer docker for compose files, but fall back to available engines
+        }
+
+        #[test]
+        fn test_deployment_config_creation() {
+            // This would require creating a mock ApplyRequest
+            let config = DeploymentConfig::default();
+            assert_eq!(config.replicas, 1);
+            assert!(config.env.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libp2p::PeerId;
+    use std::time::Duration;
+
+    #[test]
+    fn selects_unique_winners_for_multiple_replicas() {
+        let context = BidContext {
+            task_id: "task-a".to_string(),
+            manifest_id: "task-a".to_string(),
+            placement_metadata: HashMap::new(),
+            replicas: 2,
+            bids: vec![
+                BidEntry {
+                    bidder_id: "node1".to_string(),
+                    score: 0.9,
+                },
+                BidEntry {
+                    bidder_id: "node2".to_string(),
+                    score: 0.8,
+                },
+                BidEntry {
+                    bidder_id: "node2".to_string(),
+                    score: 0.95,
+                },
+            ],
+        };
+
+        let winners = select_winners(&context, "node1");
+        assert_eq!(winners.len(), 2);
+        assert!(winners.iter().any(|w| w.bidder_id == "node1"));
+        assert!(winners.iter().any(|w| w.bidder_id == "node2"));
+    }
+
+    #[test]
+    fn local_node_only_selected_once_even_with_multiple_replicas() {
+        let context = BidContext {
+            task_id: "task-b".to_string(),
+            manifest_id: "task-b".to_string(),
+            placement_metadata: HashMap::new(),
+            replicas: 3,
+            bids: vec![
+                BidEntry {
+                    bidder_id: "local".to_string(),
+                    score: 0.99,
+                },
+                BidEntry {
+                    bidder_id: "local".to_string(),
+                    score: 0.98,
+                },
+                BidEntry {
+                    bidder_id: "remote".to_string(),
+                    score: 0.5,
+                },
+            ],
+        };
+
+        let winners = select_winners(&context, "local");
+        assert_eq!(winners.len(), 2);
+        assert_eq!(winners.iter().filter(|w| w.bidder_id == "local").count(), 1);
+    }
+
+    #[test]
+    fn test_placement_info_expiration() {
+        let mut placement = PlacementInfo {
+            peer_id: PeerId::random(),
+            manifest_id: "test".to_string(),
+            announced_at: SystemTime::now() - Duration::from_secs(3700), // 1 hour 1 minute ago
+            last_seen: SystemTime::now(),
+            ttl_seconds: 3600, // 1 hour TTL
+            metadata: HashMap::new(),
+        };
+
+        assert!(placement.is_expired());
+
+        // Update to recent announcement
+        placement.announced_at = SystemTime::now();
+        assert!(!placement.is_expired());
+    }
+
+    #[test]
+    fn test_placement_manager_creation() {
+        let manager = PlacementManager::new_default();
+        let stats = manager.get_stats();
+
+        assert_eq!(stats.local_placements, 0);
+    }
+
+    #[test]
+    fn test_local_placement_management() {
+        let manager = PlacementManager::new_default();
+
+        // Initially no placements
+        assert!(manager.get_local_placements().is_empty());
+
+        // Test stop providing non-existent manifest
+        assert!(manager.stop_providing("non-existent").is_err());
+    }
+
+    #[test]
+    fn test_placement_stats() {
+        let manager = PlacementManager::new_default();
+        let stats = manager.get_stats();
+
+        assert_eq!(stats.local_placements, 0);
     }
 }

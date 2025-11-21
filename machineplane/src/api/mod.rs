@@ -397,7 +397,7 @@ pub async fn create_task(
     }
 
     if !owner_pubkey.is_empty() {
-        crate::run::record_manifest_owner(&manifest_id, &owner_pubkey).await;
+        crate::scheduler::record_manifest_owner(&manifest_id, &owner_pubkey).await;
     } else {
         log::warn!(
             "create_task: missing owner pubkey when recording manifest_id={}",
@@ -476,9 +476,7 @@ async fn debug_workloads_by_peer(
     // Try to access the global runtime registry to get MockEngine state
     #[cfg(debug_assertions)]
     {
-        if let Some(registry_guard) =
-            crate::run::get_global_runtime_registry().await
-        {
+        if let Some(registry_guard) = crate::scheduler::get_global_runtime_registry().await {
             if let Some(ref registry) = *registry_guard {
                 if let Some(mock_engine) = registry.get_engine("mock") {
                     if let Some(mock_engine) = mock_engine
@@ -723,7 +721,7 @@ pub async fn delete_task(
     // Step 1: Handle local deletion directly
     // In the resource pool model, we only manage local resources.
     // Discovery and fabric-wide choreography is handled by external components.
-    
+
     let mut removed_workloads = Vec::new();
     let success;
     let message;
@@ -735,7 +733,10 @@ pub async fn delete_task(
                 message = "No local workloads found for this manifest".to_string();
             } else {
                 success = true;
-                message = format!("Successfully removed {} local workloads", local_removed.len());
+                message = format!(
+                    "Successfully removed {} local workloads",
+                    local_removed.len()
+                );
                 removed_workloads = local_removed;
             }
         }
@@ -769,7 +770,7 @@ async fn handle_local_delete(manifest_id: &str, _force: bool) -> Result<Vec<Stri
     );
 
     // Use the workload integration module to remove workloads by manifest ID
-    match crate::run::remove_workloads_by_manifest_id(manifest_id).await {
+    match crate::scheduler::remove_workloads_by_manifest_id(manifest_id).await {
         Ok(removed_workloads) => {
             info!(
                 "handle_local_delete: successfully removed {} workloads for manifest_id '{}'",
@@ -787,8 +788,6 @@ async fn handle_local_delete(manifest_id: &str, _force: bool) -> Result<Vec<Stri
         }
     }
 }
-
-
 
 /// Forward an ApplyRequest directly to a specific peer via libp2p
 /// This bypasses centralized task storage and forwards the request directly
@@ -819,13 +818,15 @@ pub async fn apply_direct(
 
     // Forward the ApplyRequest directly to the peer via libp2p
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
-    if let Err(e) = state.control_tx.send(
-        crate::network::control::Libp2pControl::SendApplyRequest {
-            peer_id: target_peer_id,
-            manifest: apply_request_bytes,
-            reply_tx,
-        },
-    ) {
+    if let Err(e) =
+        state
+            .control_tx
+            .send(crate::network::control::Libp2pControl::SendApplyRequest {
+                peer_id: target_peer_id,
+                manifest: apply_request_bytes,
+                reply_tx,
+            })
+    {
         log::error!("apply_direct: failed to send to libp2p control: {}", e);
         let error_response = crate::messages::machine::build_apply_response(
             false,
