@@ -4,16 +4,14 @@ use clap::Parser;
 use env_logger::Env;
 use std::io::Write;
 
-pub mod crypto;
-pub mod hostapi;
-pub mod libp2p_beemesh;
+pub mod network;
 mod pod_communication;
-pub mod protocol;
+pub mod messages;
 pub mod placement;
 pub mod capacity;
-pub mod restapi;
-pub mod runtime;
-
+pub mod api;
+pub mod runtimes;
+pub mod scheduler;
 
 
 /// beemesh Host Agent
@@ -119,22 +117,6 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     let scheduling_enabled = !cli.disable_scheduling;
 
-    let signing_ephemeral = cli.signing_ephemeral || cli.ephemeral_keys;
-    let kem_ephemeral = cli.kem_ephemeral || cli.ephemeral_keys;
-    crate::crypto::set_keypair_config(crate::crypto::KeypairConfig {
-        signing_mode: if signing_ephemeral {
-            crate::crypto::KeypairMode::Ephemeral
-        } else {
-            crate::crypto::KeypairMode::Persistent
-        },
-        kem_mode: if kem_ephemeral {
-            crate::crypto::KeypairMode::Ephemeral
-        } else {
-            crate::crypto::KeypairMode::Persistent
-        },
-        key_directory: Some(std::path::PathBuf::from(&cli.key_dir)),
-    });
-
     if scheduling_enabled {
         runtime::configure_podman_runtime(cli.podman_socket.clone());
     } else {
@@ -146,22 +128,18 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         log::info!("scheduling disabled via CLI flag; skipping container runtime configuration");
     }
 
-    // initialize PQC once at process startup; fail early if it doesn't initialize
-    crate::crypto::ensure_pqc_init()
-        .map_err(|e| anyhow::anyhow!("pqc initialization failed: {}", e))?;
-
-    let _keypair = if cli.ephemeral {
-        let kp = crate::crypto::ensure_keypair_ephemeral().ok();
-        // also set global
-        libp2p_beemesh::set_node_keypair(kp.clone());
-        kp
+    // Load or generate libp2p keypair
+    let keypair = if cli.ephemeral {
+        log::info!("Using ephemeral keypair (not persisted to disk)");
+        libp2p::identity::Keypair::generate_ed25519()
     } else {
         // Store keypair in configured key_dir (default /etc/beemesh/machine)
         use std::fs::OpenOptions;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
         let mut key_path = std::path::PathBuf::from(&cli.key_dir);
-        // try to create and set secure perms; on failure, fall back to $HOME/.beemesh
+        
+        // Helper to create directory with secure permissions
         let ensure_dir = |p: &std::path::Path| -> std::io::Result<()> {
             if !p.exists() {
                 std::fs::create_dir_all(p)?;
@@ -171,6 +149,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
             Ok(())
         };
 
+        // Try to create key directory, fall back to $HOME/.beemesh on failure
         if let Err(e) = ensure_dir(&key_path) {
             log::warn!(
                 "could not create/set permissions for {}: {}. Falling back to $HOME/.beemesh",
@@ -178,48 +157,41 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
                 e
             );
             if let Some(home) = dirs::home_dir() {
-                key_path = home.join(crate::crypto::KEY_DIR);
+                key_path = home.join(".beemesh");
                 ensure_dir(&key_path)?;
             } else {
                 return Err(anyhow::anyhow!("failed to determine home dir: {}", e));
             }
         }
 
-        // Use similar logic as ensure_keypair_on_disk but with secure file creation
-        let pubpath = key_path.join(crate::crypto::PUBKEY_FILE);
-        let privpath = key_path.join(crate::crypto::PRIVKEY_FILE);
+        let keypair_path = key_path.join("libp2p_keypair.bin");
 
-        if pubpath.exists() && privpath.exists() {
-            let pk = std::fs::read(&pubpath)?;
-            let sk = std::fs::read(&privpath)?;
-            let kp = Some((pk, sk));
-            libp2p_beemesh::set_node_keypair(kp.clone());
-            kp
+        // Load existing keypair or generate new one
+        if keypair_path.exists() {
+            log::info!("Loading keypair from {}", keypair_path.display());
+            let bytes = std::fs::read(&keypair_path)?;
+            libp2p::identity::Keypair::from_protobuf_encoding(&bytes)?
         } else {
-            let dsa = saorsa_pqc::api::sig::ml_dsa_65();
-            let (pubk, privk) = dsa
-                .generate_keypair()
-                .map_err(|e| anyhow::anyhow!("dsa generate_keypair failed: {:?}", e))?;
-            let pk_bytes = pubk.to_bytes();
-            let sk_bytes = privk.to_bytes();
-
-            // Write files with secure mode 0o600
-            let mut o = OpenOptions::new();
-            o.write(true).create(true).truncate(true).mode(0o600);
-            let mut f1 = o.open(&pubpath)?;
-            f1.write_all(&pk_bytes)?;
-
-            let mut o2 = OpenOptions::new();
-            o2.write(true).create(true).truncate(true).mode(0o600);
-            let mut f2 = o2.open(&privpath)?;
-            f2.write_all(&sk_bytes)?;
-
-            let kp = Some((pk_bytes, sk_bytes));
-            libp2p_beemesh::set_node_keypair(kp.clone());
-            kp
+            log::info!("Generating new keypair and saving to {}", keypair_path.display());
+            let keypair = libp2p::identity::Keypair::generate_ed25519();
+            let bytes = keypair.to_protobuf_encoding()?;
+            
+            // Write with secure permissions
+            let mut opts = OpenOptions::new();
+            opts.write(true).create(true).truncate(true).mode(0o600);
+            let mut file = opts.open(&keypair_path)?;
+            file.write_all(&bytes)?;
+            
+            keypair
         }
     };
-    let (mut swarm, topic, peer_rx, peer_tx) = libp2p_beemesh::setup_libp2p_node(
+
+    // Store keypair bytes for network module
+    let keypair_bytes = keypair.to_protobuf_encoding()?;
+    let public_bytes = keypair.public().to_protobuf_encoding();
+    network::set_node_keypair(Some((public_bytes.clone(), keypair_bytes.clone())));
+
+    let (mut swarm, topic, peer_rx, peer_tx) = network::setup_libp2p_node(
         cli.libp2p_quic_port,
         &cli.libp2p_host,
         cli.disable_scheduling,
@@ -236,31 +208,12 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         }
     }
 
-    // Initialize envelope handler for encrypted communication
-    // Use KEM private key for decryption and signing public key for serving via legacy endpoint
-    let envelope_handler = {
-        // Get KEM keypair for decryption of encrypted requests
-        let (_kem_pk_bytes, kem_sk_bytes) = crate::crypto::ensure_kem_keypair_on_disk()
-            .map_err(|e| anyhow::anyhow!("Failed to get KEM keypair: {}", e))?;
-
-        // Get signing keypair for legacy /api/v1/pubkey endpoint compatibility
-        let (signing_pk_bytes, _signing_sk_bytes) = crate::crypto::ensure_keypair_on_disk()
-            .map_err(|e| anyhow::anyhow!("Failed to get signing keypair: {}", e))?;
-        let signing_public_key_b64 =
-            base64::engine::general_purpose::STANDARD.encode(&signing_pk_bytes);
-
-        std::sync::Arc::new(restapi::envelope_handler::EnvelopeHandler::new(
-            kem_sk_bytes,           // KEM private key for decryption
-            signing_public_key_b64, // Signing public key for legacy endpoint
-        ))
-    };
-
     // control channel for libp2p (from REST handlers to libp2p task)
     let (control_tx, control_rx) =
-        tokio::sync::mpsc::unbounded_channel::<libp2p_beemesh::control::Libp2pControl>();
+        tokio::sync::mpsc::unbounded_channel::<network::control::Libp2pControl>();
 
     // Set the global control sender for distributed operations
-    libp2p_beemesh::set_control_sender(control_tx.clone());
+    network::set_control_sender(control_tx.clone());
 
     // Keep the sender side alive by moving one clone into the libp2p task.
     // If we don't keep a sender alive outside this function, the receiver will see
@@ -269,7 +222,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
     let libp2p_handle = tokio::spawn(async move {
         // hold on to the sender for the lifetime of this task
         let _keeper = control_tx_for_libp2p;
-        if let Err(e) = libp2p_beemesh::start_libp2p_node(swarm, topic, peer_tx, control_rx).await {
+        if let Err(e) = network::start_libp2p_node(swarm, topic, peer_tx, control_rx).await {
             log::error!("libp2p node error: {}", e);
         }
     });
@@ -295,7 +248,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // rest api server
     if !cli.disable_rest_api {
-        let app = restapi::build_router(peer_rx, control_tx.clone(), envelope_handler.clone());
+        let app = api::build_router(peer_rx, control_tx.clone());
 
         // Public TCP server
         let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);
@@ -346,7 +299,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
             if start_uds {
                 // remove stale socket file if present
                 let _ = std::fs::remove_file(&socket);
-                let app2 = hostapi::build_router(); //.merge(podman::build_router());
+                let app2 = axum::Router::new(); // Empty UDS API (hostapi removed)
                 let socket_clone = socket.clone();
                 handles.push(tokio::spawn(async move {
                     // bind a unix domain socket and serve the axum app on it

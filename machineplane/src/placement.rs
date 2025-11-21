@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use crate::libp2p_beemesh::behaviour::MyBehaviour;
+use crate::network::behaviour::MyBehaviour;
 
 /// Errors that can occur during placement operations
 #[derive(Debug, thiserror::Error)]

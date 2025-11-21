@@ -4,11 +4,11 @@
 //! and the new workload manager system. It updates the apply message handler to use
 //! the runtime engines and provider announcement system.
 
-use crate::libp2p_beemesh::behaviour::MyBehaviour;
-use crate::protocol::machine;
+use crate::network::behaviour::MyBehaviour;
+use crate::messages::machine;
 use crate::placement::{PlacementConfig, PlacementManager};
 use crate::capacity::CapacityVerifier;
-use crate::runtime::{DeploymentConfig, RuntimeRegistry, create_default_registry};
+use crate::runtimes::{DeploymentConfig, RuntimeRegistry, create_default_registry};
 use base64::Engine;
 use libp2p::Swarm;
 use libp2p::request_response;
@@ -53,7 +53,7 @@ pub async fn initialize_podman_manager(
     #[cfg(debug_assertions)]
     let registry = if use_mock_registry {
         info!("Using mock-only runtime registry for testing");
-        crate::runtime::create_mock_only_registry().await
+        crate::runtimes::create_mock_only_registry().await
     } else {
         create_default_registry().await
     };
@@ -154,13 +154,13 @@ pub async fn handle_apply_message_with_podman_manager(
 
             // Verify request as a FlatBuffer Envelope
             let (effective_request, owner_pubkey) =
-                match crate::libp2p_beemesh::security::verify_envelope_and_check_nonce_for_peer(
+                match crate::network::security::verify_envelope_and_check_nonce_for_peer(
                     &request,
                     &peer.to_string(),
                 ) {
                     Ok(parts) => (parts.payload, parts.pubkey),
                     Err(e) => {
-                        if crate::libp2p_beemesh::security::require_signed_messages() {
+                        if crate::network::security::require_signed_messages() {
                             error!("Rejecting unsigned/invalid apply request: {:?}", e);
                             let error_response = machine::build_apply_response(
                                 false,
@@ -364,7 +364,7 @@ async fn process_manifest_deployment(
         if engine_name == "mock" {
             if let Some(mock_engine) = engine
                 .as_any()
-                .downcast_ref::<crate::runtime::mock::MockEngine>()
+                .downcast_ref::<crate::runtimes::mock::MockEngine>()
             {
                 debug!("Using peer-aware deployment for mock engine");
                 mock_engine

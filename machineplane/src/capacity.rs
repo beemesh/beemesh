@@ -4,7 +4,7 @@
 //! resources to host requested workloads. It collects system metrics and
 //! compares them against workload requests while respecting safety margins.
 
-use crate::protocol::libp2p_constants::{
+use crate::messages::constants::{
     DEFAULT_CPU_REQUEST_MILLI, DEFAULT_MEMORY_REQUEST_BYTES, DEFAULT_STORAGE_REQUEST_BYTES,
     MAX_CPU_ALLOCATION_PERCENT, MAX_MEMORY_ALLOCATION_PERCENT, MAX_STORAGE_ALLOCATION_PERCENT,
     MAX_WORKLOADS_PER_NODE, MIN_FREE_MEMORY_BYTES, MIN_FREE_STORAGE_BYTES,
