@@ -1,5 +1,5 @@
 use clap::Parser;
-use machine::Cli;
+use machineplane::Cli;
 
 struct EnvGuard {
     key: &'static str,
@@ -34,7 +34,7 @@ impl Drop for EnvGuard {
 fn cli_pulls_podman_socket_from_env() {
     let _guard = EnvGuard::set("PODMAN_HOST", "unix:///tmp/env-podman.sock");
 
-    let cli = Cli::parse_from(["beemesh-machine"]);
+    let cli = Cli::parse_from(["beemesh-machineplane"]);
 
     assert_eq!(
         cli.podman_socket.as_deref(),
