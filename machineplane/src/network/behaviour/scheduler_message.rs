@@ -1,7 +1,5 @@
-use super::message_verifier::verify_signed_message;
 use crate::network::capacity;
 use crate::network::utils;
-use crate::messages::libp2p_constants::FREE_CAPACITY_TIMEOUT_MS;
 use crate::capacity::ResourceRequest;
 use crate::run::get_global_capacity_verifier;
 use libp2p::request_response;
@@ -28,32 +26,12 @@ pub fn scheduler_message(
                 return;
             }
             debug!("libp2p: received scheduler request from peer={}", peer);
-            // First, attempt to verify request as an Envelope (JSON or FlatBuffer)
-            let verified = match verify_signed_message(&peer, &request, |err| {
-                error!("rejecting invalid scheduler request: {}", err);
-            }) {
-                Some(envelope) => envelope,
-                None => return,
-            };
-            let crate::network::security::VerifiedEnvelope {
-                payload: effective_request,
-                timestamp_ms,
-                ..
-            } = verified;
+            let effective_request = request;
 
             // Try parse CapacityRequest
             match crate::messages::machine::root_as_capacity_request(&effective_request) {
                 Ok(cap_req) => {
                     let orig_request_id = cap_req.request_id.as_str();
-                    let age_ms = utils::make_timestamp_ms().saturating_sub(timestamp_ms);
-                    if age_ms > FREE_CAPACITY_TIMEOUT_MS {
-                        warn!(
-                            "libp2p: dropping stale scheduler capreq id={} age={}ms from {}",
-                            orig_request_id, age_ms, peer
-                        );
-                        return;
-                    }
-
                     let manifest_id =
                         match utils::extract_manifest_id_from_request_id(orig_request_id) {
                             Some(id) => id,
@@ -217,7 +195,7 @@ pub fn scheduler_message(
                     peer,
                     request_part
                 );
-                // KEM pubkey caching has been removed - keys are now extracted directly from envelopes
+                // KEM pubkey caching has been removed; keys are expected directly in capacity replies
                 let peer_pubkey = cap_reply.kem_pubkey.clone();
                 let peer_with_key = format!("{}:{}", peer.to_string(), peer_pubkey);
                 utils::notify_capacity_observers(pending_queries, &request_part, move || {

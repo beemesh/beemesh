@@ -4,7 +4,6 @@ pub mod gossipsub_message;
 pub mod gossipsub_subscribed;
 pub mod gossipsub_unsubscribed;
 pub mod handshake_message;
-pub mod message_verifier;
 
 pub mod scheduler_message;
 

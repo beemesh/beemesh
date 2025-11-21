@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use libp2p::{gossipsub, request_response};
 
 use crate::network::reply::{self, CapacityReply, CapacityReplyParams};
@@ -36,15 +36,8 @@ pub fn publish_gossipsub_capacity_reply(
     topic: &gossipsub::TopicHash,
     reply: &CapacityReply,
 ) -> Result<()> {
-    let signed_bytes = crate::network::utils::sign_payload_default(
-        &reply.payload,
-        "capacity_reply",
-        Some("capreply"),
-    )
-    .context("signing capacity reply")?;
-
     behaviour
-        .publish(topic.clone(), signed_bytes)
+        .publish(topic.clone(), reply.payload.clone())
         .map(|_| ())
         .map_err(|err| anyhow!("failed to publish capacity reply: {:?}", err))
 }

@@ -1,4 +1,3 @@
-use crate::network::envelope::{SignEnvelopeConfig, SignedEnvelope, sign_with_node_keys};
 use base64::Engine;
 use log::warn;
 
@@ -79,11 +78,6 @@ where
     let mut params = baseline_capacity_params(request_id, responder_peer);
     adjust(&mut params);
     build_capacity_reply(params)
-}
-
-/// Sign a capacity reply payload with the node's key material.
-pub fn sign_capacity_reply(payload: &[u8]) -> anyhow::Result<SignedEnvelope> {
-    sign_with_node_keys(payload, "capacity_reply", SignEnvelopeConfig::default())
 }
 
 /// Emit a warning when the KEM public key is missing from a capacity reply payload.

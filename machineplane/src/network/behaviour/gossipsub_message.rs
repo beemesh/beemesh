@@ -1,6 +1,4 @@
-use super::message_verifier::verify_signed_message;
 use crate::network::{capacity, utils};
-use crate::messages::libp2p_constants::FREE_CAPACITY_TIMEOUT_MS;
 use crate::capacity::{CapacityCheckResult, ResourceRequest};
 use crate::run::get_global_capacity_verifier;
 use libp2p::gossipsub;
@@ -40,31 +38,10 @@ pub fn gossipsub_message(
         return; 
     }
 
-    let verified = match verify_signed_message(&peer_id, &message.data, |err| {
-        warn!("gossipsub: rejecting message from {}: {}", peer_id, err);
-    }) {
-        Some(envelope) => envelope,
-        None => return,
-    };
-    let crate::network::security::VerifiedEnvelope {
-        payload,
-        timestamp_ms,
-        ..
-    } = verified;
-
     // Then try CapacityReply
-    if let Ok(cap_req) = crate::messages::machine::root_as_capacity_request(payload.as_slice()) {
+    if let Ok(cap_req) = crate::messages::machine::root_as_capacity_request(message.data.as_slice()) {
         let orig_request_id = cap_req.request_id.clone();
         let responder_peer = swarm.local_peer_id().to_string();
-
-        let age_ms = utils::make_timestamp_ms().saturating_sub(timestamp_ms);
-        if age_ms > FREE_CAPACITY_TIMEOUT_MS {
-            warn!(
-                "libp2p: dropping stale capreq id={} age={}ms from peer={}",
-                orig_request_id, age_ms, peer_id
-            );
-            return;
-        }
 
         let manifest_id = match utils::extract_manifest_id_from_request_id(&orig_request_id) {
             Some(id) => id,
@@ -89,7 +66,7 @@ pub fn gossipsub_message(
             orig_request_id,
             manifest_id,
             peer_id,
-            payload.len()
+            message.data.len()
         );
 
         let verifier = get_global_capacity_verifier();
@@ -203,7 +180,7 @@ pub fn gossipsub_message(
             "libp2p: received capreply for id={} from peer={}",
             request_part, peer_id
         );
-        // KEM pubkey caching has been removed - keys are now extracted directly from envelopes
+        // KEM pubkey caching has been removed; keys are expected directly in capacity replies
         utils::notify_capacity_observers(pending_queries, &request_part, move || {
             peer_id.to_string()
         });

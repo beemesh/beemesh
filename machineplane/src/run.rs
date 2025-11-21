@@ -152,43 +152,16 @@ pub async fn handle_apply_message_with_podman_manager(
         } => {
             info!("Received apply request from peer={}", peer);
 
-            // Verify request as a FlatBuffer Envelope
-            let (effective_request, owner_pubkey) =
-                match crate::network::security::verify_envelope_and_check_nonce_for_peer(
-                    &request,
-                    &peer.to_string(),
-                ) {
-                    Ok(parts) => (parts.payload, parts.pubkey),
-                    Err(e) => {
-                        if crate::network::security::require_signed_messages() {
-                            error!("Rejecting unsigned/invalid apply request: {:?}", e);
-                            let error_response = machine::build_apply_response(
-                                false,
-                                "unknown",
-                                "unsigned or invalid envelope",
-                            );
-                            let _ = swarm
-                                .behaviour_mut()
-                                .apply_rr
-                                .send_response(channel, error_response);
-                            return;
-                        }
-                        warn!(
-                            "Accepting unsigned apply request from peer={} due to relaxed policy",
-                            peer
-                        );
-                        (request.clone(), Vec::new())
-                    }
-                };
-
-            // Parse the FlatBuffer apply request
-            match machine::root_as_apply_request(&effective_request) {
+            // Parse the apply request
+            match machine::root_as_apply_request(&request) {
                 Ok(apply_req) => {
                     info!(
                         "Apply request - operation_id={:?} replicas={}",
                         apply_req.operation_id,
                         apply_req.replicas
                     );
+
+                    let owner_pubkey = Vec::new();
 
                     // Extract and validate manifest
                     if !apply_req.manifest_json.is_empty() {

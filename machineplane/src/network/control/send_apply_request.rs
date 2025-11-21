@@ -54,21 +54,11 @@ pub async fn handle_send_apply_request(
 
     // No capability token needed - direct manifest application
 
-    // Sign the apply request in an envelope before sending
-    let signed_apply_request =
-        match utils::sign_payload_default(&manifest, "apply_request", Some("apply")) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!("failed to sign apply request for peer {}: {:?}", peer_id, e);
-                manifest
-            }
-        };
-
-    // Finally send the (now signed) apply request
+    // Finally send the apply request
     let request_id = swarm
         .behaviour_mut()
         .apply_rr
-        .send_request(&peer_id, signed_apply_request);
+        .send_request(&peer_id, manifest);
     info!(
         "libp2p: sent apply request to peer={} request_id={:?}",
         peer_id, request_id

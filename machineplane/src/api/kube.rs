@@ -254,22 +254,8 @@ async fn send_apply_to_peer(
             },
         )?;
 
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let envelope = crate::messages::machine::build_envelope_canonical_with_peer(
-        &encrypted_blob,
-        "manifest",
-        "",
-        ts,
-        "ml-kem-512",
-        peer_id,
-        None,
-    );
-
     let operation_id = Uuid::new_v4().to_string();
-    let manifest_json_b64 = base64::engine::general_purpose::STANDARD.encode(&envelope);
+    let manifest_json_b64 = base64::engine::general_purpose::STANDARD.encode(&encrypted_blob);
     let apply_request_bytes = crate::messages::machine::build_apply_request(
         1,
         &operation_id,

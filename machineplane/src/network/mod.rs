@@ -70,9 +70,7 @@ use crate::network::{
 pub mod behaviour;
 pub mod capacity;
 pub mod control;
-pub mod envelope;
 pub mod reply;
-pub mod security;
 pub mod utils;
 
 // Handshake state used by the handshake behaviour handlers
@@ -472,72 +470,37 @@ pub async fn start_libp2p_node(
                         continue;
                     }
                     if state.last_attempt.elapsed() >= Duration::from_secs(2) {
-                        // Send handshake request using request-response protocol with FlatBuffer
+                        // Send handshake request using request-response protocol
                         let timestamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_millis() as u64;
                         let nonce = rand::random::<u32>();
 
-                        // Generate proper cryptographic signature for handshake request
-                        match crate::crypto::ensure_keypair_on_disk() {
-                            Ok((pub_bytes, sk_bytes)) => {
-                                let protocol_version = "beemesh/1.0";
-                                let local_peer_id = swarm.local_peer_id().to_string();
+                        let protocol_version = "beemesh/1.0";
+                        let local_peer_id = swarm.local_peer_id().to_string();
 
+                        // Build simple handshake request
+                        let handshake_request = crate::messages::machine::build_handshake(
+                            nonce,
+                            timestamp,
+                            protocol_version,
+                            &local_peer_id,
+                        );
 
-                                // Build simple handshake request
-                                let handshake_request = crate::messages::machine::build_handshake(
-                                    nonce,
-                                    timestamp,
-                                    protocol_version,
-                                    &local_peer_id,
-                                );
+                        let request_id = swarm
+                            .behaviour_mut()
+                            .handshake_rr
+                            .send_request(peer_id, handshake_request);
+                        debug!(
+                            "libp2p: sent handshake request to peer={} request_id={:?} attempt={}",
+                            peer_id,
+                            request_id,
+                            state.attempts + 1
+                        );
 
-                                // Create nonce for envelope
-                                let envelope_nonce = format!("handshake_req_{}", nonce);
-
-                                // Build canonical envelope bytes
-                                let canonical_bytes = crate::messages::machine::build_envelope_canonical(
-                                    &handshake_request,
-                                    "handshake",
-                                    &envelope_nonce,
-                                    timestamp,
-                                    "ed25519",
-                                    None,
-                                );
-
-                                match crate::crypto::sign_envelope(&sk_bytes, &pub_bytes, &canonical_bytes) {
-                                    Ok((sig_b64, pub_b64)) => {
-                                        // Create signed envelope
-                                        let signed_envelope = crate::messages::machine::build_envelope_signed(
-                                            &handshake_request,
-                                            "handshake",
-                                            &envelope_nonce,
-                                            timestamp,
-                                            "ed25519",
-                                            "ed25519",
-                                            &sig_b64,
-                                            &pub_b64,
-                                            None,
-                                        );
-
-                                        let request_id = swarm.behaviour_mut().handshake_rr.send_request(peer_id, signed_envelope);
-                                        debug!("libp2p: sent handshake request to peer={} request_id={:?} attempt={}",
-                                            peer_id, request_id, state.attempts + 1);
-
-                                        state.attempts += 1;
-                                        state.last_attempt = Instant::now();
-                                    }
-                                    Err(e) => {
-                                        warn!("failed to sign handshake request for peer {}: {:?}", peer_id, e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("failed to load keypair for handshake request to peer {}: {:?}", peer_id, e);
-                            }
-                        }
+                        state.attempts += 1;
+                        state.last_attempt = Instant::now();
                     }
                 }
                 for peer_id in to_remove {

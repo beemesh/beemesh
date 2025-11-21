@@ -6,7 +6,6 @@
 //! equivalent helpers using serde + bincode over the message types defined in
 //! `types.rs`.
 
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub mod types;
@@ -18,19 +17,6 @@ fn serialize<T: Serialize>(value: &T) -> Vec<u8> {
 
 fn deserialize<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> bincode::Result<T> {
     bincode::deserialize(bytes)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Envelope {
-    pub payload: Vec<u8>,
-    pub payload_type: String,
-    pub nonce: String,
-    pub ts: u64,
-    pub alg: String,
-    pub sig: String,
-    pub pubkey: String,
-    pub kem_pubkey: String,
-    pub peer_id: String,
 }
 
 pub mod machine {
@@ -67,10 +53,6 @@ pub mod machine {
     }
 
     pub fn root_as_handshake(buf: &[u8]) -> bincode::Result<Handshake> {
-        deserialize(buf)
-    }
-
-    pub fn root_as_envelope(buf: &[u8]) -> bincode::Result<Envelope> {
         deserialize(buf)
     }
 
@@ -219,146 +201,6 @@ pub mod machine {
             manifest_id: manifest_id.to_string(),
             removed_workloads: removed_workloads.to_vec(),
         })
-    }
-
-    pub fn build_envelope_canonical(
-        payload: &[u8],
-        payload_type: &str,
-        nonce: &str,
-        timestamp: u64,
-        algorithm: &str,
-        kem_pub_b64: Option<&str>,
-    ) -> Vec<u8> {
-        serialize(&Envelope {
-            payload: payload.to_vec(),
-            payload_type: payload_type.to_string(),
-            nonce: nonce.to_string(),
-            ts: timestamp,
-            alg: algorithm.to_string(),
-            sig: String::new(),
-            pubkey: String::new(),
-            kem_pubkey: kem_pub_b64.unwrap_or_default().to_string(),
-            peer_id: String::new(),
-        })
-    }
-
-    pub fn build_envelope_signed(
-        payload: &[u8],
-        payload_type: &str,
-        nonce: &str,
-        timestamp: u64,
-        algorithm: &str,
-        sig_prefix: &str,
-        sig_b64: &str,
-        pubkey_b64: &str,
-        kem_pub_b64: Option<&str>,
-    ) -> Vec<u8> {
-        serialize(&Envelope {
-            payload: payload.to_vec(),
-            payload_type: payload_type.to_string(),
-            nonce: nonce.to_string(),
-            ts: timestamp,
-            alg: algorithm.to_string(),
-            sig: format!("{}:{}", sig_prefix, sig_b64),
-            pubkey: pubkey_b64.to_string(),
-            kem_pubkey: kem_pub_b64.unwrap_or_default().to_string(),
-            peer_id: String::new(),
-        })
-    }
-
-    pub fn build_envelope_canonical_with_peer(
-        payload: &[u8],
-        payload_type: &str,
-        nonce: &str,
-        timestamp: u64,
-        algorithm: &str,
-        peer_id: &str,
-        kem_pub_b64: Option<&str>,
-    ) -> Vec<u8> {
-        serialize(&Envelope {
-            payload: payload.to_vec(),
-            payload_type: payload_type.to_string(),
-            nonce: nonce.to_string(),
-            ts: timestamp,
-            alg: algorithm.to_string(),
-            sig: String::new(),
-            pubkey: String::new(),
-            kem_pubkey: kem_pub_b64.unwrap_or_default().to_string(),
-            peer_id: peer_id.to_string(),
-        })
-    }
-
-    pub fn build_envelope_signed_with_peer(
-        payload: &[u8],
-        payload_type: &str,
-        nonce: &str,
-        timestamp: u64,
-        algorithm: &str,
-        sig_prefix: &str,
-        sig_b64: &str,
-        pubkey_b64: &str,
-        peer_id: &str,
-        kem_pub_b64: Option<&str>,
-    ) -> Vec<u8> {
-        serialize(&Envelope {
-            payload: payload.to_vec(),
-            payload_type: payload_type.to_string(),
-            nonce: nonce.to_string(),
-            ts: timestamp,
-            alg: algorithm.to_string(),
-            sig: format!("{}:{}", sig_prefix, sig_b64),
-            pubkey: pubkey_b64.to_string(),
-            kem_pubkey: kem_pub_b64.unwrap_or_default().to_string(),
-            peer_id: peer_id.to_string(),
-        })
-    }
-
-    pub fn fb_envelope_extract_sig_pub(envelope_bytes: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-        let env: Envelope = deserialize(envelope_bytes).ok()?;
-        let sig_field = env.sig;
-        let sig_b64 = sig_field
-            .splitn(2, ':')
-            .nth(if sig_field.contains(':') { 1 } else { 0 })
-            .unwrap_or(&sig_field)
-            .to_string();
-        let sig_bytes = base64::engine::general_purpose::STANDARD.decode(sig_b64).ok()?;
-        let pub_bytes = base64::engine::general_purpose::STANDARD
-            .decode(env.pubkey)
-            .ok()?;
-        Some((sig_bytes, pub_bytes))
-    }
-
-    pub fn fb_envelope_extract_sig_pub_legacy(
-        buf: &[u8],
-    ) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, String, String)> {
-        let env: Envelope = root_as_envelope(buf)
-            .map_err(|e| anyhow::anyhow!("failed to parse envelope: {}", e))?;
-
-        let canonical = build_envelope_canonical(
-            &env.payload,
-            &env.payload_type,
-            &env.nonce,
-            env.ts,
-            &env.alg,
-            Some(&env.kem_pubkey),
-        );
-
-        let sig_field = env.sig.clone();
-        let pub_field = env.pubkey.clone();
-
-        let sig_b64 = sig_field
-            .splitn(2, ':')
-            .nth(if sig_field.contains(':') { 1 } else { 0 })
-            .unwrap_or(&sig_field)
-            .to_string();
-        let sig_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&sig_b64)
-            .map_err(|e| anyhow::anyhow!("failed to base64-decode signature: {}", e))?;
-        let pub_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&pub_field)
-            .map_err(|e| anyhow::anyhow!("failed to base64-decode pubkey: {}", e))?;
-
-        Ok((canonical, sig_bytes, pub_bytes, sig_field, pub_field))
     }
 
     pub fn build_handshake(
@@ -536,56 +378,6 @@ pub mod machine {
             assigned_peers: assigned_peers.to_vec(),
             manifest_cid: manifest_cid.unwrap_or_default().to_string(),
         })
-    }
-
-    pub fn build_encrypted_envelope(
-        payload: &[u8],
-        payload_type: &str,
-        nonce: &str,
-        timestamp: u64,
-        algorithm: &str,
-        sig_prefix: &str,
-        sig_b64: &str,
-        pubkey_b64: &str,
-        kem_pub_b64: Option<&str>,
-    ) -> Vec<u8> {
-        build_envelope_signed(
-            payload,
-            payload_type,
-            nonce,
-            timestamp,
-            algorithm,
-            sig_prefix,
-            sig_b64,
-            pubkey_b64,
-            kem_pub_b64,
-        )
-    }
-
-    pub fn build_encrypted_envelope_with_peer(
-        payload: &[u8],
-        payload_type: &str,
-        nonce: &str,
-        timestamp: u64,
-        algorithm: &str,
-        sig_prefix: &str,
-        sig_b64: &str,
-        pubkey_b64: &str,
-        peer_id: &str,
-        kem_pub_b64: Option<&str>,
-    ) -> Vec<u8> {
-        build_envelope_signed_with_peer(
-            payload,
-            payload_type,
-            nonce,
-            timestamp,
-            algorithm,
-            sig_prefix,
-            sig_b64,
-            pubkey_b64,
-            peer_id,
-            kem_pub_b64,
-        )
     }
 
     pub fn extract_manifest_name(manifest_data: &[u8]) -> Option<String> {

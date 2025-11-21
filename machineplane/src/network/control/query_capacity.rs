@@ -37,20 +37,24 @@ pub async fn handle_query_capacity_with_payload(
                 cap_req.storage_bytes,
                 cap_req.replicas,
             );
-            // Broadcast signed scheduler requests to peers (centralized helper)
-            match utils::broadcast_signed_request_to_peers(swarm, &finished, "capacity") {
-                Ok(sent) => {
-                    log::info!(
-                        "libp2p: broadcasted capreq request_id={} to {} peers",
-                        request_id,
-                        sent
-                    );
-                }
-                Err(e) => {
-                    log::error!("failed to broadcast capacity request: {:?}", e);
-                    return;
-                }
+            // Broadcast scheduler requests to peers without additional envelope signing
+            let peers: Vec<libp2p::PeerId> = swarm
+                .behaviour()
+                .gossipsub
+                .all_peers()
+                .map(|(p, _)| p.clone())
+                .collect();
+            for peer in peers.iter() {
+                let _req_id = swarm
+                    .behaviour_mut()
+                    .scheduler_rr
+                    .send_request(peer, finished.clone());
             }
+            log::info!(
+                "libp2p: broadcasted capreq request_id={} to {} peers",
+                request_id,
+                peers.len()
+            );
 
             // Also notify local pending senders directly so the originator is always considered
             // a potential responder. This ensures single-node operation and makes the

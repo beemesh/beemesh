@@ -1,5 +1,3 @@
-use super::message_verifier::verify_signed_message;
-use crate::network::envelope::{SignEnvelopeConfig, sign_with_node_keys};
 use libp2p::request_response;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -14,26 +12,13 @@ pub fn handshake_request<F>(
 {
     //log::info!("libp2p: received handshake request from peer={}", peer);
 
-    // Handshakes should be wrapped in signed envelopes for consistency
-    let verified = match verify_signed_message(&peer, &request, |err| {
-        log::error!("rejecting invalid handshake request: {}", err);
-    }) {
-        Some(envelope) => envelope,
-        None => {
-            let error_response = crate::messages::machine::build_handshake(0, 0, "", "");
-            send_response(error_response);
-            return;
-        }
-    };
-    let effective_request = verified.payload;
-
-    // Parse the FlatBuffer handshake request
-    match crate::messages::machine::root_as_handshake(&effective_request) {
+    // Parse the handshake request
+    match crate::messages::machine::root_as_handshake(&request) {
         Ok(_handshake_req) => {
             // Mark this peer as confirmed
             ensure_handshake_state(&peer, handshake_states).confirmed = true;
 
-            // Create a handshake response wrapped in a signed envelope
+            // Create a handshake response
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -48,21 +33,7 @@ pub fn handshake_request<F>(
                 &peer.to_string(),
             );
 
-            // Wrap in signed envelope
-            let sign_cfg = SignEnvelopeConfig {
-                nonce: Some(&nonce),
-                timestamp: Some(timestamp),
-                ..Default::default()
-            };
-
-            match sign_with_node_keys(&handshake_response, "handshake", sign_cfg) {
-                Ok(signed) => send_response(signed.bytes),
-                Err(e) => {
-                    log::error!("failed to sign handshake response: {:?}", e);
-                    let error_response = crate::messages::machine::build_handshake(0, 0, "", "");
-                    send_response(error_response);
-                }
-            }
+            send_response(handshake_response);
             //log::info!("libp2p: sent handshake response to peer={}", peer);
         }
         Err(e) => {
@@ -81,17 +52,8 @@ pub fn handshake_response(
 ) {
     //log::info!("libp2p: received handshake response from peer={}", peer);
 
-    // Verify the signed envelope for handshake response
-    let verified = match verify_signed_message(&peer, &response, |err| {
-        log::error!("rejecting invalid handshake response: {}", err);
-    }) {
-        Some(envelope) => envelope,
-        None => return,
-    };
-    let effective_response = verified.payload;
-
     // Parse the response
-    match crate::messages::machine::root_as_handshake(&effective_response) {
+    match crate::messages::machine::root_as_handshake(&response) {
         Ok(_handshake_resp) => {
             //log::debug!("libp2p: handshake response - signature={:?}", handshake_resp.signature());
 
