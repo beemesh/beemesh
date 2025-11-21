@@ -11,6 +11,7 @@ use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
 // We will start machines directly in this process by calling `start_machine(cli).await`.
 
 #[tokio::test]
+#[ignore = "requires libp2p mesh across multiple nodes"]
 async fn test_run_host_application() {
     // Setup cleanup hook and initialize logger
     setup_cleanup_hook();

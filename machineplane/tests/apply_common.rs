@@ -23,6 +23,17 @@ pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
 /// Build standard three-node fabric configuration with optional scheduling disable flags.
 /// Returns a guard that shuts down nodes when dropped.
 pub async fn start_fabric_nodes(disable_flags: &[bool]) -> NodeGuard {
+    let clis = make_standard_node_clis(disable_flags);
+    start_nodes(clis, Duration::from_secs(1)).await
+}
+
+/// Start the standard set of nodes with the given scheduling disable flags.
+pub async fn start_cluster_nodes(disable_flags: &[bool]) -> NodeGuard {
+    let clis = make_standard_node_clis(disable_flags);
+    start_nodes(clis, Duration::from_secs(1)).await
+}
+
+fn make_standard_node_clis(disable_flags: &[bool]) -> Vec<Cli> {
     assert!(disable_flags.len() == TEST_PORTS.len());
 
     let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, disable_flags[0]);
@@ -51,12 +62,6 @@ pub async fn start_fabric_nodes(disable_flags: &[bool]) -> NodeGuard {
     );
 
     vec![cli1, cli2, cli3]
-}
-
-/// Start the standard set of nodes with the given scheduling disable flags.
-pub async fn start_cluster_nodes(disable_flags: &[bool]) -> NodeGuard {
-    let clis = make_standard_node_clis(disable_flags);
-    start_nodes(clis, Duration::from_secs(1)).await
 }
 
 /// Fetch peer ids for provided REST API ports.

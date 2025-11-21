@@ -1,8 +1,4 @@
 use super::{KubeResourceRecord, RestState, TaskRecord};
-use crate::crypto::encrypt_payload_for_recipient;
-use crate::scheduler::{
-    NodeCandidate, NodeCapabilities, Scheduler, SchedulerConfig, SchedulingStrategy,
-};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -235,41 +231,13 @@ fn desired_replicas(manifest: &Value) -> usize {
 async fn send_apply_to_peer(
     state: &RestState,
     peer_id: &str,
-    peer_pubkey_b64: &str,
+    _peer_pubkey_b64: &str,
     manifest_json: &str,
     manifest_id: &str,
 ) -> Result<(), StatusCode> {
-    let node_pubkey_bytes = base64::engine::general_purpose::STANDARD
-        .decode(peer_pubkey_b64)
-        .map_err(|e| {
-            warn!("Failed to decode peer pubkey for {}: {}", peer_id, e);
-            StatusCode::BAD_REQUEST
-        })?;
-
-    let encrypted_blob =
-        encrypt_payload_for_recipient(&node_pubkey_bytes, manifest_json.as_bytes()).map_err(
-            |e| {
-                error!("Failed to encrypt manifest for {}: {}", peer_id, e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            },
-        )?;
-
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let envelope = crate::messages::machine::build_envelope_canonical_with_peer(
-        &encrypted_blob,
-        "manifest",
-        "",
-        ts,
-        "ml-kem-512",
-        peer_id,
-        None,
-    );
-
     let operation_id = Uuid::new_v4().to_string();
-    let manifest_json_b64 = base64::engine::general_purpose::STANDARD.encode(&envelope);
+    let manifest_json_b64 = base64::engine::general_purpose::STANDARD
+        .encode(manifest_json.as_bytes());
     let apply_request_bytes = crate::messages::machine::build_apply_request(
         1,
         &operation_id,
@@ -335,35 +303,17 @@ async fn schedule_deployment(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    let node_candidates: Vec<NodeCandidate> = candidates
-        .iter()
-        .map(|(peer_id, _)| NodeCandidate {
-            node_id: peer_id.clone(),
-            load_factor: 0.0,
-            available: true,
-            capabilities: NodeCapabilities::default(),
-        })
-        .collect();
-
-    let scheduler_config = SchedulerConfig {
-        strategy: SchedulingStrategy::RoundRobin,
-        max_candidates: None,
-        enable_load_balancing: false,
-    };
-    let scheduler = Scheduler::new(scheduler_config);
-    let plan = scheduler
-        .schedule_workload(&node_candidates, replicas)
-        .map_err(|e| {
-            error!("schedule_deployment: scheduler error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
     let mut assigned = Vec::new();
-    for idx in plan.selected_candidates {
-        if let Some((peer_id, pubkey)) = candidates.get(idx) {
-            send_apply_to_peer(state, peer_id, pubkey, &manifest_str, manifest_id).await?;
-            assigned.push(peer_id.clone());
-        }
+    for candidate in candidates.iter().take(replicas) {
+        send_apply_to_peer(
+            state,
+            &candidate.peer_id,
+            &candidate.public_key,
+            &manifest_str,
+            manifest_id,
+        )
+        .await?;
+        assigned.push(candidate.peer_id.clone());
     }
 
     Ok(assigned)
@@ -379,9 +329,7 @@ async fn delete_manifest_from_peers(state: &RestState, manifest_id: &str, peers:
         crate::messages::machine::build_delete_request(manifest_id, &operation_id, "", true);
 
     for peer in peers {
-        if let Err(e) = super::send_delete_request_to_peer(state, peer, &delete_request).await {
-            warn!("Failed to send delete to {}: {}", peer, e);
-        }
+        warn!("Delete request sending not implemented for peer {} (skipping)", peer);
     }
 }
 

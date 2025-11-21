@@ -36,6 +36,7 @@ time = { version = "0.3", features = ["formatting"] }
 reqwest = { workspace = true }
 zeroize = "1.5"
 bincode = "1.3"
+sha2 = "0.10"
 
 [dev-dependencies]
 serial_test = "3.0"

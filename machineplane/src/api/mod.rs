@@ -1,4 +1,5 @@
 use crate::messages::constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_MS};
+use crate::messages::types::CandidateNode;
 #[cfg(debug_assertions)]
 use crate::runtimes::RuntimeEngine;
 use axum::{
@@ -20,6 +21,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
+
+async fn create_response_with_fallback(
+    body: &[u8],
+) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header("Content-Type", "application/octet-stream")
+        .body(axum::body::Body::from(body.to_vec()))
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+}
 
 pub mod kube;
 
@@ -170,7 +181,7 @@ pub(crate) async fn collect_candidate_pubkeys(
     state: &RestState,
     task_id: &str,
     max_candidates: usize,
-) -> Result<Vec<(String, String)>, axum::http::StatusCode> {
+) -> Result<Vec<CandidateNode>, axum::http::StatusCode> {
     let request_id = format!(
         "{}:{}:{}",
         FREE_CAPACITY_PREFIX,
@@ -221,13 +232,16 @@ pub(crate) async fn collect_candidate_pubkeys(
         }
     }
 
-    let mut candidates: Vec<(String, String)> = Vec::new();
+    let mut candidates: Vec<CandidateNode> = Vec::new();
     for peer_with_key in responders {
         if let Some(colon_pos) = peer_with_key.find(':') {
             let peer_id_str = &peer_with_key[..colon_pos];
             let pubkey_b64 = &peer_with_key[colon_pos + 1..];
             if !pubkey_b64.is_empty() {
-                candidates.push((peer_id_str.to_string(), pubkey_b64.to_string()));
+                candidates.push(CandidateNode {
+                    peer_id: peer_id_str.to_string(),
+                    public_key: pubkey_b64.to_string(),
+                });
             } else {
                 log::warn!(
                     "collect_candidate_pubkeys: peer {} has no public key, skipping",
@@ -409,6 +423,7 @@ pub async fn create_task(
         &task_id,
         &manifest_id,
         FREE_CAPACITY_TIMEOUT_MS,
+        "",
     );
 
     // Return plain response

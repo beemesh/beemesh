@@ -1,5 +1,5 @@
-use crate::crypto::logging::ProtocolLogger;
 use libp2p::request_response;
+use log::warn;
 
 /// Direction of the failure (inbound or outbound)
 #[derive(Debug, Clone, Copy)]
@@ -24,7 +24,13 @@ pub fn handle_failure<E: std::fmt::Debug>(
     peer: libp2p::PeerId,
     error: E,
 ) {
-    ProtocolLogger::log_failure(protocol, &format!("{}", direction), peer, error);
+    warn!(
+        "{} {} failure with peer {}: {:?}",
+        protocol,
+        direction,
+        peer,
+        error
+    );
 }
 
 /// Specialized handler for apply protocol inbound failures

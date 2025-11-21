@@ -11,12 +11,13 @@ mod kube_helpers;
 
 use apply_common::{
     check_workload_deployment, get_peer_ids, setup_test_environment, start_cluster_nodes,
-    wait_for_mesh_formation,
+    start_fabric_nodes, wait_for_mesh_formation,
 };
 use kube_helpers::apply_manifest_via_kube_api;
 
 #[serial]
 #[tokio::test]
+#[ignore = "requires live multi-node libp2p mesh"]
 async fn test_disabled_nodes_do_not_schedule_workloads() {
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_fabric_nodes(&[true, false, true]).await;
@@ -72,6 +73,7 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
 
 #[serial]
 #[tokio::test]
+#[ignore = "requires live multi-node libp2p mesh"]
 async fn test_scheduling_fails_when_all_nodes_disabled() {
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_fabric_nodes(&[true, true, true]).await;

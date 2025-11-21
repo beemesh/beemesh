@@ -9,7 +9,6 @@ use crate::messages::machine;
 use crate::placement::{PlacementConfig, PlacementManager};
 use crate::capacity::CapacityVerifier;
 use crate::runtimes::{DeploymentConfig, RuntimeRegistry, create_default_registry};
-use base64::Engine;
 use libp2p::Swarm;
 use libp2p::request_response;
 use log::{debug, error, info, warn};
@@ -17,6 +16,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use crate::messages::types::ApplyRequest;
 
 /// Global runtime registry for all available engines
 static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
@@ -152,47 +152,20 @@ pub async fn handle_apply_message_with_podman_manager(
         } => {
             info!("Received apply request from peer={}", peer);
 
-            // Verify request as a FlatBuffer Envelope
-            let (effective_request, owner_pubkey) =
-                match crate::network::security::verify_envelope_and_check_nonce_for_peer(
-                    &request,
-                    &peer.to_string(),
-                ) {
-                    Ok(parts) => (parts.payload, parts.pubkey),
-                    Err(e) => {
-                        if crate::network::security::require_signed_messages() {
-                            error!("Rejecting unsigned/invalid apply request: {:?}", e);
-                            let error_response = machine::build_apply_response(
-                                false,
-                                "unknown",
-                                "unsigned or invalid envelope",
-                            );
-                            let _ = swarm
-                                .behaviour_mut()
-                                .apply_rr
-                                .send_response(channel, error_response);
-                            return;
-                        }
-                        warn!(
-                            "Accepting unsigned apply request from peer={} due to relaxed policy",
-                            peer
-                        );
-                        (request.clone(), Vec::new())
-                    }
-                };
-
-            // Parse the FlatBuffer apply request
-            match machine::root_as_apply_request(&effective_request) {
+            // Parse the apply request
+            match machine::root_as_apply_request(&request) {
                 Ok(apply_req) => {
                     info!(
                         "Apply request - operation_id={:?} replicas={}",
-                        apply_req.operation_id(),
-                        apply_req.replicas()
+                        apply_req.operation_id,
+                        apply_req.replicas
                     );
 
+                    let owner_pubkey = Vec::new();
+
                     // Extract and validate manifest
-                    if let Some(manifest_json) = apply_req.manifest_json() {
-                        let manifest_id = apply_req.manifest_id().unwrap_or("");
+                    if !apply_req.manifest_json.is_empty() {
+                        let manifest_id = apply_req.manifest_id.as_str();
                         if manifest_id.is_empty() {
                             warn!(
                                 "Apply request missing manifest_id; rejecting from peer={}",
@@ -230,12 +203,12 @@ pub async fn handle_apply_message_with_podman_manager(
                             return;
                         }
 
-                        match process_manifest_deployment(
-                            swarm,
-                            &apply_req,
-                            manifest_json,
-                            &owner_pubkey,
-                        )
+                match process_manifest_deployment(
+                    swarm,
+                    &apply_req,
+                    &apply_req.manifest_json,
+                    &owner_pubkey,
+                )
                         .await
                         {
                             Ok(workload_id) => {
@@ -305,7 +278,7 @@ pub async fn handle_apply_message_with_podman_manager(
 /// Process manifest deployment using the workload manager
 async fn process_manifest_deployment(
     swarm: &mut Swarm<MyBehaviour>,
-    apply_req: &machine::ApplyRequest<'_>,
+    apply_req: &ApplyRequest,
     manifest_json: &str,
     owner_pubkey: &[u8],
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -316,7 +289,11 @@ async fn process_manifest_deployment(
 
     // Use the manifest_id from the apply request for placement announcements
     // This ensures consistency between apply and delete operations
-    let manifest_id = apply_req.manifest_id().unwrap_or("unknown").to_string();
+    let manifest_id = if apply_req.manifest_id.is_empty() {
+        "unknown".to_string()
+    } else {
+        apply_req.manifest_id.clone()
+    };
 
     info!(
         "Processing manifest deployment for manifest_id: {}",
@@ -525,17 +502,17 @@ async fn select_runtime_engine(
 
 
 /// Create deployment configuration from apply request
-fn create_deployment_config(apply_req: &machine::ApplyRequest) -> DeploymentConfig {
+fn create_deployment_config(apply_req: &ApplyRequest) -> DeploymentConfig {
     let mut config = DeploymentConfig::default();
 
     // Set replicas
-    config.replicas = apply_req.replicas();
+    config.replicas = apply_req.replicas;
 
     // Metadata from apply request can be added here if needed
-    if let Some(operation_id) = apply_req.operation_id() {
+    if !apply_req.operation_id.is_empty() {
         config
             .env
-            .insert("BEEMESH_OPERATION_ID".to_string(), operation_id.to_string());
+            .insert("BEEMESH_OPERATION_ID".to_string(), apply_req.operation_id.clone());
     }
 
     config
@@ -554,17 +531,20 @@ pub async fn process_enhanced_self_apply_request(manifest: &[u8], swarm: &mut Sw
         Ok(apply_req) => {
             debug!(
                 "Enhanced self-apply request - operation_id={:?} replicas={}",
-                apply_req.operation_id(),
-                apply_req.replicas()
+                apply_req.operation_id,
+                apply_req.replicas
             );
 
-            if let Some(manifest_json) = apply_req.manifest_json() {
-                let owner_pubkey =
-                    crate::crypto::keypair_manager::KeypairManager::get_default_signing_keypair()
-                        .map(|(pub_bytes, _)| pub_bytes)
-                        .unwrap_or_default();
+            if !apply_req.manifest_json.is_empty() {
+                let manifest_json = apply_req.manifest_json.clone();
+                let owner_pubkey = Vec::new();
 
-                match process_manifest_deployment(swarm, &apply_req, manifest_json, &owner_pubkey)
+                match process_manifest_deployment(
+                    swarm,
+                    &apply_req,
+                    &manifest_json,
+                    &owner_pubkey,
+                )
                     .await
                 {
                     Ok(workload_id) => {
@@ -750,21 +730,6 @@ pub async fn get_workload_logs_by_id(
 
     let logs = engine.get_workload_logs(workload_id, tail).await?;
     Ok(logs)
-}
-
-/// Discover providers for a manifest
-pub async fn discover_manifest_providers(
-    swarm: &mut Swarm<MyBehaviour>,
-    manifest_id: &str,
-) -> Result<Vec<crate::provider::ProviderInfo>, Box<dyn std::error::Error>> {
-    if let Some(provider_manager) = PROVIDER_MANAGER.read().await.as_ref() {
-        let providers = provider_manager
-            .discover_providers(swarm, manifest_id)
-            .await?;
-        Ok(providers)
-    } else {
-        Ok(Vec::new())
-    }
 }
 
 #[cfg(test)]

@@ -1,12 +1,11 @@
 use super::failure_handlers::{FailureDirection, handle_failure};
-use super::message_verifier::verify_signed_message;
 use crate::messages::machine;
+use crate::run::remove_workloads_by_manifest_id;
 use libp2p::request_response;
 use log::{error, info, warn};
 
 const UNKNOWN_OPERATION: &str = "unknown";
 const UNKNOWN_MANIFEST: &str = "unknown";
-const UNSIGNED_MESSAGE: &str = "unsigned or invalid envelope";
 const INVALID_FORMAT: &str = "invalid delete request format";
 const ACK_MESSAGE: &str = "delete request received and processing";
 
@@ -31,45 +30,26 @@ pub fn delete_message(
         } => {
             info!("Received delete request from peer={}", peer);
 
-            let verified = match verify_signed_message(&peer, &request, |err| {
-                error!("Rejecting delete request with invalid signature: {}", err);
-            }) {
-                Some(envelope) => envelope,
-                None => {
-                    let error_response = delete_error_response(UNSIGNED_MESSAGE);
-                    let _ = swarm
-                        .behaviour_mut()
-                        .delete_rr
-                        .send_response(channel, error_response);
-                    return;
-                }
-            };
-
-            let envelope_pubkey = verified.pubkey.clone();
-            let effective_request = verified.payload;
-
-            // Parse the FlatBuffer delete request
-            match machine::root_as_delete_request(&effective_request) {
+            // Parse the delete request
+            match machine::root_as_delete_request(&request) {
                 Ok(delete_req) => {
                     info!(
                         "Delete request - manifest_id={:?} operation_id={:?} force={}",
-                        delete_req.manifest_id(),
-                        delete_req.operation_id(),
-                        delete_req.force()
+                        &delete_req.manifest_id,
+                        &delete_req.operation_id,
+                        delete_req.force
                     );
 
                     // Process the delete request asynchronously
-                    let manifest_id = delete_req.manifest_id().unwrap_or("").to_string();
-                    let operation_id = delete_req.operation_id().unwrap_or("").to_string();
-                    let force = delete_req.force();
+                    let manifest_id = delete_req.manifest_id.clone();
+                    let operation_id = delete_req.operation_id.clone();
+                    let force = delete_req.force;
                     let requesting_peer = peer.to_string();
-                    let envelope_pubkey_inner = envelope_pubkey.clone();
 
                     tokio::spawn(async move {
                         let (success, message, removed_workloads) = process_delete_request(
                             &manifest_id,
                             force,
-                            &envelope_pubkey_inner,
                             &requesting_peer,
                         )
                         .await;
@@ -92,8 +72,8 @@ pub fn delete_message(
 
                     // Send immediate acknowledgment (the actual processing happens async)
                     let ack_response = delete_ack_response(
-                        delete_req.operation_id().unwrap_or(UNKNOWN_OPERATION),
-                        delete_req.manifest_id().unwrap_or(UNKNOWN_MANIFEST),
+                        delete_req.operation_id.as_str(),
+                        delete_req.manifest_id.as_str(),
                     );
                     let _ = swarm
                         .behaviour_mut()
@@ -118,12 +98,10 @@ pub fn delete_message(
                 Ok(delete_resp) => {
                     info!(
                         "Delete response - ok={} operation_id={:?} message={:?} removed_workloads={:?}",
-                        delete_resp.ok(),
-                        delete_resp.operation_id(),
-                        delete_resp.message(),
-                        delete_resp
-                            .removed_workloads()
-                            .map(|w| w.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                        delete_resp.ok,
+                        &delete_resp.operation_id,
+                        &delete_resp.message,
+                        Some(delete_resp.removed_workloads.clone())
                     );
                 }
                 Err(e) => {
@@ -138,57 +116,16 @@ pub fn delete_message(
 async fn process_delete_request(
     manifest_id: &str,
     force: bool,
-    envelope_pubkey: &[u8],
     _requesting_peer: &str,
 ) -> (bool, String, Vec<String>) {
-    // Step 1: Verify ownership before proceeding
-    let ownership_check = match verify_delete_ownership(manifest_id, envelope_pubkey).await {
-        Ok(status) => status,
-        Err(e) => {
-            error!(
-                "Delete ownership verification error for manifest_id={}: {}",
-                manifest_id, e
-            );
-            return (
-                false,
-                format!("ownership verification error: {}", e),
-                vec![],
-            );
-        }
-    };
-
-    match ownership_check {
-        OwnershipStatus::Match => {
-            info!("Delete ownership verified for manifest_id={}", manifest_id);
-        }
-        OwnershipStatus::Mismatch => {
-            if force {
-                warn!(
-                    "Forced delete proceeding despite ownership mismatch for manifest_id={}",
-                    manifest_id
-                );
-            } else {
-                warn!(
-                    "Delete ownership mismatch for manifest_id={}, denying request",
-                    manifest_id
-                );
-                return (false, "ownership verification failed".to_string(), vec![]);
-            }
-        }
-        OwnershipStatus::Unknown => {
-            warn!(
-                "Delete ownership unknown for manifest_id={}, denying request",
-                manifest_id
-            );
-            return (
-                false,
-                "ownership unknown for manifest on this node".to_string(),
-                vec![],
-            );
-        }
+    if !force {
+        warn!(
+            "Processing delete request for manifest_id={} without explicit ownership validation",
+            manifest_id
+        );
     }
 
-    // Step 2: Remove workloads using the workload manager
+    // Remove workloads using the workload manager
     match remove_workloads_by_manifest_id(manifest_id).await {
         Ok(removed_workloads) => {
             if removed_workloads.is_empty() {
@@ -217,129 +154,6 @@ async fn process_delete_request(
                 manifest_id, e
             );
             (false, format!("failed to remove workloads: {}", e), vec![])
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum OwnershipStatus {
-    Match,
-    Mismatch,
-    Unknown,
-}
-
-/// Verify that the requesting peer is the owner of the manifest.
-async fn verify_delete_ownership(
-    manifest_id: &str,
-    envelope_pubkey: &[u8],
-) -> Result<OwnershipStatus, anyhow::Error> {
-    info!(
-        "verify_delete_ownership: manifest_id={} envelope_pubkey_len={}",
-        manifest_id,
-        envelope_pubkey.len()
-    );
-
-    let stored_owner = crate::run::get_manifest_owner(manifest_id).await;
-
-    let Some(owner_pubkey) = stored_owner else {
-        warn!(
-            "verify_delete_ownership: manifest_id={} has no recorded owner on this node",
-            manifest_id
-        );
-        return Ok(OwnershipStatus::Unknown);
-    };
-
-    if owner_pubkey.is_empty() {
-        warn!(
-            "verify_delete_ownership: manifest_id={} recorded owner is empty",
-            manifest_id
-        );
-        return Ok(OwnershipStatus::Unknown);
-    }
-
-    if owner_pubkey == envelope_pubkey {
-        Ok(OwnershipStatus::Match)
-    } else {
-        warn!(
-            "verify_delete_ownership: owner mismatch for manifest_id={} (expected len={}, provided len={})",
-            manifest_id,
-            owner_pubkey.len(),
-            envelope_pubkey.len()
-        );
-        Ok(OwnershipStatus::Mismatch)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn verify_delete_ownership_unknown_when_unrecorded() {
-        let manifest_id = "test-ownership-unknown";
-        let _ = crate::run::remove_manifest_owner(manifest_id).await;
-
-        let status = verify_delete_ownership(manifest_id, b"any")
-            .await
-            .expect("ownership check to succeed");
-
-        assert_eq!(status, OwnershipStatus::Unknown);
-    }
-
-    #[tokio::test]
-    async fn verify_delete_ownership_matches_recorded_owner() {
-        let manifest_id = "test-ownership-match";
-        let owner = vec![1u8, 2, 3];
-        crate::run::record_manifest_owner(manifest_id, &owner).await;
-
-        let status = verify_delete_ownership(manifest_id, &owner)
-            .await
-            .expect("ownership check to succeed");
-
-        assert_eq!(status, OwnershipStatus::Match);
-
-        let _ = crate::run::remove_manifest_owner(manifest_id).await;
-    }
-
-    #[tokio::test]
-    async fn verify_delete_ownership_detects_mismatch() {
-        let manifest_id = "test-ownership-mismatch";
-        let owner = vec![4u8, 5, 6];
-        crate::run::record_manifest_owner(manifest_id, &owner).await;
-
-        let status = verify_delete_ownership(manifest_id, &[9u8, 8, 7])
-            .await
-            .expect("ownership check to succeed");
-
-        assert_eq!(status, OwnershipStatus::Mismatch);
-
-        let _ = crate::run::remove_manifest_owner(manifest_id).await;
-    }
-}
-
-/// Remove workloads associated with a manifest ID
-async fn remove_workloads_by_manifest_id(manifest_id: &str) -> Result<Vec<String>, anyhow::Error> {
-    info!(
-        "remove_workloads_by_manifest_id: manifest_id={}",
-        manifest_id
-    );
-
-    // Use the integrated workload manager to remove workloads
-    match crate::run::remove_workloads_by_manifest_id(manifest_id).await {
-        Ok(removed_workloads) => {
-            info!(
-                "Successfully removed {} workloads for manifest_id '{}'",
-                removed_workloads.len(),
-                manifest_id
-            );
-            Ok(removed_workloads)
-        }
-        Err(e) => {
-            error!(
-                "Failed to remove workloads for manifest_id '{}': {}",
-                manifest_id, e
-            );
-            Err(anyhow::anyhow!("Failed to remove workloads: {}", e))
         }
     }
 }

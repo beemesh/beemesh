@@ -1,4 +1,7 @@
-use machine::protocol::machine::{build_applied_manifest, root_as_applied_manifest};
+use machine::messages::{
+    machine::{build_applied_manifest, root_as_applied_manifest},
+    KeyValue, OperationType, SignatureScheme,
+};
 
 #[test]
 fn test_applied_manifest_owner_fields_roundtrip() {
@@ -9,7 +12,7 @@ fn test_applied_manifest_owner_fields_roundtrip() {
     let signature = vec![9u8, 8u8, 7u8];
     let manifest_json = "{\"k\":\"v\"}";
     let manifest_kind = "Test";
-    let labels: Vec<(String, String)> = vec![];
+    let labels: Vec<KeyValue> = vec![];
     let timestamp = 123456789u64;
 
     let buf = build_applied_manifest(
@@ -18,16 +21,18 @@ fn test_applied_manifest_owner_fields_roundtrip() {
         origin_peer,
         &owner_pub,
         &signature,
+        SignatureScheme::None,
         manifest_json,
         manifest_kind,
-        labels,
+        &labels,
         timestamp,
+        OperationType::Apply,
         3600,
         "chash",
     );
 
     let parsed = root_as_applied_manifest(&buf).expect("parse");
-    assert_eq!(parsed.id().unwrap(), id);
-    assert_eq!(parsed.owner_pubkey().unwrap().len(), 3);
-    assert_eq!(parsed.signature().unwrap().len(), 3);
+    assert_eq!(parsed.id, id);
+    assert_eq!(parsed.owner_pubkey.len(), 3);
+    assert_eq!(parsed.signature.len(), 3);
 }

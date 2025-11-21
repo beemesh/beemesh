@@ -34,44 +34,31 @@ pub async fn handle_send_apply_request(
     // Before sending the apply, create a capability token tied to this manifest and
     // send it to the target peer so they can store it in their keystore.
     // Compute a manifest_id deterministically when possible (follow same heuristic as apply_message)
-    let _manifest_id =
-        if let Ok(apply_req) = crate::messages::machine::root_as_apply_request(&manifest) {
-            if let (Some(operation_id), Some(manifest_json)) =
-                (apply_req.operation_id(), apply_req.manifest_json())
-            {
-                let mut hasher = DefaultHasher::new();
-                operation_id.hash(&mut hasher);
-                manifest_json.hash(&mut hasher);
-                format!("{:x}", hasher.finish())
-            } else {
-                // Fallback to hashing raw bytes
-                let mut hasher = DefaultHasher::new();
-                manifest.hash(&mut hasher);
-                format!("{:x}", hasher.finish())
-            }
+    let _manifest_id = if let Ok(apply_req) = crate::messages::machine::root_as_apply_request(&manifest) {
+        if !apply_req.operation_id.is_empty() && !apply_req.manifest_json.is_empty() {
+            let mut hasher = DefaultHasher::new();
+            apply_req.operation_id.hash(&mut hasher);
+            apply_req.manifest_json.hash(&mut hasher);
+            format!("{:x}", hasher.finish())
         } else {
+            // Fallback to hashing raw bytes
             let mut hasher = DefaultHasher::new();
             manifest.hash(&mut hasher);
             format!("{:x}", hasher.finish())
-        };
+        }
+    } else {
+        let mut hasher = DefaultHasher::new();
+        manifest.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    };
 
     // No capability token needed - direct manifest application
 
-    // Sign the apply request in an envelope before sending
-    let signed_apply_request =
-        match utils::sign_payload_default(&manifest, "apply_request", Some("apply")) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!("failed to sign apply request for peer {}: {:?}", peer_id, e);
-                manifest
-            }
-        };
-
-    // Finally send the (now signed) apply request
+    // Finally send the apply request
     let request_id = swarm
         .behaviour_mut()
         .apply_rr
-        .send_request(&peer_id, signed_apply_request);
+        .send_request(&peer_id, manifest);
     info!(
         "libp2p: sent apply request to peer={} request_id={:?}",
         peer_id, request_id

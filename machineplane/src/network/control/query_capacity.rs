@@ -27,40 +27,34 @@ pub async fn handle_query_capacity_with_payload(
         .or_insert_with(Vec::new)
         .push(reply_tx);
 
-    // Parse the provided payload as a CapacityRequest FlatBuffer and rebuild it into a TopicMessage wrapper
+    // Parse the provided payload and rebuild it into a TopicMessage wrapper
     match crate::messages::machine::root_as_capacity_request(&payload) {
         Ok(cap_req) => {
-            // Rebuild a CapacityRequest flatbuffer embedding the request_id.
-            let mut fbb = flatbuffers::FlatBufferBuilder::new();
-            let req_id_off = fbb.create_string(&request_id);
-            let cpu = cap_req.cpu_milli();
-            let mem = cap_req.memory_bytes();
-            let stor = cap_req.storage_bytes();
-            let reps = cap_req.replicas();
-            let cap_args = crate::messages::machine::CapacityRequestArgs {
-                request_id: Some(req_id_off),
-                cpu_milli: cpu,
-                memory_bytes: mem,
-                storage_bytes: stor,
-                replicas: reps,
-            };
-            let cap_off = crate::messages::machine::CapacityRequest::create(&mut fbb, &cap_args);
-            crate::messages::machine::finish_capacity_request_buffer(&mut fbb, cap_off);
-            let finished = fbb.finished_data().to_vec();
-            // Broadcast signed scheduler requests to peers (centralized helper)
-            match utils::broadcast_signed_request_to_peers(swarm, &finished, "capacity") {
-                Ok(sent) => {
-                    log::info!(
-                        "libp2p: broadcasted capreq request_id={} to {} peers",
-                        request_id,
-                        sent
-                    );
-                }
-                Err(e) => {
-                    log::error!("failed to broadcast capacity request: {:?}", e);
-                    return;
-                }
+            let finished = crate::messages::machine::build_capacity_request_with_id(
+                &request_id,
+                cap_req.cpu_milli,
+                cap_req.memory_bytes,
+                cap_req.storage_bytes,
+                cap_req.replicas,
+            );
+            // Broadcast scheduler requests to peers without additional envelope signing
+            let peers: Vec<libp2p::PeerId> = swarm
+                .behaviour()
+                .gossipsub
+                .all_peers()
+                .map(|(p, _)| p.clone())
+                .collect();
+            for peer in peers.iter() {
+                let _req_id = swarm
+                    .behaviour_mut()
+                    .scheduler_rr
+                    .send_request(peer, finished.clone());
             }
+            log::info!(
+                "libp2p: broadcasted capreq request_id={} to {} peers",
+                request_id,
+                peers.len()
+            );
 
             // Also notify local pending senders directly so the originator is always considered
             // a potential responder. This ensures single-node operation and makes the
@@ -79,9 +73,9 @@ pub async fn handle_query_capacity_with_payload(
                     &request_id,
                     &responder_peer,
                     |params| {
-                        params.cpu_milli = cap_req.cpu_milli();
-                        params.memory_bytes = cap_req.memory_bytes();
-                        params.storage_bytes = cap_req.storage_bytes();
+                        params.cpu_milli = cap_req.cpu_milli;
+                        params.memory_bytes = cap_req.memory_bytes;
+                        params.storage_bytes = cap_req.storage_bytes;
                     },
                 );
                 let local_response = format!(
