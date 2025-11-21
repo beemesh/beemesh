@@ -1,4 +1,5 @@
 use crate::capacity::{CapacityCheckResult, ResourceRequest};
+use crate::messages::constants::{SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
 use crate::network::{capacity, utils};
 use crate::run::get_global_capacity_verifier;
 use libp2p::gossipsub;
@@ -7,9 +8,13 @@ use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
 // Global channel for scheduler messages
-pub static SCHEDULER_INPUT_TX: OnceLock<mpsc::UnboundedSender<(libp2p::gossipsub::TopicHash, libp2p::gossipsub::Message)>> = OnceLock::new();
+pub static SCHEDULER_INPUT_TX: OnceLock<
+    mpsc::UnboundedSender<(libp2p::gossipsub::TopicHash, libp2p::gossipsub::Message)>,
+> = OnceLock::new();
 
-pub fn set_scheduler_input(tx: mpsc::UnboundedSender<(libp2p::gossipsub::TopicHash, libp2p::gossipsub::Message)>) {
+pub fn set_scheduler_input(
+    tx: mpsc::UnboundedSender<(libp2p::gossipsub::TopicHash, libp2p::gossipsub::Message)>,
+) {
     let _ = SCHEDULER_INPUT_TX.set(tx);
 }
 
@@ -25,10 +30,19 @@ pub fn gossipsub_message(
 ) {
     debug!("received message from {}", peer_id);
     let payload = &message.data;
-    
+
     // Check if this is a scheduler topic
-    let topic_str = topic.to_string();
-    if topic_str.contains("scheduler-") {
+    static SCHEDULER_TOPICS: OnceLock<[gossipsub::TopicHash; 3]> = OnceLock::new();
+
+    let scheduler_topics = SCHEDULER_TOPICS.get_or_init(|| {
+        [
+            gossipsub::IdentTopic::new(SCHEDULER_TENDERS).hash(),
+            gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS).hash(),
+            gossipsub::IdentTopic::new(SCHEDULER_EVENTS).hash(),
+        ]
+    });
+
+    if scheduler_topics.contains(&topic) {
         if let Some(tx) = SCHEDULER_INPUT_TX.get() {
             if let Err(e) = tx.send((topic, message)) {
                 error!("Failed to forward scheduler message: {}", e);
@@ -36,7 +50,7 @@ pub fn gossipsub_message(
         } else {
             warn!("Scheduler input channel not initialized, dropping message");
         }
-        return; 
+        return;
     }
 
     // Then try CapacityReply
