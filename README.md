@@ -44,7 +44,7 @@ CAP trade-offs are expressed as **A/P** (Availability + Partition Tolerance) and
 
 | Concern       | Purpose                                                                                                                                                                                                  | CAP Trade-off                                  |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| **Machine**   | Node discovery and ephemeral task negotiations; stores nothing. Machines are loosely coupled.                                                                                                            | **A/P** - Availability and Partition Tolerance |
+| **Machine**   | Node discovery and ephemeral tender negotiations; stores nothing. Machines are loosely coupled.                                                                                                            | **A/P** - Availability and Partition Tolerance |
 | **Workload**  | Service discovery between workloads; maintains workload state and connectivity information. Workloads are loosely coupled to each other but tightly coherent internally, whether stateless or stateful. | **C/P** - Consistency and Partition Tolerance  |
 
 > **Key benefit:** Machine failures do **not** pollute the workload. Each concern is isolated and optimized for its purpose, ensuring security, scalability, and reliability by design. This separation eliminates cross-cutting concerns and allows **each plane to optimize independently**. Scoping each plane to its domain prevents the monolithic anti-patterns that control-plane-centric platforms preserve.
@@ -151,7 +151,7 @@ The **Machineplane** manages infrastructure resources and scheduling, with **no 
 #### **Responsibilities (explicit)**
 
 * Node discovery via **Machine DHT**.
-* Decentralized workload scheduling using ephemeral task negotiations.
+* Decentralized workload scheduling using ephemeral tender negotiations.
 * Fabric-level coordination through secure, mutually authenticated streams.
 * Resource offering and bidding, capability advertisement, and local policy enforcement.
 * Lifecycle hooks to start and stop workloads via the runtime (for example, **Podman**).
@@ -164,19 +164,19 @@ The **Machineplane** manages infrastructure resources and scheduling, with **no 
 
 Traditional schedulers maintain global fabric state and enforce consensus (Raft, etcd), creating bottlenecks.
 
-Beemesh uses **ephemeral scheduling**: **tasks are never persisted**, and scheduling happens dynamically across the scale-out fabric. The Machineplane provides **at-least-once** scheduling semantics and is **duplicate-tolerant** by design.
+Beemesh uses **ephemeral scheduling**: **tenders are never persisted**, and scheduling happens dynamically across the scale-out fabric. The Machineplane provides **at-least-once** scheduling semantics and is **duplicate-tolerant** by design.
 
 #### **Step-by-Step Flow**
 
-1. **Task Publication**
+1. **Tender Publication**
 
-   * A new workload task is published on the `scheduler-tasks` Pub/Sub topic.
-   * **Task payload includes:** resource requirements (CPU, memory, and so on), priority and QoS hints, and a **workload manifest reference**.
+   * A new workload tender is published on the `scheduler-tenders` Pub/Sub topic.
+   * **Tender payload includes:** resource requirements (CPU, memory, and so on), priority and QoS hints, and a **workload manifest reference**.
 
 2. **Local Resource Evaluation**
 
-   * Each node listens to the task topic and evaluates current resource availability and local policies (affinity rules, hardware constraints).
-   * Nodes that **do not** satisfy the requirements or policies **do not bid**; they simply drop the Task after local evaluation.
+   * Each node listens to the tender topic and evaluates current resource availability and local policies (affinity rules, hardware constraints).
+   * Nodes that **do not** satisfy the requirements or policies **do not bid**; they simply drop the Tender after local evaluation.
 
 3. **Bidding Phase**
 
@@ -198,7 +198,7 @@ Beemesh uses **ephemeral scheduling**: **tasks are never persisted**, and schedu
 | Advantage                      | Why It Matters                                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
 | **No single point of failure** | No central scheduler to crash or be partitioned.                                                        |
-| **Low coordination overhead**  | Tasks are transient and do not require consensus.                                                       |
+| **Low coordination overhead**  | Tenders are transient and do not require consensus.                                                       |
 | **Partition tolerance**        | Nodes continue to schedule independently during network splits.                                         |
 | **High throughput**            | Scales naturally with node count.                                                                       |
 | **Thundering herd mitigation** | Only nodes that match placement and resource criteria bid, so reply volume stays bounded even at scale. |

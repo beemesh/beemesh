@@ -4,7 +4,7 @@
 //! evaluate their fit, submit Bids, and if they win, acquire a Lease.
 
 use crate::messages::constants::{
-    DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TASKS,
+    DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
 use crate::messages::machine;
 use crate::messages::types::{Bid, LeaseHint, SchedulerEvent, Task};
@@ -36,7 +36,10 @@ struct BidContext {
 }
 
 impl Scheduler {
-    pub fn new(local_node_id: String, outbound_tx: mpsc::UnboundedSender<(String, Vec<u8>)>) -> Self {
+    pub fn new(
+        local_node_id: String,
+        outbound_tx: mpsc::UnboundedSender<(String, Vec<u8>)>,
+    ) -> Self {
         Self {
             local_node_id,
             active_bids: Arc::new(Mutex::new(HashMap::new())),
@@ -52,7 +55,7 @@ impl Scheduler {
     ) {
         let topic_str = topic_hash.to_string();
 
-        if topic_str.contains(SCHEDULER_TASKS) {
+        if topic_str.contains(SCHEDULER_TENDERS) {
             self.handle_task(message).await;
         } else if topic_str.contains(SCHEDULER_PROPOSALS) {
             self.handle_bid(message).await;
@@ -71,14 +74,17 @@ impl Scheduler {
                 // 1. Evaluate Fit (Capacity Check)
                 // TODO: Connect to CapacityVerifier
                 let capacity_score = 1.0; // Placeholder: assume perfect fit for now
-                
+
                 // 2. Calculate Bid Score
                 // Score = (ResourceFit * 0.4) + (NetworkLocality * 0.3) + (Reputation * 0.3)
                 // For now, just use random or static for testing
                 let my_score = capacity_score * 0.8 + 0.2; // Simple formula
 
                 // 3. Create BidContext
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
                 let window_end = now + DEFAULT_SELECTION_WINDOW_MS;
 
                 {
@@ -117,7 +123,10 @@ impl Scheduler {
                     &[], // Signature placeholder
                 );
 
-                if let Err(e) = self.outbound_tx.send((SCHEDULER_PROPOSALS.to_string(), bid_bytes)) {
+                if let Err(e) = self
+                    .outbound_tx
+                    .send((SCHEDULER_PROPOSALS.to_string(), bid_bytes))
+                {
                     error!("Failed to queue bid for task {}: {}", task_id, e);
                 } else {
                     info!("Queued Bid for task {} with score {:.2}", task_id, my_score);
@@ -130,7 +139,7 @@ impl Scheduler {
                 // We need a way to trigger deployment, for now just log
                 tokio::spawn(async move {
                     sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
-                    
+
                     let winner = {
                         let mut bids = active_bids.lock().unwrap();
                         if let Some(ctx) = bids.remove(&task_id_clone) {
@@ -146,17 +155,17 @@ impl Scheduler {
 
                     if winner {
                         info!("WON BID for task {}! Proceeding to Lease...", task_id_clone);
-                        
+
                         // TODO: Write LeaseHint to MDHT (dht_manager.put_record)
-                        // For now, we just log it. Real implementation needs access to dht_manager 
+                        // For now, we just log it. Real implementation needs access to dht_manager
                         // or send a command to the main loop to do it.
-                        
+
                         // Publish LeaseHint (simulated via Event for now)
                         // In reality, we write to DHT and then start the workload.
-                        
+
                         // Trigger Deployment (simulated)
                         info!("Deploying workload for task {}", task_id_clone);
-                        
+
                         // TODO: Call run::deploy_task(...)
                     } else {
                         info!("Lost bid for task {}.", task_id_clone);
@@ -169,7 +178,7 @@ impl Scheduler {
 
     /// Process a Bid message: Update highest bid
     async fn handle_bid(&self, message: &gossipsub::Message) {
-                match machine::root_as_bid(&message.data) {
+        match machine::root_as_bid(&message.data) {
             Ok(bid) => {
                 let task_id = bid.task_id.clone();
                 let bidder_id = bid.node_id.clone();
@@ -183,7 +192,10 @@ impl Scheduler {
                 let mut bids = self.active_bids.lock().unwrap();
                 if let Some(ctx) = bids.get_mut(&task_id) {
                     if score > ctx.highest_bid_score {
-                        info!("Saw higher bid for task {}: {:.2} from {}", task_id, score, bidder_id);
+                        info!(
+                            "Saw higher bid for task {}: {:.2} from {}",
+                            task_id, score, bidder_id
+                        );
                         ctx.highest_bid_score = score;
                         ctx.highest_bidder_id = bidder_id.to_string();
                     }
@@ -200,8 +212,7 @@ impl Scheduler {
                 let task_id = event.task_id.clone();
                 info!(
                     "Received Scheduler Event for task {}: {:?}",
-                    task_id,
-                    event.event_type
+                    task_id, event.event_type
                 );
                 // Handle cancellation etc.
             }

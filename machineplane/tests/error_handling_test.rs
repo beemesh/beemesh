@@ -25,5 +25,5 @@ fn capacity_request_builder_roundtrip() {
 #[test]
 fn extract_manifest_name_handles_missing_fields() {
     assert!(extract_manifest_name(br"{}").is_none());
-    assert!(extract_manifest_name(br"{\"metadata\":{}} ").is_none());
+    assert!(extract_manifest_name(br#"{"metadata":{}} "#).is_none());
 }

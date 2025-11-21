@@ -5,10 +5,8 @@ pub const BEEMESH_FABRIC: &str = "beemesh-fabric";
 
 // === GOSSIPSUB TOPICS ===
 
-/// Topic used for scheduler tasks
-pub const SCHEDULER_TASKS: &str = "scheduler-tasks";
-/// Alias for backwards compatibility
-pub const TOPIC_TASKS: &str = SCHEDULER_TASKS;
+/// Topic used for scheduler tenders
+pub const SCHEDULER_TENDERS: &str = "scheduler-tenders";
 
 /// Topic used for scheduler events
 pub const SCHEDULER_EVENTS: &str = "scheduler-events";
