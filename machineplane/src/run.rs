@@ -9,7 +9,6 @@ use crate::messages::machine;
 use crate::placement::{PlacementConfig, PlacementManager};
 use crate::capacity::CapacityVerifier;
 use crate::runtimes::{DeploymentConfig, RuntimeRegistry, create_default_registry};
-use base64::Engine;
 use libp2p::Swarm;
 use libp2p::request_response;
 use log::{debug, error, info, warn};
@@ -17,6 +16,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use crate::messages::types::ApplyRequest;
 
 /// Global runtime registry for all available engines
 static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
@@ -203,12 +203,12 @@ pub async fn handle_apply_message_with_podman_manager(
                             return;
                         }
 
-                        match process_manifest_deployment(
-                            swarm,
-                            &apply_req,
-                            manifest_json,
-                            &owner_pubkey,
-                        )
+                match process_manifest_deployment(
+                    swarm,
+                    &apply_req,
+                    &apply_req.manifest_json,
+                    &owner_pubkey,
+                )
                         .await
                         {
                             Ok(workload_id) => {
@@ -278,7 +278,7 @@ pub async fn handle_apply_message_with_podman_manager(
 /// Process manifest deployment using the workload manager
 async fn process_manifest_deployment(
     swarm: &mut Swarm<MyBehaviour>,
-    apply_req: &machine::ApplyRequest<'_>,
+    apply_req: &ApplyRequest,
     manifest_json: &str,
     owner_pubkey: &[u8],
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -502,7 +502,7 @@ async fn select_runtime_engine(
 
 
 /// Create deployment configuration from apply request
-fn create_deployment_config(apply_req: &machine::ApplyRequest) -> DeploymentConfig {
+fn create_deployment_config(apply_req: &ApplyRequest) -> DeploymentConfig {
     let mut config = DeploymentConfig::default();
 
     // Set replicas
@@ -537,10 +537,7 @@ pub async fn process_enhanced_self_apply_request(manifest: &[u8], swarm: &mut Sw
 
             if !apply_req.manifest_json.is_empty() {
                 let manifest_json = apply_req.manifest_json.clone();
-                let owner_pubkey =
-                    crate::crypto::keypair_manager::KeypairManager::get_default_signing_keypair()
-                        .map(|(pub_bytes, _)| pub_bytes)
-                        .unwrap_or_default();
+                let owner_pubkey = Vec::new();
 
                 match process_manifest_deployment(
                     swarm,
@@ -733,21 +730,6 @@ pub async fn get_workload_logs_by_id(
 
     let logs = engine.get_workload_logs(workload_id, tail).await?;
     Ok(logs)
-}
-
-/// Discover providers for a manifest
-pub async fn discover_manifest_providers(
-    swarm: &mut Swarm<MyBehaviour>,
-    manifest_id: &str,
-) -> Result<Vec<crate::provider::ProviderInfo>, Box<dyn std::error::Error>> {
-    if let Some(provider_manager) = PROVIDER_MANAGER.read().await.as_ref() {
-        let providers = provider_manager
-            .discover_providers(swarm, manifest_id)
-            .await?;
-        Ok(providers)
-    } else {
-        Ok(Vec::new())
-    }
 }
 
 #[cfg(test)]

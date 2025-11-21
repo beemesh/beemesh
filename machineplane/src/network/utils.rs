@@ -1,7 +1,7 @@
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
-use crate::messages::libp2p_constants::FREE_CAPACITY_PREFIX;
+use crate::messages::constants::FREE_CAPACITY_PREFIX;
 
 /// Notify all pending capacity observers for the given request id with a lazily constructed payload.
 pub fn notify_capacity_observers<F>(

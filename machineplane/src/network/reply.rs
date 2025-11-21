@@ -44,9 +44,7 @@ pub fn baseline_capacity_params<'a>(
 
 /// Build the flatbuffer payload for a capacity reply and capture the associated KEM public key.
 pub fn build_capacity_reply(params: CapacityReplyParams<'_>) -> CapacityReply {
-    let kem_pub_b64 = crate::crypto::ensure_kem_keypair_on_disk()
-        .map(|(pubb, _)| base64::engine::general_purpose::STANDARD.encode(&pubb))
-        .ok();
+    let kem_pub_b64: Option<String> = None;
 
     let payload = crate::messages::machine::build_capacity_reply(
         params.ok,

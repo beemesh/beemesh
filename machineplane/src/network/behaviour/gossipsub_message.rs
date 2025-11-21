@@ -1,8 +1,8 @@
-use crate::network::{capacity, utils};
 use crate::capacity::{CapacityCheckResult, ResourceRequest};
+use crate::network::{capacity, utils};
 use crate::run::get_global_capacity_verifier;
 use libp2p::gossipsub;
-use crate::scheduler::Scheduler;
+use log::{debug, error, info, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
@@ -24,6 +24,7 @@ pub fn gossipsub_message(
     >,
 ) {
     debug!("received message from {}", peer_id);
+    let payload = &message.data;
     
     // Check if this is a scheduler topic
     let topic_str = topic.to_string();
@@ -39,7 +40,7 @@ pub fn gossipsub_message(
     }
 
     // Then try CapacityReply
-    if let Ok(cap_req) = crate::messages::machine::root_as_capacity_request(message.data.as_slice()) {
+    if let Ok(cap_req) = crate::messages::machine::root_as_capacity_request(payload.as_slice()) {
         let orig_request_id = cap_req.request_id.clone();
         let responder_peer = swarm.local_peer_id().to_string();
 

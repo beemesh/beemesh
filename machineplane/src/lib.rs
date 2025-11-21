@@ -1,17 +1,16 @@
 // logging macros are used in submodules; keep root lean
-use base64::Engine;
 use clap::Parser;
 use env_logger::Env;
 use std::io::Write;
 
 pub mod network;
-mod pod_communication;
 pub mod messages;
 pub mod placement;
 pub mod capacity;
 pub mod api;
 pub mod runtimes;
 pub mod scheduler;
+pub mod run;
 
 
 /// beemesh Host Agent
@@ -188,7 +187,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // Store keypair bytes for network module
     let keypair_bytes = keypair.to_protobuf_encoding()?;
-    let public_bytes = keypair.public().to_protobuf_encoding();
+    let public_bytes = keypair.public().to_peer_id().to_bytes();
     network::set_node_keypair(Some((public_bytes.clone(), keypair_bytes.clone())));
 
     let (mut swarm, topic, peer_rx, peer_tx) = network::setup_libp2p_node(

@@ -1,5 +1,6 @@
 use super::failure_handlers::{FailureDirection, handle_failure};
 use crate::messages::machine;
+use crate::run::remove_workloads_by_manifest_id;
 use libp2p::request_response;
 use log::{error, info, warn};
 
@@ -36,13 +37,13 @@ pub fn delete_message(
                         "Delete request - manifest_id={:?} operation_id={:?} force={}",
                         &delete_req.manifest_id,
                         &delete_req.operation_id,
-                        delete_req.force()
+                        delete_req.force
                     );
 
                     // Process the delete request asynchronously
                     let manifest_id = delete_req.manifest_id.clone();
                     let operation_id = delete_req.operation_id.clone();
-                    let force = delete_req.force();
+                    let force = delete_req.force;
                     let requesting_peer = peer.to_string();
 
                     tokio::spawn(async move {
@@ -97,12 +98,10 @@ pub fn delete_message(
                 Ok(delete_resp) => {
                     info!(
                         "Delete response - ok={} operation_id={:?} message={:?} removed_workloads={:?}",
-                        delete_resp.ok(),
+                        delete_resp.ok,
                         &delete_resp.operation_id,
-                        delete_resp.message(),
-                        delete_resp
-                            .removed_workloads()
-                            .map(|w| w.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                        &delete_resp.message,
+                        Some(delete_resp.removed_workloads.clone())
                     );
                 }
                 Err(e) => {
@@ -155,33 +154,6 @@ async fn process_delete_request(
                 manifest_id, e
             );
             (false, format!("failed to remove workloads: {}", e), vec![])
-        }
-    }
-}
-
-/// Remove workloads associated with a manifest ID
-async fn remove_workloads_by_manifest_id(manifest_id: &str) -> Result<Vec<String>, anyhow::Error> {
-    info!(
-        "remove_workloads_by_manifest_id: manifest_id={}",
-        manifest_id
-    );
-
-    // Use the integrated workload manager to remove workloads
-    match crate::run::remove_workloads_by_manifest_id(manifest_id).await {
-        Ok(removed_workloads) => {
-            info!(
-                "Successfully removed {} workloads for manifest_id '{}'",
-                removed_workloads.len(),
-                manifest_id
-            );
-            Ok(removed_workloads)
-        }
-        Err(e) => {
-            error!(
-                "Failed to remove workloads for manifest_id '{}': {}",
-                manifest_id, e
-            );
-            Err(anyhow::anyhow!("Failed to remove workloads: {}", e))
         }
     }
 }

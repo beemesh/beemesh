@@ -6,10 +6,13 @@
 //! equivalent helpers using serde + bincode over the message types defined in
 //! `types.rs`.
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub mod types;
 pub use types::*;
+pub mod constants;
+pub use constants as libp2p_constants;
 
 fn serialize<T: Serialize>(value: &T) -> Vec<u8> {
     bincode::serialize(value).expect("failed to serialize message")
@@ -340,7 +343,7 @@ pub mod machine {
     }
 
     pub fn build_candidates_response(ok: bool, responders: &[String]) -> Vec<u8> {
-        let candidate_nodes = responders
+        let candidate_nodes: Vec<CandidateNode> = responders
             .iter()
             .map(|peer_id| CandidateNode {
                 peer_id: peer_id.clone(),
@@ -381,9 +384,9 @@ pub mod machine {
     }
 
     pub fn extract_manifest_name(manifest_data: &[u8]) -> Option<String> {
-        serde_json::from_slice::<serde_json::Value>(manifest_data)
-            .ok()
-            .and_then(|v| v.get("metadata"))
+        let value: serde_json::Value = serde_json::from_slice(manifest_data).ok()?;
+        value
+            .get("metadata")
             .and_then(|m| m.get("name"))
             .and_then(|n| n.as_str())
             .map(|s| s.to_string())

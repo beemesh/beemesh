@@ -3,12 +3,11 @@
 //! This module implements the "Pull" model where nodes listen for Tasks,
 //! evaluate their fit, submit Bids, and if they win, acquire a Lease.
 
-use crate::messages::machine::{
-    self, Bid, LeaseHint, SchedulerEvent, Task, root_as_bid, root_as_scheduler_event, root_as_task,
-};
-use crate::messages::libp2p_constants::{
+use crate::messages::constants::{
     DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TASKS,
 };
+use crate::messages::machine;
+use crate::messages::types::{Bid, LeaseHint, SchedulerEvent, Task};
 use crate::network::behaviour::MyBehaviour;
 use libp2p::{Swarm, gossipsub};
 use log::{debug, error, info, warn};
@@ -64,9 +63,9 @@ impl Scheduler {
 
     /// Process a Task message: Evaluate -> Bid
     async fn handle_task(&self, message: &gossipsub::Message) {
-        match root_as_task(&message.data) {
+        match machine::root_as_task(&message.data) {
             Ok(task) => {
-                let task_id = task.id().unwrap_or_default();
+                let task_id = task.id.clone();
                 info!("Received Task: {}", task_id);
 
                 // 1. Evaluate Fit (Capacity Check)
@@ -98,7 +97,7 @@ impl Scheduler {
 
                 // 4. Publish Bid
                 let bid_bytes = machine::build_bid(
-                    task_id,
+                    &task_id,
                     &self.local_node_id,
                     my_score,
                     capacity_score,
@@ -109,7 +108,7 @@ impl Scheduler {
 
                 // 4. Publish Bid
                 let bid_bytes = machine::build_bid(
-                    task_id,
+                    &task_id,
                     &self.local_node_id,
                     my_score,
                     capacity_score,
@@ -170,11 +169,11 @@ impl Scheduler {
 
     /// Process a Bid message: Update highest bid
     async fn handle_bid(&self, message: &gossipsub::Message) {
-        match root_as_bid(&message.data) {
+                match machine::root_as_bid(&message.data) {
             Ok(bid) => {
-                let task_id = bid.task_id().unwrap_or_default();
-                let bidder_id = bid.node_id().unwrap_or_default();
-                let score = bid.score();
+                let task_id = bid.task_id.clone();
+                let bidder_id = bid.node_id.clone();
+                let score = bid.score;
 
                 // Ignore our own bids (handled locally)
                 if bidder_id == self.local_node_id {
@@ -182,7 +181,7 @@ impl Scheduler {
                 }
 
                 let mut bids = self.active_bids.lock().unwrap();
-                if let Some(ctx) = bids.get_mut(task_id) {
+                if let Some(ctx) = bids.get_mut(&task_id) {
                     if score > ctx.highest_bid_score {
                         info!("Saw higher bid for task {}: {:.2} from {}", task_id, score, bidder_id);
                         ctx.highest_bid_score = score;
@@ -196,10 +195,14 @@ impl Scheduler {
 
     /// Process Scheduler Events (e.g. Cancelled, Preempted)
     async fn handle_event(&self, message: &gossipsub::Message) {
-        match root_as_scheduler_event(&message.data) {
+        match machine::root_as_scheduler_event(&message.data) {
             Ok(event) => {
-                let task_id = event.task_id().unwrap_or_default();
-                info!("Received Scheduler Event for task {}: {:?}", task_id, event.event_type());
+                let task_id = event.task_id.clone();
+                info!(
+                    "Received Scheduler Event for task {}: {:?}",
+                    task_id,
+                    event.event_type
+                );
                 // Handle cancellation etc.
             }
             Err(e) => error!("Failed to parse SchedulerEvent message: {}", e),
