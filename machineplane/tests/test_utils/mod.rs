@@ -1,4 +1,4 @@
-use machineplaneplane::{Cli, start_machineplane};
+use machineplane::{Cli, start_machine};
 use std::sync::Once;
 use std::time::Duration;
 use tokio::process::{Child, Command};
@@ -94,7 +94,7 @@ pub fn make_test_cli(
         rest_api_host: "127.0.0.1".to_string(),
         rest_api_port,
         disable_rest_api: disable_rest,
-        disable_machineplane_api: disable_machineplane,
+        disable_machine_api: disable_machineplane,
         node_name: None,
         api_socket,
         key_dir: String::from("/tmp/.beemesh_test_unused"),
@@ -157,8 +157,8 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
         if cli.disable_rest_api {
             cmd.arg("--disable-rest-api");
         }
-        if cli.disable_machineplane_api {
-            cmd.arg("--disable-machineplane-api");
+        if cli.disable_machine_api {
+            cmd.arg("--disable-machine-api");
         }
         if cli.disable_scheduling {
             cmd.arg("--disable-scheduling");
@@ -216,7 +216,7 @@ pub async fn start_nodes(clis: Vec<Cli>, startup_delay: Duration) -> NodeGuard {
         cleaned_up: false,
     };
     for cli in clis {
-        match start_machineplane(cli).await {
+        match start_machine(cli).await {
             Ok(mut handles) => {
                 guard.handles.append(&mut handles);
             }

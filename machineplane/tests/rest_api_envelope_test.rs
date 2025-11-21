@@ -1,4 +1,4 @@
-use machine::messages::machine::{
+use machineplane::messages::machine::{
     build_delete_request, build_delete_response, root_as_delete_request, root_as_delete_response,
 };
 

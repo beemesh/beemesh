@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 use libp2p::{kad, Swarm};
 use log::info;
-use crate::messages::machine::{build_applied_manifest, root_as_applied_manifest, AppliedManifest};
+use crate::messages::machine::root_as_applied_manifest;
+use crate::messages::types::{AppliedManifest, KeyValue, OperationType, SignatureScheme};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -11,13 +12,13 @@ use crate::network::behaviour::MyBehaviour;
 pub enum DhtOperation {
     /// Store an AppliedManifest in the DHT
     StoreManifest {
-        manifest: AppliedManifest<'static>,
+        manifest: AppliedManifest,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
     /// Retrieve an AppliedManifest by its ID
     GetManifest {
         id: String,
-        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest<'static>>, String>>,
+        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest>, String>>,
     },
     /// Get all manifests by a specific peer
     GetManifestsByPeer {
@@ -83,64 +84,17 @@ impl DhtManager {
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
         swarm: &mut Swarm<MyBehaviour>,
     ) {
-        // Extract the manifest ID
-        let manifest_id = match manifest.id() {
-            Some(id) => id,
-            None => {
-                let _ = reply_tx.send(Err("Manifest missing ID".to_string()));
+        // Serialize the manifest to bytes for storage
+        let manifest_id = manifest.id.clone();
+        let manifest_bytes = bincode::serialize(&manifest)
+            .map_err(|e| format!("Failed to serialize manifest: {:?}", e));
+
+        let manifest_bytes = match manifest_bytes {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                let _ = reply_tx.send(Err(err));
                 return;
             }
-        };
-
-        // Serialize the manifest to bytes for storage
-        let manifest_bytes = {
-            // We need to re-serialize the FlatBuffer since we can't clone it directly
-            let id = manifest.id().unwrap_or("");
-            let operation_id = &manifest.operation_id;
-            let origin_peer = manifest.origin_peer().unwrap_or("");
-            let owner_pubkey = manifest
-                .owner_pubkey()
-                .map(|v| v.iter().collect::<Vec<_>>())
-                .unwrap_or_default();
-            let signature_scheme = manifest.signature_scheme();
-            let signature = manifest
-                .signature()
-                .map(|s| s.iter().collect::<Vec<_>>())
-                .unwrap_or_default();
-            let manifest_json = &manifest.manifest_json;
-            let manifest_kind = manifest.manifest_kind().unwrap_or("");
-            let labels = if let Some(labels_vec) = manifest.labels() {
-                labels_vec
-                    .iter()
-                    .filter_map(|kv| {
-                        if let (Some(k), Some(v)) = (kv.key(), kv.value()) {
-                            Some((k.to_string(), v.to_string()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let timestamp = manifest.timestamp();
-            let operation = manifest.operation();
-            let ttl_secs = manifest.ttl_secs();
-            let content_hash = manifest.content_hash().unwrap_or("");
-
-            build_applied_manifest(
-                &manifest_id,
-                &operation_id,
-                &origin_peer,
-                &owner_pubkey,
-                &signature,
-                &manifest_json,
-                &manifest_kind,
-                labels,
-                timestamp,
-                ttl_secs,
-                &content_hash,
-            )
         };
 
         let record_key = Self::manifest_key(manifest_id);
@@ -173,7 +127,7 @@ impl DhtManager {
     fn get_manifest(
         &mut self,
         id: String,
-        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest<'static>>, String>>,
+        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest>, String>>,
         swarm: &mut Swarm<MyBehaviour>,
     ) {
         let record_key = Self::manifest_key(&id);
@@ -209,36 +163,8 @@ impl DhtManager {
                             peer_record,
                         ))) => {
                             match root_as_applied_manifest(&peer_record.record.value) {
-                                Ok(_manifest) => {
-                                    // Convert to owned data by cloning the bytes and re-parsing
-                                    // This is necessary because FlatBuffer references the original buffer
-                                    let owned_bytes = peer_record.record.value.to_vec();
-                                    match root_as_applied_manifest(&owned_bytes) {
-                                        Ok(_owned_manifest) => {
-                                            // This is still a problem - we need a different approach
-                                            // For now, we'll leak the memory to make it 'static
-                                            let leaked_bytes =
-                                                Box::leak(owned_bytes.into_boxed_slice());
-                                            match root_as_applied_manifest(leaked_bytes) {
-                                                Ok(static_manifest) => {
-                                                    let _ =
-                                                        reply_tx.send(Ok(Some(static_manifest)));
-                                                }
-                                                Err(e) => {
-                                                    let _ = reply_tx.send(Err(format!(
-                                                        "Failed to parse manifest: {:?}",
-                                                        e
-                                                    )));
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            let _ = reply_tx.send(Err(format!(
-                                                "Failed to parse manifest: {:?}",
-                                                e
-                                            )));
-                                        }
-                                    }
+                                Ok(manifest) => {
+                                    let _ = reply_tx.send(Ok(Some(manifest)));
                                 }
                                 Err(e) => {
                                     let _ = reply_tx
@@ -289,20 +215,28 @@ pub fn create_applied_manifest_for_deployment(
     let empty_pubkey = vec![];
     let empty_signature = vec![];
     let labels = vec![
-        ("deployed-by".to_string(), "beemesh-node".to_string()),
-        ("kind".to_string(), manifest_kind.clone()),
+        KeyValue {
+            key: "deployed-by".to_string(),
+            value: "beemesh-node".to_string(),
+        },
+        KeyValue {
+            key: "kind".to_string(),
+            value: manifest_kind.clone(),
+        },
     ];
 
-    build_applied_manifest(
+    crate::messages::machine::build_applied_manifest(
         &id,
         &operation_id,
         &origin_peer,
         &empty_pubkey,
         &empty_signature,
+        SignatureScheme::None,
         &manifest_json,
         &manifest_kind,
         labels,
         timestamp,
+        OperationType::Apply,
         3600, // 1 hour TTL
         &content_hash,
     )

@@ -7,22 +7,11 @@ use tokio::time::{Instant, sleep};
 #[path = "test_utils/mod.rs"]
 mod test_utils;
 use self::test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
-use machine::Cli;
+use machineplane::Cli;
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 
-/// Prepare logging and environment for mock runtime tests.
-pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
-    setup_cleanup_hook();
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
-
-    let client = reqwest::Client::new();
-    (client, TEST_PORTS.to_vec())
-}
-
-/// Build standard three-node fabric configuration with optional scheduling disable flags.
-/// Returns a guard that shuts down nodes when dropped.
-pub async fn start_fabric_nodes(disable_flags: &[bool]) -> NodeGuard {
+fn make_standard_node_clis(disable_flags: &[bool]) -> Vec<Cli> {
     assert!(disable_flags.len() == TEST_PORTS.len());
 
     let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, disable_flags[0]);
@@ -51,6 +40,22 @@ pub async fn start_fabric_nodes(disable_flags: &[bool]) -> NodeGuard {
     );
 
     vec![cli1, cli2, cli3]
+}
+
+/// Prepare logging and environment for mock runtime tests.
+pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
+    setup_cleanup_hook();
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+
+    let client = reqwest::Client::new();
+    (client, TEST_PORTS.to_vec())
+}
+
+/// Build standard three-node fabric configuration with optional scheduling disable flags.
+/// Returns a guard that shuts down nodes when dropped.
+pub async fn start_fabric_nodes(disable_flags: &[bool]) -> NodeGuard {
+    let clis = make_standard_node_clis(disable_flags);
+    start_nodes(clis, Duration::from_secs(1)).await
 }
 
 /// Start the standard set of nodes with the given scheduling disable flags.

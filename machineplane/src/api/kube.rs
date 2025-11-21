@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 use serde_yaml;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -319,13 +319,13 @@ async fn schedule_deployment(
     Ok(assigned)
 }
 
-async fn delete_manifest_from_peers(state: &RestState, manifest_id: &str, peers: &[String]) {
+async fn delete_manifest_from_peers(_state: &RestState, manifest_id: &str, peers: &[String]) {
     if peers.is_empty() {
         return;
     }
 
     let operation_id = Uuid::new_v4().to_string();
-    let delete_request =
+    let _delete_request =
         crate::messages::machine::build_delete_request(manifest_id, &operation_id, "", true);
 
     for peer in peers {
