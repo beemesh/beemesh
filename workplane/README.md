@@ -11,14 +11,14 @@ The Workplane is an **in‑pod agent** that provides:
 * **Per‑workload identity** and mutually authenticated encrypted streams over `libp2p`.
 * **Service discovery** via a separate **Workload DHT (WDHT)**.
 * **Self‑healing** replicas driven by the workload manifest.
-* **Workload‑scoped consistency** for stateful apps (e.g., Raft bootstrap/join orchestration).
+* **Workload‑scoped consistency** for stateful apps (e.g., Raft bootstrap/join choreography).
 
 The Workplane **MUST NOT** rely on any centralized control plane and **MUST NOT** store machine‑level data in the WDHT. It **MUST** operate correctly under partitions by favoring **consistency** over availability where indicated by policy.
 
 ### Non‑Goals
 
 * Node scheduling, resource accounting, or machine discovery (Machineplane responsibility).
-* Cluster‑wide service registry across all machines (only workload‑scope discovery is in WDHT).
+* Fabric‑wide service registry across all machines (only workload‑scope discovery is in WDHT).
 
 ### Terms
 

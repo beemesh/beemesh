@@ -23,7 +23,7 @@ use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
 #[tokio::test]
 async fn test_apply_functionality() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_cluster_nodes(&[false, false, false]).await;
+    let mut guard = start_fabric_nodes(&[false, false, false]).await;
 
     // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
@@ -140,7 +140,7 @@ async fn test_apply_with_real_podman() {
 #[tokio::test]
 async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_cluster_nodes(&[false, false, false]).await;
+    let mut guard = start_fabric_nodes(&[false, false, false]).await;
 
     // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;

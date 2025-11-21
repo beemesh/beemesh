@@ -239,7 +239,7 @@ async fn verify_delete_ownership(
         envelope_pubkey.len()
     );
 
-    let stored_owner = crate::workload_integration::get_manifest_owner(manifest_id).await;
+    let stored_owner = crate::run::get_manifest_owner(manifest_id).await;
 
     let Some(owner_pubkey) = stored_owner else {
         warn!(
@@ -277,7 +277,7 @@ mod tests {
     #[tokio::test]
     async fn verify_delete_ownership_unknown_when_unrecorded() {
         let manifest_id = "test-ownership-unknown";
-        let _ = crate::workload_integration::remove_manifest_owner(manifest_id).await;
+        let _ = crate::run::remove_manifest_owner(manifest_id).await;
 
         let status = verify_delete_ownership(manifest_id, b"any")
             .await
@@ -290,7 +290,7 @@ mod tests {
     async fn verify_delete_ownership_matches_recorded_owner() {
         let manifest_id = "test-ownership-match";
         let owner = vec![1u8, 2, 3];
-        crate::workload_integration::record_manifest_owner(manifest_id, &owner).await;
+        crate::run::record_manifest_owner(manifest_id, &owner).await;
 
         let status = verify_delete_ownership(manifest_id, &owner)
             .await
@@ -298,14 +298,14 @@ mod tests {
 
         assert_eq!(status, OwnershipStatus::Match);
 
-        let _ = crate::workload_integration::remove_manifest_owner(manifest_id).await;
+        let _ = crate::run::remove_manifest_owner(manifest_id).await;
     }
 
     #[tokio::test]
     async fn verify_delete_ownership_detects_mismatch() {
         let manifest_id = "test-ownership-mismatch";
         let owner = vec![4u8, 5, 6];
-        crate::workload_integration::record_manifest_owner(manifest_id, &owner).await;
+        crate::run::record_manifest_owner(manifest_id, &owner).await;
 
         let status = verify_delete_ownership(manifest_id, &[9u8, 8, 7])
             .await
@@ -313,7 +313,7 @@ mod tests {
 
         assert_eq!(status, OwnershipStatus::Mismatch);
 
-        let _ = crate::workload_integration::remove_manifest_owner(manifest_id).await;
+        let _ = crate::run::remove_manifest_owner(manifest_id).await;
     }
 }
 
@@ -325,7 +325,7 @@ async fn remove_workloads_by_manifest_id(manifest_id: &str) -> Result<Vec<String
     );
 
     // Use the integrated workload manager to remove workloads
-    match crate::workload_integration::remove_workloads_by_manifest_id(manifest_id).await {
+    match crate::run::remove_workloads_by_manifest_id(manifest_id).await {
         Ok(removed_workloads) => {
             info!(
                 "Successfully removed {} workloads for manifest_id '{}'",

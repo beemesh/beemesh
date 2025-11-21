@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
-use crate::protocol::libp2p_constants::BEEMESH_CLUSTER;
+use crate::protocol::libp2p_constants::BEEMESH_FABRIC;
 
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
@@ -177,7 +177,7 @@ pub fn setup_libp2p_node(
             kademlia_config.set_parallelism(std::num::NonZeroUsize::new(3).unwrap()); // Increase parallelism for local tests
             kademlia_config.set_query_timeout(std::time::Duration::from_secs(15)); // Longer timeout for local tests
 
-            // Configure provider record settings for better local discovery
+            // Configure placement record settings (via Kademlia providers) for better local discovery
             kademlia_config.set_provider_record_ttl(Some(std::time::Duration::from_secs(30))); // Shorter TTL for local tests
             kademlia_config
                 .set_provider_publication_interval(Some(std::time::Duration::from_secs(5))); // More frequent republishing
@@ -209,7 +209,7 @@ pub fn setup_libp2p_node(
 
     register_scheduling_preference(swarm.local_peer_id().clone(), disable_scheduling);
 
-    let topic = gossipsub::IdentTopic::new(BEEMESH_CLUSTER);
+    let topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC);
     debug!("Subscribing to topic: {}", topic.hash());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
     // Ensure local host is an explicit mesh peer for the topic so publish() finds at least one subscriber
@@ -313,7 +313,7 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         let local_peer = *swarm.local_peer_id();
                         // Create a future for the workload manager handler and drive it immediately
-                        let future = crate::workload_integration::handle_apply_message_with_workload_manager(
+                        let future = crate::run::handle_apply_message_with_podman_manager(
                             message, peer, &mut swarm, local_peer
                         );
                         // Since we're in an async context, we can await this directly
@@ -379,7 +379,7 @@ pub async fn start_libp2p_node(
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id: _, endpoint, num_established: _, concurrent_dial_errors: _, established_in: _ } => {
                         info!("DHT: Connection established with peer {}, adding to Kademlia", peer_id);
-                        // Add the connected peer to Kademlia DHT for provider announcements
+                        // Add the connected peer to Kademlia DHT for placement announcements (via providers)
                         // Use the connection endpoint address for Kademlia
                         let addr = endpoint.get_remote_address();
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());

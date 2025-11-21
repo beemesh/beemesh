@@ -455,7 +455,7 @@ pub async fn create_task(
     }
 
     if !owner_pubkey.is_empty() {
-        crate::workload_integration::record_manifest_owner(&manifest_id, &owner_pubkey).await;
+        crate::run::record_manifest_owner(&manifest_id, &owner_pubkey).await;
     } else {
         log::warn!(
             "create_task: missing owner pubkey when recording manifest_id={}",
@@ -542,7 +542,7 @@ async fn debug_workloads_by_peer(
     #[cfg(debug_assertions)]
     {
         if let Some(registry_guard) =
-            crate::workload_integration::get_global_runtime_registry().await
+            crate::run::get_global_runtime_registry().await
         {
             if let Some(ref registry) = *registry_guard {
                 if let Some(mock_engine) = registry.get_engine("mock") {
@@ -792,191 +792,30 @@ pub async fn delete_task(
     // Parse query parameters for force flag
     let force = String::from_utf8_lossy(&body).contains("force=true");
 
-    // Step 1: Discover which nodes are providing this task/manifest
-    let providers = match find_manifest_providers(&task_id, &state).await {
-        Ok(providers) => providers,
-        Err(e) => {
-            error!(
-                "Failed to discover providers for task_id {}: {}",
-                task_id, e
-            );
-            let error_response = crate::protocol::machine::build_delete_response(
-                false,
-                &operation_id,
-                &format!("Failed to discover providers: {}", e),
-                &task_id,
-                &[],
-            );
-            return create_response_for_envelope_metadata(
-                &state.envelope_handler,
-                &error_response,
-                "delete_response",
-                &envelope_metadata,
-            )
-            .await;
-        }
-    };
-
-    if providers.is_empty() {
-        warn!("No providers found for task_id: {}", task_id);
-        let response = crate::protocol::machine::build_delete_response(
-            true,
-            &operation_id,
-            "No providers found for task",
-            &task_id,
-            &[],
-        );
-        return create_response_for_envelope_metadata(
-            &state.envelope_handler,
-            &response,
-            "delete_response",
-            &envelope_metadata,
-        )
-        .await;
-    }
-
-    info!(
-        "Found {} providers for task_id {}: {:?}",
-        providers.len(),
-        task_id,
-        providers
-    );
-
-    // Step 2: Create delete request
-    let delete_request = crate::protocol::machine::build_delete_request(
-        &task_id,
-        &operation_id,
-        &origin_peer,
-        force,
-    );
-
-    // Step 3: Send delete requests to all providers
-    let mut successful_deletes = Vec::new();
-    let mut failed_deletes = Vec::new();
+    // Step 1: Handle local deletion directly
+    // In the resource pool model, we only manage local resources.
+    // Discovery and fabric-wide choreography is handled by external components.
+    
     let mut removed_workloads = Vec::new();
+    let success;
+    let message;
 
-    // Get our local peer ID for comparison
-    let (local_peer_tx, mut local_peer_rx) = mpsc::unbounded_channel();
-    if let Err(e) = state.control_tx.send(
-        crate::libp2p_beemesh::control::Libp2pControl::GetLocalPeerId {
-            reply_tx: local_peer_tx,
-        },
-    ) {
-        error!("Failed to get local peer ID: {}", e);
-        let error_response = crate::protocol::machine::build_delete_response(
-            false,
-            &operation_id,
-            &format!("Failed to get local peer ID: {}", e),
-            &task_id,
-            &[],
-        );
-        return create_response_for_envelope_metadata(
-            &state.envelope_handler,
-            &error_response,
-            "delete_response",
-            &envelope_metadata,
-        )
-        .await;
-    }
-
-    let local_peer_id =
-        match tokio::time::timeout(Duration::from_secs(2), local_peer_rx.recv()).await {
-            Ok(Some(peer_id)) => peer_id,
-            _ => {
-                error!("Timeout getting local peer ID");
-                let error_response = crate::protocol::machine::build_delete_response(
-                    false,
-                    &operation_id,
-                    "Timeout getting local peer ID",
-                    &task_id,
-                    &[],
-                );
-                return create_response_for_envelope_metadata(
-                    &state.envelope_handler,
-                    &error_response,
-                    "delete_response",
-                    &envelope_metadata,
-                )
-                .await;
-            }
-        };
-
-    for provider_peer_id_str in providers {
-        // Parse provider peer ID
-        let provider_peer_id: libp2p::PeerId = match provider_peer_id_str.parse() {
-            Ok(id) => id,
-            Err(e) => {
-                error!("Invalid provider peer ID '{}': {}", provider_peer_id_str, e);
-                failed_deletes.push(format!("{}:invalid_peer_id", provider_peer_id_str));
-                continue;
-            }
-        };
-
-        // Check if this is a self-delete (local peer)
-        if provider_peer_id == local_peer_id {
-            info!("Performing self-delete for manifest_id: {}", task_id);
-
-            // Handle local workload deletion directly
-            match handle_local_delete(&task_id, force).await {
-                Ok(local_removed_workloads) => {
-                    info!(
-                        "Self-delete successful for manifest_id {}: removed {} workloads",
-                        task_id,
-                        local_removed_workloads.len()
-                    );
-                    successful_deletes.push(provider_peer_id_str);
-                    removed_workloads.extend(local_removed_workloads);
-                }
-                Err(e) => {
-                    error!("Self-delete failed for manifest_id {}: {}", task_id, e);
-                    failed_deletes
-                        .push(format!("{}:self_delete_failed:{}", provider_peer_id_str, e));
-                }
-            }
-        } else {
-            // Send delete request to remote peer
-            match send_delete_request_to_peer(&state, &provider_peer_id_str, &delete_request).await
-            {
-                Ok(result) => {
-                    info!(
-                        "Delete request sent to peer {}: {:?}",
-                        provider_peer_id_str, result
-                    );
-                    successful_deletes.push(provider_peer_id_str);
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to send delete request to peer {}: {}",
-                        provider_peer_id_str, e
-                    );
-                    failed_deletes.push(format!("{}:{}", provider_peer_id_str, e));
-                }
+    match handle_local_delete(&task_id, force).await {
+        Ok(local_removed) => {
+            if local_removed.is_empty() {
+                success = false;
+                message = "No local workloads found for this manifest".to_string();
+            } else {
+                success = true;
+                message = format!("Successfully removed {} local workloads", local_removed.len());
+                removed_workloads = local_removed;
             }
         }
-    }
-
-    // Step 4: Return response
-    let success = !successful_deletes.is_empty();
-    let message = if success {
-        if failed_deletes.is_empty() {
-            format!(
-                "Delete requests sent to {} providers",
-                successful_deletes.len()
-            )
-        } else {
-            format!(
-                "Delete requests sent to {}/{} providers. Failures: {:?}",
-                successful_deletes.len(),
-                successful_deletes.len() + failed_deletes.len(),
-                failed_deletes
-            )
+        Err(e) => {
+            success = false;
+            message = format!("Local deletion failed: {}", e);
         }
-    } else {
-        format!(
-            "Failed to send delete requests to any providers: {:?}",
-            failed_deletes
-        )
-    };
+    }
 
     let response = crate::protocol::machine::build_delete_response(
         success,
@@ -1003,7 +842,7 @@ async fn handle_local_delete(manifest_id: &str, _force: bool) -> Result<Vec<Stri
     );
 
     // Use the workload integration module to remove workloads by manifest ID
-    match crate::workload_integration::remove_workloads_by_manifest_id(manifest_id).await {
+    match crate::run::remove_workloads_by_manifest_id(manifest_id).await {
         Ok(removed_workloads) => {
             info!(
                 "handle_local_delete: successfully removed {} workloads for manifest_id '{}'",
@@ -1022,106 +861,7 @@ async fn handle_local_delete(manifest_id: &str, _force: bool) -> Result<Vec<Stri
     }
 }
 
-/// Find providers for a task using DHT discovery
-async fn find_manifest_providers(task_id: &str, state: &RestState) -> Result<Vec<String>, String> {
-    info!("find_manifest_providers: searching for task_id={}", task_id);
 
-    // Use the libp2p control system to find providers for this manifest
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
-    // Send request to find providers via DHT
-    let control_msg = crate::libp2p_beemesh::control::Libp2pControl::FindManifestHolders {
-        manifest_id: task_id.to_string(),
-        reply_tx: tx,
-    };
-
-    if let Err(e) = state.control_tx.send(control_msg) {
-        warn!("Failed to send find providers request: {}", e);
-        return Ok(vec![]);
-    }
-
-    // Wait for response with timeout
-    match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
-        Ok(Some(providers)) => {
-            info!(
-                "find_manifest_providers: found {} providers for task_id={}",
-                providers.len(),
-                task_id
-            );
-            Ok(providers
-                .into_iter()
-                .map(|peer_id| peer_id.to_string())
-                .collect())
-        }
-        Ok(None) => {
-            warn!(
-                "find_manifest_providers: channel closed for task_id={}",
-                task_id
-            );
-            Ok(vec![])
-        }
-        Err(_) => {
-            warn!(
-                "find_manifest_providers: timeout waiting for providers for task_id={}",
-                task_id
-            );
-            Ok(vec![])
-        }
-    }
-}
-
-/// Send a delete request to a specific peer
-pub(crate) async fn send_delete_request_to_peer(
-    state: &RestState,
-    peer_id: &str,
-    delete_request: &[u8],
-) -> Result<String, String> {
-    info!("send_delete_request_to_peer: sending to peer={}", peer_id);
-
-    // Parse the peer string into a PeerId
-    let target_peer_id: libp2p::PeerId = peer_id
-        .parse()
-        .map_err(|e| format!("Invalid peer ID '{}': {}", peer_id, e))?;
-
-    // Send the delete request via libp2p control message
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
-
-    let control_msg = crate::libp2p_beemesh::control::Libp2pControl::SendDeleteRequest {
-        peer_id: target_peer_id,
-        delete_request: delete_request.to_vec(),
-        reply_tx,
-    };
-
-    if let Err(e) = state.control_tx.send(control_msg) {
-        return Err(format!(
-            "Failed to send delete request to libp2p control: {}",
-            e
-        ));
-    }
-
-    // Wait for response with timeout
-    match tokio::time::timeout(Duration::from_secs(10), reply_rx.recv()).await {
-        Ok(Some(Ok(result))) => {
-            info!(
-                "Delete request to peer {} completed successfully: {}",
-                peer_id, result
-            );
-            Ok(result)
-        }
-        Ok(Some(Err(e))) => {
-            error!("Delete request to peer {} failed: {}", peer_id, e);
-            Err(e)
-        }
-        Ok(None) => {
-            error!("Delete request to peer {} - reply channel closed", peer_id);
-            Err("Reply channel closed".to_string())
-        }
-        Err(_) => {
-            error!("Delete request to peer {} timed out", peer_id);
-            Err("Request timed out".to_string())
-        }
-    }
-}
 
 /// Forward an ApplyRequest directly to a specific peer via libp2p
 /// This bypasses centralized task storage and forwards the request directly

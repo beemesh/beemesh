@@ -1,19 +1,19 @@
 # **Beemesh: Global Mesh Computing**
 
-> **Beemesh** is scale-out fabric orchestration that turns any device - cloud, on-prem, edge, or IoT - into an interchangeable compute resource.
+> **Beemesh** is scale-out fabric choreography that turns any device - cloud, on-prem, edge, or IoT - into an interchangeable compute resource.
 > It scales out by eliminating the centralized control plane, enabling **secure, self-healing workloads** across highly dynamic environments.
 
 ---
 
 ## **1. Introduction**
 
-Modern orchestrators like Kubernetes and Nomad are powerful but **inherently limited by centralization**. As clusters grow:
+Modern choreography systems like Kubernetes and Nomad are powerful but **inherently limited by centralization**. As fabrics grow:
 
 * Control planes become **scaling bottlenecks**.
 * Consensus overhead increases.
 * Infrastructure failures ripple through workloads.
 
-Beemesh rethinks orchestration from the ground up:
+Beemesh rethinks choreography from the ground up:
 
 * **No central control plane** - fully scale-out fabric coordination.
 * **Workload-scoped consistency** - each application carries its own state management.
@@ -27,7 +27,7 @@ Beemesh rethinks orchestration from the ground up:
 | Problem in Legacy Systems                                                | Beemesh Solution                                                                   |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
 | Scaling beyond 5,000–10,000 nodes is hard due to control plane overhead. | **Fully decentralized coordination** using DHT + Pub/Sub.                          |
-| Machine failures destabilize cluster state.                              | Machines are **fungible, disposable resources**; state lives **inside workloads**. |
+| Machine failures destabilize fabric state.                              | Machines are **fungible, disposable resources**; state lives **inside workloads**. |
 | High operational complexity (etcd, API servers, Raft quorums).           | **Single lightweight daemon** (\~50–80 MB RAM).                                    |
 | Weak identity and trust at scale.                                        | **Separate Peer IDs for machines and workloads**, mutually authenticated streams.  |
 | Vendor lock-in to specific clouds or infra.                              | **Infrastructure-agnostic**, runs on anything.                                     |
@@ -39,7 +39,7 @@ Beemesh rethinks orchestration from the ground up:
 
 ### **3.1 Two-Plane Architecture**
 
-Beemesh divides orchestration into **two planes**:
+Beemesh divides choreography into **two planes**:
 
 | Plane             | Purpose                                                               | CAP Trade-off                                |
 | ----------------- | --------------------------------------------------------------------- | -------------------------------------------- |
@@ -67,13 +67,13 @@ Beemesh uses **two distinct Distributed Hash Tables (DHTs):**
 
 Traditional systems bind **consistency to infrastructure**:
 
-* Kubernetes uses `etcd` for cluster state.
+* Kubernetes uses `etcd` for fabric state.
 * Nomad/Consul use Raft quorums for global consensus.
 
 **Beemesh flips the model:**
 
 * **Infrastructure is stateless** and ephemeral.
-* Each **stateful workload carries its own consensus cluster** (e.g., a Raft group for a database).
+* Each **stateful workload carries its own consensus group** (e.g., a Raft group for a database).
 
 > Infra failures never corrupt workload state and enable scale out to **tens of thousands of nodes**.
 
@@ -112,9 +112,9 @@ All communication in Beemesh is **mutually authenticated** and **end-to-end encr
 
 | System      | Control Plane                   | Scaling Limit                | State Model                         | Notes                                            |
 | ----------- | ------------------------------- | ---------------------------- | ----------------------------------- | ------------------------------------------------ |
-| Kubernetes  | Centralized (etcd + API server) | \~5,000 nodes / 150,000 pods | Strong consistency cluster-wide     | Rich ecosystem but control-plane limited         |
+| Kubernetes  | Centralized (etcd + API server) | \~5,000 nodes / 150,000 pods | Strong consistency fabric-wide     | Rich ecosystem but control-plane limited         |
 | Nomad       | Centralized Raft quorum         | Thousands of nodes           | Strong consistency global scheduler | Lighter than K8s but still infra-bound           |
-| Swarm       | Raft manager nodes              | \~1,000 nodes                | Strong consistency cluster-wide     | Simple but infra-coupled                         |
+| Swarm       | Raft manager nodes              | \~1,000 nodes                | Strong consistency fabric-wide     | Simple but infra-coupled                         |
 | **Beemesh** | **None – scale-out fabric**     | **Tens of thousands+**       | **Consistency scoped to workload**  | Scale out; only stateful workloads run Raft |
 
 ---
@@ -190,7 +190,7 @@ The **Machine Plane** manages infrastructure resources and scheduling, with **no
 
 ### **6.3 Ephemeral Scheduling Process**
 
-Traditional schedulers maintain global cluster state and enforce consensus (Raft, etcd), creating bottlenecks.
+Traditional schedulers maintain global fabric state and enforce consensus (Raft, etcd), creating bottlenecks.
 
 Beemesh uses **ephemeral scheduling**: **tasks are never persisted** and scheduling happens dynamically across the scale-out fabric.
 
@@ -294,7 +294,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 ### 8.1 Cross-cloud burst (Analytics/Batch)
 
 * **Baseline** on-prem; **burst** into **AWS EC2** spot and **GCP Compute Engine** preemptibles when queue depth spikes.
-* **Why it works:** ephemeral scheduling + disposable Machine Plane → no shared cluster state to extend or replicate across providers.
+* **Why it works:** ephemeral scheduling + disposable Machine Plane → no shared fabric state to extend or replicate across providers.
 
 ### 8.2 Data-gravity aware microservices
 
@@ -351,7 +351,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 
 2. **No Global Consensus**
 
-   * Eliminates `etcd` and cluster-wide Raft bottlenecks.
+   * Eliminates `etcd` and fabric-wide Raft bottlenecks.
 
 3. **Scale-out Fabric Foundation**
 
@@ -387,7 +387,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 
 ## **14. Summary**
 
-Beemesh represents a **paradigm shift** in orchestration:
+Beemesh represents a **paradigm shift** in choreography:
 
 * Eliminates centralized control planes and scaling bottlenecks.
 * Uses **ephemeral, decentralized scheduling** for effectively unparalleled scalability.
@@ -396,13 +396,13 @@ Beemesh represents a **paradigm shift** in orchestration:
 * Scales to **tens of thousands of nodes**, ideal for edge, IoT, cloud, **multicloud**, and **air-gapped** environments.
 * **Disposable, fully decoupled Machine Plane** → autonomous, low-toil operations.
 
-> **Beemesh isn’t just another orchestrator - it's a secure, scale-out fabric for the future of global computing.**
+> **Beemesh isn't just another choreography system - it's a secure, scale-out fabric for the future of global computing.**
 
 ---
 
 ## **Appendix: Comparison Matrix**
 
-> *Note on “Mutually Authenticated Streams”: legacy systems may add this via optional plugins/sidecars, but it’s **not** default cluster behavior.*
+> *Note on “Mutually Authenticated Streams”: legacy systems may add this via optional plugins/sidecars, but it’s **not** default fabric behavior.*
 
 | Feature                                 | Kubernetes        | Nomad             | **Beemesh**                 |
 | --------------------------------------- | ----------------- | ----------------- | --------------------------- |

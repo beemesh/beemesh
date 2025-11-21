@@ -2,8 +2,8 @@ use super::message_verifier::verify_signed_message;
 use crate::libp2p_beemesh::capacity;
 use crate::libp2p_beemesh::utils;
 use crate::protocol::libp2p_constants::FREE_CAPACITY_TIMEOUT_MS;
-use crate::resource_verifier::ResourceRequest;
-use crate::workload_integration::get_global_resource_verifier;
+use crate::capacity::ResourceRequest;
+use crate::run::get_global_capacity_verifier;
 use libp2p::request_response;
 use log::{debug, error, info, warn};
 use std::collections::HashMap as StdHashMap;
@@ -72,7 +72,7 @@ pub fn scheduler_message(
                         orig_request_id, manifest_id, peer
                     );
 
-                    // Perform real capacity check using resource verifier
+                    // Perform real capacity check using capacity verifier
                     let resource_request = ResourceRequest::new(
                         Some(cap_req.cpu_milli()),
                         Some(cap_req.memory_bytes()),
@@ -80,7 +80,7 @@ pub fn scheduler_message(
                         cap_req.replicas(),
                     );
 
-                    let verifier = get_global_resource_verifier();
+                    let verifier = get_global_capacity_verifier();
                     let responder_peer = local_peer.to_string();
 
                     // Perform synchronous capacity check using cached resources
@@ -101,7 +101,7 @@ pub fn scheduler_message(
                                 "Capacity check thread panicked for request_id={}; assuming no capacity",
                                 orig_request_id
                             );
-                            crate::resource_verifier::CapacityCheckResult {
+                            crate::capacity::CapacityCheckResult {
                                 has_capacity: false,
                                 rejection_reason: Some("Internal error".to_string()),
                                 available_cpu_milli: 0,

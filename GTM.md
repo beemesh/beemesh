@@ -8,7 +8,7 @@
 
 **Beemesh** is an open, distributed secure fabric that turns any machine into a global, self-healing compute pool with **NoOps** scheduling - enabling **true multicloud** without a centralized control plane to run or replicate.
 
-* **Beemesh (Apache-2.0)**: Production-ready orchestration with decentralized scheduling, dual DHTs, secure identities, and self-healing workloads. Runs anywhere including air-gapped. **No feature gating.**
+* **Beemesh (Apache-2.0)**: Production-ready choreography with decentralized scheduling, dual DHTs, secure identities, and self-healing workloads. Runs anywhere including air-gapped. **No feature gating.**
 * **Beemesh Commercial (BSL/Commercial)**: Fleet governance, policy controls, SSO/RBAC, audit logging, and commercial support packaged for business environments.
 
 **Business value (exec-ready)**
@@ -24,7 +24,7 @@
 
 | Tier                   | License        | What is inside                                                                                                                                                                                                                                           | Primary customer value                                                                        |
 | ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| **Beemesh**            | Apache-2.0     | **Full orchestration**: Machineplane + Workplane, dual DHTs, secure streams, ReplicaSet/Job controllers, Podman adapter, metrics, REST API.           | **True multicloud runtime** that runs anywhere (incl. air-gapped) with one operational model. |
+| **Beemesh**            | Apache-2.0     | **Full choreography**: Machineplane + Workplane, dual DHTs, secure streams, ReplicaSet/Job controllers, Podman adapter, metrics, REST API.           | **True multicloud runtime** that runs anywhere (incl. air-gapped) with one operational model. |
 | **Beemesh Commercial** | BSL/Commercial | Adds: Org namespaces, SSO/SAML, policy engine (OPA), audit log, Control Tower UI, LTS/FIPS builds, priority support.                                   | **Fleet governance** and compliance without re-introducing a central control plane.     |
 
 ---
@@ -119,14 +119,14 @@
 * **Supply chain:** Cosign + in-toto mandatory for Hub Verified+; SBOMs published.
 * **Audit:** Commercial audit log captures tasks, installs, policy changes (tenant-scoped).
 * **Compliance:** FIPS-140-2 build roadmap; SOC2 Type I by Q4.
-* **Control Tower:** Read-only by design. Shows inventory, rollout status, golden signals. Write actions are audit-logged but not orchestration-critical.
+* **Control Tower:** Read-only by design. Shows inventory, rollout status, golden signals. Write actions are audit-logged but not choreography-critical.
 
 ---
 
 ## 9) Ecosystem Governance (Hub)
 
 * **Submission:** Publisher identity verification; automated CVE scan; e2e smoke test.
-* **Quality gates:** Resource caps, upgrade/rollback tests, explicit capabilities, no cluster-global secrets.
+* **Quality gates:** Resource caps, upgrade/rollback tests, explicit capabilities, no fabric-global secrets.
 * **Revocation:** <1h from CVE notification to bundle revocation; client checks every 5min.
 * **Telemetry:** Opt-in only; air-gapped fabrics can send usage proofs via bundle export.
 

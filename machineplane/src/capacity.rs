@@ -1,4 +1,4 @@
-//! Resource verification module for checking node capacity
+//! Capacity verification module for checking node resources
 //!
 //! This module provides functionality to verify whether a node has sufficient
 //! resources to host requested workloads. It collects system metrics and
@@ -127,8 +127,8 @@ pub struct CapacityCheckResult {
     pub available_storage_bytes: u64,
 }
 
-/// Resource verifier for checking node capacity
-pub struct ResourceVerifier {
+/// Capacity verifier for checking node resources
+pub struct CapacityVerifier {
     /// Cached system resources
     system_resources: Arc<RwLock<SystemResources>>,
     /// Active short-lived reservations created after bidding
@@ -146,8 +146,8 @@ struct CapacityReservation {
 
 const RESERVATION_HOLD_SECS: u64 = 3;
 
-impl ResourceVerifier {
-    /// Create a new resource verifier
+impl CapacityVerifier {
+    /// Create a new capacity verifier
     pub fn new() -> Self {
         Self {
             system_resources: Arc::new(RwLock::new(SystemResources {
@@ -341,7 +341,7 @@ impl ResourceVerifier {
     async fn update_allocated_resources(&self, resources: &mut SystemResources) {
         // Query the global runtime registry to get current workload allocations
         if let Some(registry_guard) =
-            crate::workload_integration::get_global_runtime_registry().await
+            crate::run::get_global_runtime_registry().await
         {
             if let Some(registry) = registry_guard.as_ref() {
                 let mut total_cpu = 0u32;
@@ -553,7 +553,7 @@ impl ResourceVerifier {
     }
 }
 
-impl Default for ResourceVerifier {
+impl Default for CapacityVerifier {
     fn default() -> Self {
         Self::new()
     }
@@ -629,7 +629,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_capacity_verification_sufficient() {
-        let verifier = ResourceVerifier::new();
+        let verifier = CapacityVerifier::new();
 
         // Set up system resources
         {
@@ -658,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_capacity_verification_insufficient_cpu() {
-        let verifier = ResourceVerifier::new();
+        let verifier = CapacityVerifier::new();
 
         {
             let mut resources = verifier.system_resources.write().await;
@@ -692,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_capacity_verification_insufficient_memory() {
-        let verifier = ResourceVerifier::new();
+        let verifier = CapacityVerifier::new();
 
         {
             let mut resources = verifier.system_resources.write().await;
@@ -726,7 +726,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reserve_capacity_reduces_available_resources() {
-        let verifier = ResourceVerifier::new();
+        let verifier = CapacityVerifier::new();
 
         {
             let mut resources = verifier.system_resources.write().await;
@@ -774,7 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reservation_expires_after_hold() {
-        let verifier = ResourceVerifier::new();
+        let verifier = CapacityVerifier::new();
 
         {
             let mut resources = verifier.system_resources.write().await;

@@ -6,8 +6,8 @@
 
 use crate::libp2p_beemesh::behaviour::MyBehaviour;
 use crate::protocol::machine;
-use crate::provider::{ProviderConfig, ProviderManager};
-use crate::resource_verifier::ResourceVerifier;
+use crate::placement::{PlacementConfig, PlacementManager};
+use crate::capacity::CapacityVerifier;
 use crate::runtime::{DeploymentConfig, RuntimeRegistry, create_default_registry};
 use base64::Engine;
 use libp2p::Swarm;
@@ -22,20 +22,20 @@ use tokio::sync::RwLock;
 static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
     Lazy::new(|| Arc::new(RwLock::new(None)));
 
-/// Global provider manager for announcements
-static PROVIDER_MANAGER: Lazy<Arc<RwLock<Option<ProviderManager>>>> =
+/// Global placement manager for announcements
+static PLACEMENT_MANAGER: Lazy<Arc<RwLock<Option<PlacementManager>>>> =
     Lazy::new(|| Arc::new(RwLock::new(None)));
 
-/// Global resource verifier for capacity checks
-static RESOURCE_VERIFIER: Lazy<Arc<ResourceVerifier>> =
-    Lazy::new(|| Arc::new(ResourceVerifier::new()));
+/// Global capacity verifier for resource checks
+static CAPACITY_VERIFIER: Lazy<Arc<CapacityVerifier>> =
+    Lazy::new(|| Arc::new(CapacityVerifier::new()));
 
 /// Node-local cache mapping manifest IDs to owner public keys.
 static MANIFEST_OWNER_MAP: Lazy<RwLock<HashMap<String, Vec<u8>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// Initialize the runtime registry and provider manager
-pub async fn initialize_workload_manager(
+pub async fn initialize_podman_manager(
     force_mock_runtime: bool,
     mock_only_runtime: bool,
     scheduling_enabled: bool,
@@ -45,7 +45,7 @@ pub async fn initialize_workload_manager(
         return Ok(());
     }
 
-    info!("Initializing runtime registry and provider manager for manifest deployment");
+    info!("Initializing runtime registry and placement manager for manifest deployment");
 
     // Create runtime registry - use mock-only for tests if environment variable is set
     let use_mock_registry = force_mock_runtime || mock_only_runtime;
@@ -77,26 +77,26 @@ pub async fn initialize_workload_manager(
         *global_registry = Some(registry);
     }
 
-    // Create provider manager
-    let provider_config = ProviderConfig {
+    // Create placement manager
+    let placement_config = PlacementConfig {
         default_ttl_seconds: 3600, // 1 hour
         ..Default::default()
     };
-    let provider_manager = ProviderManager::new(provider_config);
+    let placement_manager = PlacementManager::new(placement_config);
 
     {
-        let mut global_provider_manager = PROVIDER_MANAGER.write().await;
-        *global_provider_manager = Some(provider_manager);
+        let mut global_placement_manager = PLACEMENT_MANAGER.write().await;
+        *global_placement_manager = Some(placement_manager);
     }
 
-    // Initialize resource verifier with system resources
-    info!("Initializing resource verifier");
-    let verifier = get_global_resource_verifier();
+    // Initialize capacity verifier with system resources
+    info!("Initializing capacity verifier");
+    let verifier = get_global_capacity_verifier();
     if let Err(e) = verifier.update_system_resources().await {
         warn!("Failed to update system resources: {}", e);
     }
 
-    info!("Runtime registry and provider manager initialized successfully");
+    info!("Runtime registry and placement manager initialized successfully");
     Ok(())
 }
 
@@ -134,13 +134,13 @@ pub async fn get_global_runtime_registry()
     }
 }
 
-/// Get access to the global resource verifier
-pub fn get_global_resource_verifier() -> Arc<ResourceVerifier> {
-    Arc::clone(&RESOURCE_VERIFIER)
+/// Get access to the global capacity verifier
+pub fn get_global_capacity_verifier() -> Arc<CapacityVerifier> {
+    Arc::clone(&CAPACITY_VERIFIER)
 }
 
 /// Enhanced apply message handler that uses the workload manager
-pub async fn handle_apply_message_with_workload_manager(
+pub async fn handle_apply_message_with_podman_manager(
     message: request_response::Message<Vec<u8>, Vec<u8>>,
     peer: libp2p::PeerId,
     swarm: &mut Swarm<MyBehaviour>,
@@ -210,7 +210,7 @@ pub async fn handle_apply_message_with_workload_manager(
                             return;
                         }
 
-                        let reservation_ok = get_global_resource_verifier()
+                        let reservation_ok = get_global_capacity_verifier()
                             .has_active_reservation_for_manifest(manifest_id)
                             .await;
                         if !reservation_ok {
@@ -309,17 +309,17 @@ async fn process_manifest_deployment(
     manifest_json: &str,
     owner_pubkey: &[u8],
 ) -> Result<String, Box<dyn std::error::Error>> {
-    info!("Processing manifest deployment with encrypted envelope");
+    info!("Processing manifest deployment");
 
-    // Decrypt the manifest content first
-    let manifest_content = decrypt_manifest_content(manifest_json, "temp").await?;
+    // Parse the manifest content (always cleartext)
+    let manifest_content = manifest_json.as_bytes().to_vec();
 
-    // Use the manifest_id from the apply request for provider announcements
+    // Use the manifest_id from the apply request for placement announcements
     // This ensures consistency between apply and delete operations
     let manifest_id = apply_req.manifest_id().unwrap_or("unknown").to_string();
 
     info!(
-        "Processing manifest deployment for manifest_id: {} (calculated from decrypted content)",
+        "Processing manifest deployment for manifest_id: {}",
         manifest_id
     );
 
@@ -404,21 +404,21 @@ async fn process_manifest_deployment(
         workload_info.id, engine_name, workload_info.status
     );
 
-    // Announce as provider if deployment successful
-    if let Some(provider_manager) = PROVIDER_MANAGER.read().await.as_ref() {
+    // Announce placement if deployment successful
+    if let Some(placement_manager) = PLACEMENT_MANAGER.read().await.as_ref() {
         let mut metadata = HashMap::new();
         metadata.insert("runtime_engine".to_string(), engine_name.clone());
         metadata.insert("workload_id".to_string(), workload_info.id.clone());
         metadata.insert("node_type".to_string(), "beemesh-machine".to_string());
 
-        if let Err(e) = provider_manager.announce_provider(swarm, &manifest_id, metadata) {
+        if let Err(e) = placement_manager.announce_placement(swarm, &manifest_id, metadata) {
             warn!(
-                "Failed to announce as provider for manifest {}: {}",
+                "Failed to announce placement for manifest {}: {}",
                 manifest_id, e
             );
         } else {
             info!(
-                "Announced as provider for manifest_id: {} using engine '{}'",
+                "Announced placement for manifest_id: {} using engine '{}'",
                 manifest_id, engine_name
             );
         }
@@ -428,7 +428,7 @@ async fn process_manifest_deployment(
 }
 
 /// Modify the manifest to set replicas=1 for single-node deployment
-/// Each node in the cluster will deploy one replica of the workload
+/// Each node in the fabric will deploy one replica of the workload
 fn modify_manifest_replicas(
     manifest_content: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -522,56 +522,7 @@ async fn select_runtime_engine(
     Err("No suitable runtime engine available".into())
 }
 
-/// Decrypt manifest content from the encrypted envelope
-async fn decrypt_manifest_content(
-    manifest_json: &str,
-    manifest_id: &str,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    debug!(
-        "Decrypting manifest content for manifest_id: {}",
-        manifest_id
-    );
 
-    // Decode base64-encoded envelope
-    let envelope_bytes = base64::engine::general_purpose::STANDARD.decode(manifest_json)?;
-
-    // Parse as flatbuffer envelope
-    let envelope = machine::root_as_envelope(&envelope_bytes)?;
-
-    let payload_type = envelope.payload_type().unwrap_or("");
-    debug!("Envelope payload type: {}", payload_type);
-
-    if payload_type == "manifest" {
-        // Extract encrypted payload from envelope and decrypt directly
-        if let Some(payload_vector) = envelope.payload() {
-            let payload_bytes = payload_vector.bytes();
-
-            // Attempt to decrypt the manifest using KEM decryption
-            match decrypt_manifest_from_envelope(manifest_id, payload_bytes).await {
-                Ok(decrypted_content) => {
-                    info!(
-                        "Successfully decrypted manifest for manifest_id: {}",
-                        manifest_id
-                    );
-                    Ok(decrypted_content.into_bytes())
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to decrypt manifest for manifest_id {}: {}",
-                        manifest_id, e
-                    );
-                    Err(format!("decryption failed: {}", e).into())
-                }
-            }
-        } else {
-            Err("Missing payload in envelope".into())
-        }
-    } else {
-        // Assume it's plain YAML/JSON manifest
-        debug!("Treating as plain manifest content");
-        Ok(manifest_json.as_bytes().to_vec())
-    }
-}
 
 /// Create deployment configuration from apply request
 fn create_deployment_config(apply_req: &machine::ApplyRequest) -> DeploymentConfig {
@@ -590,41 +541,7 @@ fn create_deployment_config(apply_req: &machine::ApplyRequest) -> DeploymentConf
     config
 }
 
-/// Decrypt manifest directly from envelope payload using KEM
-async fn decrypt_manifest_from_envelope(
-    manifest_id: &str,
-    payload_bytes: &[u8],
-) -> Result<String, Box<dyn std::error::Error>> {
-    debug!(
-        "Attempting to decrypt manifest from envelope payload for manifest_id: {}",
-        manifest_id
-    );
 
-    // Validate recipient-blob version byte
-    if payload_bytes.is_empty() || payload_bytes[0] != 0x02 {
-        return Err(
-            "unsupported payload format: expected recipient-blob (version byte 0x02)".into(),
-        );
-    }
-
-    // Use the node's KEM private key to decapsulate and decrypt the recipient-blob
-    let (_pub_bytes, priv_bytes) = crate::crypto::ensure_kem_keypair_on_disk()
-        .map_err(|e| format!("failed to load KEM keypair: {}", e))?;
-
-    let plaintext = crate::crypto::decrypt_payload_from_recipient_blob(payload_bytes, &priv_bytes)
-        .map_err(|e| format!("recipient-blob decryption failed: {}", e))?;
-
-    // Interpret plaintext as UTF-8 manifest content (YAML/JSON)
-    let manifest_str = String::from_utf8(plaintext)
-        .map_err(|e| format!("decrypted manifest is not valid UTF-8: {}", e))?;
-
-    debug!(
-        "Successfully decrypted manifest from envelope (len={})",
-        manifest_str.len()
-    );
-
-    Ok(manifest_str)
-}
 
 /// Enhanced self-apply processing with workload manager
 pub async fn process_enhanced_self_apply_request(manifest: &[u8], swarm: &mut Swarm<MyBehaviour>) {
@@ -781,9 +698,9 @@ pub async fn remove_workloads_by_manifest_id(
         }
     }
 
-    // Also withdraw provider announcement if we were providing this manifest
-    if let Some(provider_manager) = PROVIDER_MANAGER.read().await.as_ref() {
-        if let Err(e) = provider_manager.stop_providing(manifest_id) {
+    // Also withdraw placement announcement if we were providing this manifest
+    if let Some(placement_manager) = PLACEMENT_MANAGER.read().await.as_ref() {
+        if let Err(e) = placement_manager.stop_providing(manifest_id) {
             warn!(
                 "Failed to stop providing manifest_id {}: {}",
                 manifest_id, e
@@ -856,7 +773,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_registry_initialization() {
-        let result = initialize_workload_manager(false, false, true).await;
+        let result = initialize_podman_manager(false, false, true).await;
         assert!(result.is_ok());
 
         let stats = get_runtime_registry_stats().await;
@@ -870,7 +787,7 @@ mod tests {
     #[tokio::test]
     async fn test_runtime_engine_selection() {
         // Initialize registry for testing
-        let _ = initialize_workload_manager(false, false, true).await;
+        let _ = initialize_podman_manager(false, false, true).await;
 
         // Test Kubernetes manifest
         let k8s_manifest = r#"

@@ -9,13 +9,12 @@ pub mod hostapi;
 pub mod libp2p_beemesh;
 mod pod_communication;
 pub mod protocol;
-pub mod provider;
-pub mod resource_verifier;
+pub mod placement;
+pub mod capacity;
 pub mod restapi;
 pub mod runtime;
-pub mod scheduler;
-pub mod workload_integration;
-pub mod workload_manager;
+
+
 
 /// beemesh Host Agent
 #[derive(Parser, Debug)]
@@ -277,7 +276,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // Initialize runtime registry and provider manager for manifest deployment
     log::info!("Initializing runtime registry and provider manager...");
-    if let Err(e) = workload_integration::initialize_workload_manager(
+    if let Err(e) = run::initialize_podman_manager(
         cli.mock_only_runtime,
         cli.mock_only_runtime,
         scheduling_enabled,

@@ -1,8 +1,8 @@
 use super::message_verifier::verify_signed_message;
 use crate::libp2p_beemesh::{capacity, utils};
 use crate::protocol::libp2p_constants::FREE_CAPACITY_TIMEOUT_MS;
-use crate::resource_verifier::{CapacityCheckResult, ResourceRequest};
-use crate::workload_integration::get_global_resource_verifier;
+use crate::capacity::{CapacityCheckResult, ResourceRequest};
+use crate::run::get_global_capacity_verifier;
 use libp2p::gossipsub;
 use log::{debug, error, info, warn};
 
@@ -70,7 +70,7 @@ pub fn gossipsub_message(
             payload.len()
         );
 
-        let verifier = get_global_resource_verifier();
+        let verifier = get_global_capacity_verifier();
 
         // Perform synchronous capacity check using cached resources.
         let request_id_for_check = orig_request_id.clone();

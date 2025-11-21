@@ -62,7 +62,7 @@ pub async fn handle_control_message(
             manifest_id,
             reply_tx,
         } => {
-            // Use Kademlia providers API by issuing a get_providers for the provider key
+            // Use Kademlia providers API to find placement holders
             let record_key = RecordKey::new(&format!("provider:{}", manifest_id));
             info!(
                 "DHT: attempting get_providers for key=provider:{}",
@@ -183,8 +183,8 @@ pub async fn handle_control_message(
     }
 }
 
-/// Announce a provider record directly using the swarm's Kademlia behaviour.
-/// This helper centralizes the key/record format used for provider announcements.
+/// Announce a placement record directly using the swarm's Kademlia behaviour.
+/// This helper centralizes the key/record format used for placement announcements (via Kademlia providers).
 pub fn announce_provider_direct(
     swarm: &mut Swarm<MyBehaviour>,
     cid: String,
@@ -377,13 +377,13 @@ pub enum Libp2pControl {
     BootstrapDht {
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
-    /// Announce that this node holds data for the given CID (provider-style record)
+    /// Announce that this node hosts the workload for the given CID (uses Kademlia provider records for placement)
     AnnounceProvider {
         cid: String,
         ttl_ms: u64,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
-    /// Withdraw a previously announced provider
+    /// Withdraw a previously announced placement
     WithdrawProvider {
         cid: String,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,

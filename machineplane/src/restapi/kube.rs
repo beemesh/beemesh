@@ -637,7 +637,7 @@ async fn delete_deployment(
             delete_manifest_from_peers(&state, &key, &assigned).await;
         }
 
-        let _ = crate::workload_integration::remove_workloads_by_manifest_id(&key).await;
+        let _ = crate::run::remove_workloads_by_manifest_id(&key).await;
         return Ok(Json(json!({
             "kind": "Status",
             "apiVersion": "v1",

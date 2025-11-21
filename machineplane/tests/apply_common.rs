@@ -20,8 +20,9 @@ pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
     (client, TEST_PORTS.to_vec())
 }
 
-/// Build standard three-node cluster configuration with optional scheduling disable flags.
-fn make_standard_node_clis(disable_flags: &[bool]) -> Vec<Cli> {
+/// Build standard three-node fabric configuration with optional scheduling disable flags.
+/// Returns a guard that shuts down nodes when dropped.
+pub async fn start_fabric_nodes(disable_flags: &[bool]) -> NodeGuard {
     assert!(disable_flags.len() == TEST_PORTS.len());
 
     let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, disable_flags[0]);

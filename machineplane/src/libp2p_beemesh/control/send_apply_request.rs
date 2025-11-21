@@ -24,7 +24,7 @@ pub async fn handle_send_apply_request(
         debug!("libp2p: handling self-apply locally for peer {}", peer_id);
 
         // Use the new workload manager integration for self-apply as well
-        crate::workload_integration::process_enhanced_self_apply_request(&manifest, swarm).await;
+        crate::run::process_enhanced_self_apply_request(&manifest, swarm).await;
 
         let _ = reply_tx.send(Ok(format!("Apply request handled locally for {}", peer_id)));
         return;
