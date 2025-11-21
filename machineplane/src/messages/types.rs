@@ -271,40 +271,40 @@ pub struct AppliedManifest {
     /// A canonical identifier for this record. Recommended: hex-encoded SHA-256
     /// over canonicalized payload (SHA256(owner_pubkey + ':' + operation_id + ':' + canonical_manifest))
     pub id: String,
-    
+
     /// Operation id supplied by the originator (correlates with ApplyRequest)
     pub operation_id: String,
-    
+
     /// libp2p peer id of the origin that applied the manifest
     pub origin_peer: String,
-    
+
     /// Raw public key bytes of the owner (for signature verification)
     pub owner_pubkey: Vec<u8>,
-    
+
     /// Algorithm/scheme used for the signature
     pub signature_scheme: SignatureScheme,
-    
+
     /// Binary signature over the canonicalized data
     pub signature: Vec<u8>,
-    
+
     /// The manifest itself as JSON string
     pub manifest_json: String,
-    
+
     /// Optional convenience field for indexing
     pub manifest_kind: String,
-    
+
     /// Optional labels for indexing and quick queries
     pub labels: Vec<KeyValue>,
-    
+
     /// Unix timestamp in milliseconds when manifest was applied/signed
     pub timestamp: u64,
-    
+
     /// What kind of operation this record represents
     pub operation: OperationType,
-    
+
     /// Optional TTL (in seconds) to help nodes expire records from DHT
     pub ttl_secs: u32,
-    
+
     /// Hex-encoded SHA-256 of the canonicalized manifest_json (content id)
     pub content_hash: String,
 }

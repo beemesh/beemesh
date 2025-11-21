@@ -14,8 +14,8 @@ RUN rustup target add x86_64-unknown-linux-musl
 
 COPY . .
 
-RUN cargo build --release --locked -p machine --target x86_64-unknown-linux-musl
-RUN strip /app/target/x86_64-unknown-linux-musl/release/machine
+RUN cargo build --release --locked -p beemesh-machineplane --target x86_64-unknown-linux-musl
+RUN strip /app/target/x86_64-unknown-linux-musl/release/machineplane
 
 # ===============================
 # 2. Fetch static Podman client
@@ -52,10 +52,10 @@ COPY --from=alpine:latest /etc/nsswitch.conf /etc/nsswitch.conf
 COPY --from=alpine:latest /etc/hosts /etc/hosts
 
 # Copy binaries into /usr/local/bin
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/machine /usr/local/bin/machine
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/machineplane /usr/local/bin/machineplane
 COPY --from=builder /out/podman/podman /usr/local/bin/podman
 
 # Set PATH so /bin and /usr/local/bin are both available
 ENV PATH=/usr/local/bin:/bin
 
-ENTRYPOINT ["machine"]
+ENTRYPOINT ["machineplane"]

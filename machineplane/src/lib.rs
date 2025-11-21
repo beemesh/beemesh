@@ -64,8 +64,8 @@ pub struct Cli {
     #[arg(long, default_value = "/run/beemesh/host.sock")]
     pub api_socket: Option<String>,
 
-    /// Directory to store machine keypair (default: /etc/beemesh/machine)
-    #[arg(long, default_value = "/etc/beemesh/machine")]
+    /// Directory to store machineplane keypair (default: /etc/beemesh/machineplane)
+    #[arg(long, default_value = "/etc/beemesh/machineplane")]
     pub key_dir: String,
 
     /// Bootstrap peer addresses for explicit peer discovery (can be specified multiple times)
@@ -97,7 +97,7 @@ impl Default for Cli {
             kem_ephemeral: false,
             ephemeral_keys: false,
             api_socket: Some("/run/beemesh/host.sock".to_string()),
-            key_dir: "/etc/beemesh/machine".to_string(),
+            key_dir: "/etc/beemesh/machineplane".to_string(),
             bootstrap_peer: Vec::new(),
             libp2p_quic_port: 0,
             libp2p_host: "0.0.0.0".to_string(),
@@ -105,7 +105,7 @@ impl Default for Cli {
     }
 }
 
-/// Start the machine runtime using the provided CLI configuration.
+/// Start the machineplane runtime using the provided CLI configuration.
 /// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
 pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     // initialize logger but don't panic if already initialized
@@ -129,7 +129,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         log::info!("Using ephemeral keypair (not persisted to disk)");
         libp2p::identity::Keypair::generate_ed25519()
     } else {
-        // Store keypair in configured key_dir (default /etc/beemesh/machine)
+        // Store keypair in configured key_dir (default /etc/beemesh/machineplane)
         use std::fs::OpenOptions;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 

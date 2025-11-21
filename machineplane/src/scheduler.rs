@@ -7,10 +7,7 @@ use crate::messages::constants::{
     DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
 use crate::messages::machine;
-use crate::network::behaviour::MyBehaviour;
 use libp2p::gossipsub;
-use libp2p::kad::RecordKey;
-use libp2p::{PeerId, Swarm};
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -31,7 +28,6 @@ pub struct Scheduler {
 struct BidContext {
     task_id: String,
     manifest_id: String,
-    placement_metadata: HashMap<String, String>,
     replicas: u32,
     bids: Vec<BidEntry>,
 }
@@ -45,17 +41,7 @@ struct BidEntry {
 /// Commands emitted by the scheduler for the libp2p network loop to process
 #[derive(Debug, Clone)]
 pub enum SchedulerCommand {
-    Publish {
-        topic: String,
-        payload: Vec<u8>,
-    },
-    AnnouncePlacement {
-        manifest_id: String,
-        metadata: HashMap<String, String>,
-    },
-    WithdrawPlacement {
-        manifest_id: String,
-    },
+    Publish { topic: String, payload: Vec<u8> },
 }
 
 impl Scheduler {
@@ -100,12 +86,6 @@ impl Scheduler {
 
                 let replicas = std::cmp::max(1, task.max_parallel_duplicates);
 
-                let mut placement_metadata = HashMap::new();
-                placement_metadata.insert("task_id".to_string(), task_id.clone());
-                placement_metadata.insert("manifest_ref".to_string(), task.manifest_ref.clone());
-                placement_metadata
-                    .insert("placement_token".to_string(), task.placement_token.clone());
-
                 // 1. Evaluate Fit (Capacity Check)
                 // TODO: Connect to CapacityVerifier
                 let capacity_score = 1.0; // Placeholder: assume perfect fit for now
@@ -128,7 +108,6 @@ impl Scheduler {
                         BidContext {
                             task_id: task_id.to_string(),
                             manifest_id: manifest_id.clone(),
-                            placement_metadata: placement_metadata.clone(),
                             replicas,
                             bids: vec![BidEntry {
                                 bidder_id: self.local_node_id.clone(),
@@ -162,12 +141,11 @@ impl Scheduler {
                 let active_bids = self.active_bids.clone();
                 let task_id_clone = task_id.to_string();
                 let local_id = self.local_node_id.clone();
-                let placement_sender = self.outbound_tx.clone();
                 // We need a way to trigger deployment, for now just log
                 tokio::spawn(async move {
                     sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
 
-                    let (winners, manifest_id) = {
+                    let winners = {
                         let mut bids = active_bids.lock().unwrap();
                         if let Some(ctx) = bids.remove(&task_id_clone) {
                             let winners = select_winners(&ctx, &local_id);
@@ -187,39 +165,18 @@ impl Scheduler {
                                     ctx.task_id, ctx.manifest_id
                                 );
                             }
-                            (winners, Some(ctx.manifest_id))
+                            winners
                         } else {
-                            (Vec::new(), None)
+                            Vec::new()
                         }
                     };
 
                     if winners.iter().any(|bid| bid.bidder_id == local_id) {
-                        info!("WON BID for task {}! Proceeding to Lease...", task_id_clone);
-
-                        // TODO: Write LeaseHint to MDHT (dht_manager.put_record)
-                        // For now, we just log it. Real implementation needs access to dht_manager
-                        // or send a command to the main loop to do it.
-
-                        // Publish LeaseHint (simulated via Event for now)
-                        // In reality, we write to DHT and then start the workload.
-
-                        // Trigger Deployment (simulated)
+                        info!(
+                            "WON BID for task {}! Proceeding to deployment...",
+                            task_id_clone
+                        );
                         info!("Deploying workload for task {}", task_id_clone);
-
-                        if let Some(ctx) = winners.iter().find(|bid| bid.bidder_id == local_id) {
-                            if let Err(e) =
-                                placement_sender.send(SchedulerCommand::AnnouncePlacement {
-                                    manifest_id: manifest_id
-                                        .unwrap_or_else(|| task_id_clone.clone()),
-                                    metadata: ctx.placement_metadata.clone(),
-                                })
-                            {
-                                error!(
-                                    "Failed to queue placement announcement for task {}: {}",
-                                    task_id_clone, e
-                                );
-                            }
-                        }
 
                         // TODO: Trigger workload deployment via runtime integration
                     } else {
@@ -277,14 +234,10 @@ impl Scheduler {
                         event.event_type,
                         EventType::Cancelled | EventType::Preempted | EventType::Failed
                     ) {
-                        if let Err(e) = self.outbound_tx.send(SchedulerCommand::WithdrawPlacement {
-                            manifest_id: task_id.clone(),
-                        }) {
-                            warn!(
-                                "Failed to queue placement withdrawal for task {}: {}",
-                                task_id, e
-                            );
-                        }
+                        info!(
+                            "Received termination event for locally deployed task {}",
+                            task_id
+                        );
                     }
                 }
             }
@@ -297,7 +250,6 @@ impl Scheduler {
 struct BidOutcome {
     bidder_id: String,
     score: f64,
-    placement_metadata: HashMap<String, String>,
 }
 
 fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> {
@@ -337,7 +289,6 @@ fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> 
             outcomes.push(BidOutcome {
                 bidder_id: bid.bidder_id,
                 score: bid.score,
-                placement_metadata: context.placement_metadata.clone(),
             });
         }
     }
@@ -346,241 +297,6 @@ fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> 
 }
 
 // ---------------------------------------------------------------------------
-// Placement logic (moved from placement.rs)
-// ---------------------------------------------------------------------------
-
-/// Errors that can occur during placement operations
-#[derive(Debug, thiserror::Error)]
-pub enum PlacementError {
-    #[error("DHT error: {0}")]
-    DhtError(String),
-
-    #[error("Network error: {0}")]
-    NetworkError(String),
-
-    #[error("Placement not found: {0}")]
-    PlacementNotFound(String),
-}
-
-/// Result type for placement operations
-pub type PlacementResult<T> = Result<T, PlacementError>;
-
-/// Information about a manifest placement
-#[derive(Debug, Clone)]
-pub struct PlacementInfo {
-    /// The peer ID of the provider
-    pub peer_id: PeerId,
-    /// The manifest ID being provided
-    pub manifest_id: String,
-    /// When this placement was first announced
-    pub announced_at: SystemTime,
-    /// When this placement was last seen
-    pub last_seen: SystemTime,
-    /// TTL for this placement announcement (in seconds)
-    pub ttl_seconds: u64,
-    /// Additional metadata about the placement
-    pub metadata: HashMap<String, String>,
-}
-
-impl PlacementInfo {
-    /// Check if this placement announcement has expired
-    pub fn is_expired(&self) -> bool {
-        if let Ok(elapsed) = self.announced_at.elapsed() {
-            elapsed.as_secs() > self.ttl_seconds
-        } else {
-            true
-        }
-    }
-
-    /// Update the last seen timestamp
-    pub fn update_last_seen(&mut self) {
-        self.last_seen = SystemTime::now();
-    }
-}
-
-/// Manager for placement announcements
-#[derive(Clone)]
-pub struct PlacementManager {
-    /// Local placements (manifests this node is hosting)
-    local_placements: Arc<Mutex<HashMap<String, PlacementInfo>>>,
-    /// Configuration
-    config: PlacementConfig,
-}
-
-/// Configuration for the placement manager
-#[derive(Debug, Clone)]
-pub struct PlacementConfig {
-    /// Default TTL for placement announcements (in seconds)
-    pub default_ttl_seconds: u64,
-    /// How often to re-announce local placements (in seconds)
-    pub reannounce_interval_seconds: u64,
-}
-
-impl Default for PlacementConfig {
-    fn default() -> Self {
-        Self {
-            default_ttl_seconds: 3600,         // 1 hour
-            reannounce_interval_seconds: 1800, // 30 minutes
-        }
-    }
-}
-
-impl PlacementManager {
-    /// Create a new placement manager
-    pub fn new(config: PlacementConfig) -> Self {
-        Self {
-            local_placements: Arc::new(Mutex::new(HashMap::new())),
-            config,
-        }
-    }
-
-    /// Create a placement manager with default configuration
-    pub fn new_default() -> Self {
-        Self::new(PlacementConfig::default())
-    }
-
-    /// Announce that this node is providing a manifest
-    pub fn announce_placement(
-        &self,
-        swarm: &mut Swarm<MyBehaviour>,
-        manifest_id: &str,
-        metadata: HashMap<String, String>,
-    ) -> PlacementResult<()> {
-        let local_peer_id = *swarm.local_peer_id();
-
-        info!(
-            "Announcing placement for manifest: {} from peer: {}",
-            manifest_id, local_peer_id
-        );
-
-        // Create placement info
-        let placement_info = PlacementInfo {
-            peer_id: local_peer_id,
-            manifest_id: manifest_id.to_string(),
-            announced_at: SystemTime::now(),
-            last_seen: SystemTime::now(),
-            ttl_seconds: self.config.default_ttl_seconds,
-            metadata,
-        };
-
-        // Store locally
-        {
-            let mut local_placements = self.local_placements.lock().unwrap();
-            local_placements.insert(manifest_id.to_string(), placement_info);
-        }
-
-        // Announce via DHT
-        self.announce_via_dht(swarm, manifest_id)?;
-
-        debug!(
-            "Successfully announced placement for manifest: {}",
-            manifest_id
-        );
-        Ok(())
-    }
-
-    /// Stop providing a manifest
-    pub fn stop_providing(&self, manifest_id: &str) -> PlacementResult<()> {
-        info!(
-            "Stopping placement announcement for manifest: {}",
-            manifest_id
-        );
-
-        let mut local_placements = self.local_placements.lock().unwrap();
-        if local_placements.remove(manifest_id).is_some() {
-            debug!("Removed local placement for manifest: {}", manifest_id);
-            Ok(())
-        } else {
-            warn!(
-                "Attempted to stop providing manifest {} but it wasn't being provided",
-                manifest_id
-            );
-            Err(PlacementError::PlacementNotFound(manifest_id.to_string()))
-        }
-    }
-
-    /// Get all manifests this node is providing
-    pub fn get_local_placements(&self) -> Vec<PlacementInfo> {
-        let local_placements = self.local_placements.lock().unwrap();
-        local_placements.values().cloned().collect()
-    }
-
-    /// Re-announce all local placements
-    pub fn reannounce_local_placements(&self, swarm: &mut Swarm<MyBehaviour>) {
-        debug!("Re-announcing local placements");
-
-        let manifest_ids: Vec<String> = {
-            let local_placements = self.local_placements.lock().unwrap();
-            local_placements.keys().cloned().collect()
-        };
-
-        let manifest_count = manifest_ids.len();
-
-        for manifest_id in manifest_ids {
-            if let Err(e) = self.announce_via_dht(swarm, &manifest_id) {
-                warn!(
-                    "Failed to re-announce placement for manifest {}: {}",
-                    manifest_id, e
-                );
-            }
-        }
-
-        debug!("Re-announced {} local placements", manifest_count);
-    }
-
-    /// Start background tasks for placement management
-    pub fn start_background_tasks(&self, _swarm: &mut Swarm<MyBehaviour>) {
-        info!("Started placement manager background tasks");
-    }
-
-    /// Internal method to announce via DHT
-    fn announce_via_dht(
-        &self,
-        swarm: &mut Swarm<MyBehaviour>,
-        manifest_id: &str,
-    ) -> PlacementResult<()> {
-        // Create a provider record key
-        let provider_key = format!("provider:{}", manifest_id);
-        let record_key = RecordKey::new(&provider_key);
-
-        // Start provider announcement
-        match swarm.behaviour_mut().kademlia.start_providing(record_key) {
-            Ok(query_id) => {
-                debug!(
-                    "Started DHT placement announcement for manifest {} (query_id: {:?})",
-                    manifest_id, query_id
-                );
-                Ok(())
-            }
-            Err(e) => {
-                error!(
-                    "Failed to start DHT placement announcement for manifest {}: {}",
-                    manifest_id, e
-                );
-                Err(PlacementError::DhtError(format!(
-                    "Failed to start providing: {}",
-                    e
-                )))
-            }
-        }
-    }
-
-    /// Get statistics about the placement manager
-    pub fn get_stats(&self) -> PlacementStats {
-        let local_count = self.local_placements.lock().unwrap().len();
-        PlacementStats {
-            local_placements: local_count,
-        }
-    }
-}
-
-/// Statistics about the placement manager
-#[derive(Debug, Clone)]
-pub struct PlacementStats {
-    /// Number of manifests this node is providing
-    pub local_placements: usize,
-}
-
 pub use runtime_integration::*;
 
 // ---------------------------------------------------------------------------
@@ -599,8 +315,8 @@ mod runtime_integration {
     use crate::messages::types::ApplyRequest;
     use crate::network::behaviour::MyBehaviour;
     use crate::runtimes::{DeploymentConfig, RuntimeRegistry, create_default_registry};
-    use crate::scheduler::{PlacementConfig, PlacementManager};
     use libp2p::Swarm;
+    use libp2p::kad;
     use libp2p::request_response;
     use log::{debug, error, info, warn};
     use once_cell::sync::Lazy;
@@ -610,10 +326,6 @@ mod runtime_integration {
 
     /// Global runtime registry for all available engines
     static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
-        Lazy::new(|| Arc::new(RwLock::new(None)));
-
-    /// Global placement manager for announcements
-    static PLACEMENT_MANAGER: Lazy<Arc<RwLock<Option<PlacementManager>>>> =
         Lazy::new(|| Arc::new(RwLock::new(None)));
 
     /// Global capacity verifier for resource checks
@@ -637,7 +349,7 @@ mod runtime_integration {
             return Ok(());
         }
 
-        info!("Initializing runtime registry and placement manager for manifest deployment");
+        info!("Initializing runtime registry for manifest deployment");
 
         // Create runtime registry - use mock-only for tests if environment variable is set
         let use_mock_registry = force_mock_runtime || mock_only_runtime;
@@ -669,18 +381,6 @@ mod runtime_integration {
             *global_registry = Some(registry);
         }
 
-        // Create placement manager
-        let placement_config = PlacementConfig {
-            default_ttl_seconds: 3600, // 1 hour
-            ..Default::default()
-        };
-        let placement_manager = PlacementManager::new(placement_config);
-
-        {
-            let mut global_placement_manager = PLACEMENT_MANAGER.write().await;
-            *global_placement_manager = Some(placement_manager);
-        }
-
         // Initialize capacity verifier with system resources
         info!("Initializing capacity verifier");
         let verifier = get_global_capacity_verifier();
@@ -688,7 +388,7 @@ mod runtime_integration {
             warn!("Failed to update system resources: {}", e);
         }
 
-        info!("Runtime registry and placement manager initialized successfully");
+        info!("Runtime registry initialized successfully");
         Ok(())
     }
 
@@ -724,12 +424,6 @@ mod runtime_integration {
         } else {
             None
         }
-    }
-
-    /// Get access to the global placement manager (for scheduling and deployment events)
-    pub async fn get_global_placement_manager() -> Option<PlacementManager> {
-        let placement_guard = PLACEMENT_MANAGER.read().await;
-        placement_guard.clone()
     }
 
     /// Get access to the global capacity verifier
@@ -985,25 +679,7 @@ mod runtime_integration {
             workload_info.id, engine_name, workload_info.status
         );
 
-        // Announce placement if deployment successful
-        if let Some(placement_manager) = PLACEMENT_MANAGER.read().await.as_ref() {
-            let mut metadata = HashMap::new();
-            metadata.insert("runtime_engine".to_string(), engine_name.clone());
-            metadata.insert("workload_id".to_string(), workload_info.id.clone());
-            metadata.insert("node_type".to_string(), "beemesh-machine".to_string());
-
-            if let Err(e) = placement_manager.announce_placement(swarm, &manifest_id, metadata) {
-                warn!(
-                    "Failed to announce placement for manifest {}: {}",
-                    manifest_id, e
-                );
-            } else {
-                info!(
-                    "Announced placement for manifest_id: {} using engine '{}'",
-                    manifest_id, engine_name
-                );
-            }
-        }
+        publish_workload_to_dht(swarm, &workload_info.id);
 
         Ok(workload_info.id)
     }
@@ -1119,6 +795,36 @@ mod runtime_integration {
         }
 
         config
+    }
+
+    /// Store the workload id in the machine DHT using a simple key/value record
+    fn publish_workload_to_dht(swarm: &mut Swarm<MyBehaviour>, workload_id: &str) {
+        let record_key = kad::RecordKey::new(&format!("workload:{}", workload_id));
+        let record = kad::Record {
+            key: record_key,
+            value: workload_id.as_bytes().to_vec(),
+            publisher: None,
+            expires: None,
+        };
+
+        match swarm
+            .behaviour_mut()
+            .kademlia
+            .put_record(record, kad::Quorum::One)
+        {
+            Ok(query_id) => {
+                info!(
+                    "DHT: stored workload {} with query_id {:?} as single source of truth",
+                    workload_id, query_id
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to store workload {} in machine DHT: {:?}",
+                    workload_id, e
+                );
+            }
+        }
     }
 
     /// Enhanced self-apply processing with workload manager
@@ -1281,18 +987,6 @@ mod runtime_integration {
             }
         }
 
-        // Also withdraw placement announcement if we were providing this manifest
-        if let Some(placement_manager) = PLACEMENT_MANAGER.read().await.as_ref() {
-            if let Err(e) = placement_manager.stop_providing(manifest_id) {
-                warn!(
-                    "Failed to stop providing manifest_id {}: {}",
-                    manifest_id, e
-                );
-            } else {
-                info!("Stopped providing manifest_id: {}", manifest_id);
-            }
-        }
-
         if errors.is_empty() {
             // Drop the cached owner once the manifest workloads are removed successfully.
             if remove_manifest_owner(manifest_id).await.is_some() {
@@ -1401,15 +1095,11 @@ mod runtime_integration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libp2p::PeerId;
-    use std::time::Duration;
-
     #[test]
     fn selects_unique_winners_for_multiple_replicas() {
         let context = BidContext {
             task_id: "task-a".to_string(),
             manifest_id: "task-a".to_string(),
-            placement_metadata: HashMap::new(),
             replicas: 2,
             bids: vec![
                 BidEntry {
@@ -1438,7 +1128,6 @@ mod tests {
         let context = BidContext {
             task_id: "task-b".to_string(),
             manifest_id: "task-b".to_string(),
-            placement_metadata: HashMap::new(),
             replicas: 3,
             bids: vec![
                 BidEntry {
@@ -1459,50 +1148,5 @@ mod tests {
         let winners = select_winners(&context, "local");
         assert_eq!(winners.len(), 2);
         assert_eq!(winners.iter().filter(|w| w.bidder_id == "local").count(), 1);
-    }
-
-    #[test]
-    fn test_placement_info_expiration() {
-        let mut placement = PlacementInfo {
-            peer_id: PeerId::random(),
-            manifest_id: "test".to_string(),
-            announced_at: SystemTime::now() - Duration::from_secs(3700), // 1 hour 1 minute ago
-            last_seen: SystemTime::now(),
-            ttl_seconds: 3600, // 1 hour TTL
-            metadata: HashMap::new(),
-        };
-
-        assert!(placement.is_expired());
-
-        // Update to recent announcement
-        placement.announced_at = SystemTime::now();
-        assert!(!placement.is_expired());
-    }
-
-    #[test]
-    fn test_placement_manager_creation() {
-        let manager = PlacementManager::new_default();
-        let stats = manager.get_stats();
-
-        assert_eq!(stats.local_placements, 0);
-    }
-
-    #[test]
-    fn test_local_placement_management() {
-        let manager = PlacementManager::new_default();
-
-        // Initially no placements
-        assert!(manager.get_local_placements().is_empty());
-
-        // Test stop providing non-existent manifest
-        assert!(manager.stop_providing("non-existent").is_err());
-    }
-
-    #[test]
-    fn test_placement_stats() {
-        let manager = PlacementManager::new_default();
-        let stats = manager.get_stats();
-
-        assert_eq!(stats.local_placements, 0);
     }
 }

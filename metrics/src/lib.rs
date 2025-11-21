@@ -7,9 +7,7 @@ fn registry() -> &'static Mutex<HashMap<&'static str, f64>> {
 }
 
 fn store_value(key: &'static str, value: f64, mode: StoreMode) {
-    let mut guard = registry()
-        .lock()
-        .expect("metrics registry mutex poisoned");
+    let mut guard = registry().lock().expect("metrics registry mutex poisoned");
     match mode {
         StoreMode::Counter => {
             let entry = guard.entry(key).or_insert(0.0);
