@@ -3,6 +3,7 @@ use libp2p::{Swarm, gossipsub};
 use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
+use crate::messages::constants::SCHEDULER_PROPOSALS;
 use crate::network::behaviour::MyBehaviour;
 use crate::network::capacity;
 use crate::network::utils;
@@ -37,24 +38,26 @@ pub async fn handle_query_capacity_with_payload(
                 cap_req.storage_bytes,
                 cap_req.replicas,
             );
-            // Broadcast scheduler requests to peers without additional envelope signing
-            let peers: Vec<libp2p::PeerId> = swarm
-                .behaviour()
+            let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
+            match swarm
+                .behaviour_mut()
                 .gossipsub
-                .all_peers()
-                .map(|(p, _)| p.clone())
-                .collect();
-            for peer in peers.iter() {
-                let _req_id = swarm
-                    .behaviour_mut()
-                    .scheduler_rr
-                    .send_request(peer, finished.clone());
+                .publish(proposals_topic, finished)
+            {
+                Ok(_) => {
+                    log::info!(
+                        "libp2p: published capreq request_id={} to scheduler-proposals",
+                        request_id
+                    );
+                }
+                Err(err) => {
+                    log::error!(
+                        "libp2p: failed to publish capreq request_id={} to scheduler-proposals: {:?}",
+                        request_id,
+                        err
+                    );
+                }
             }
-            log::info!(
-                "libp2p: broadcasted capreq request_id={} to {} peers",
-                request_id,
-                peers.len()
-            );
 
             // Also notify local pending senders directly so the originator is always considered
             // a potential responder. This ensures single-node operation and makes the

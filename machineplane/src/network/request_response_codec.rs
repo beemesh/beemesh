@@ -3,7 +3,6 @@ use libp2p::request_response;
 
 pub type ApplyCodec = ByteCodec;
 pub type HandshakeCodec = ByteCodec;
-pub type SchedulerCodec = ByteCodec;
 pub type DeleteCodec = ByteCodec;
 
 #[derive(Debug, Clone, Default)]

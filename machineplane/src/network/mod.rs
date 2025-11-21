@@ -150,15 +150,6 @@ pub fn setup_libp2p_node(
                 request_response::Config::default(),
             );
 
-            // Create the request-response behavior for scheduler (capacity/proposals)
-            let scheduler_rr = request_response::Behaviour::new(
-                std::iter::once((
-                    "/beemesh/scheduler-proposals/1.0.0",
-                    request_response::ProtocolSupport::Full,
-                )),
-                request_response::Config::default(),
-            );
-
             // Create the request-response behavior for delete protocol
             let delete_rr = request_response::Behaviour::new(
                 std::iter::once((
@@ -207,7 +198,6 @@ pub fn setup_libp2p_node(
                 gossipsub,
                 apply_rr,
                 handshake_rr,
-                scheduler_rr,
                 delete_rr,
                 manifest_fetch_rr,
                 kademlia,
@@ -411,11 +401,6 @@ pub async fn start_libp2p_node(
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(event)) => {
                         behaviour::kademlia_event(event, None);
-                    }
-
-                    SwarmEvent::Behaviour(MyBehaviourEvent::SchedulerRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        let local_peer = *swarm.local_peer_id();
-                        behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);
                     }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::OutboundFailure { peer, request_id, error, connection_id: _ })) => {
