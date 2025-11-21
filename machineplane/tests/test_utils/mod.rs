@@ -1,4 +1,4 @@
-use machine::{Cli, start_machine};
+use machineplaneplane::{Cli, start_machineplane};
 use std::sync::Once;
 use std::time::Duration;
 use tokio::process::{Child, Command};
@@ -78,7 +78,7 @@ impl Drop for NodeGuard {
 pub fn make_test_cli(
     rest_api_port: u16,
     disable_rest: bool,
-    disable_machine: bool,
+    disable_machineplane: bool,
     api_socket: Option<String>,
     bootstrap_peers: Vec<String>,
     libp2p_quic_port: u16,
@@ -94,7 +94,7 @@ pub fn make_test_cli(
         rest_api_host: "127.0.0.1".to_string(),
         rest_api_port,
         disable_rest_api: disable_rest,
-        disable_machine_api: disable_machine,
+        disable_machineplane_api: disable_machineplane,
         node_name: None,
         api_socket,
         key_dir: String::from("/tmp/.beemesh_test_unused"),
@@ -121,29 +121,29 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
         cleaned_up: false,
     };
 
-    // Build the machine binary path - it should be available in the workspace root target/debug/
+    // Build the machineplane binary path - it should be available in the workspace root target/debug/
     let current_dir = std::env::current_dir().expect("failed to get current dir");
-    let machine_binary = if current_dir.ends_with("tests") {
+    let machineplane_binary = if current_dir.ends_with("tests") {
         // We're running from tests/ directory, go up to workspace root
         current_dir
             .parent()
             .expect("no parent dir")
-            .join("target/debug/machine")
+            .join("target/debug/machineplane")
     } else {
         // We're running from workspace root
-        current_dir.join("target/debug/machine")
+        current_dir.join("target/debug/machineplane")
     };
 
-    if !machine_binary.exists() {
+    if !machineplane_binary.exists() {
         panic!(
-            "machine binary not found at {:?}. Run 'cargo build' first.",
-            machine_binary
+            "machineplane binary not found at {:?}. Run 'cargo build' first.",
+            machineplane_binary
         );
     }
 
     for cli in clis {
-        // Spawn machine process with CLI args
-        let mut cmd = Command::new(&machine_binary);
+        // Spawn machineplane process with CLI args
+        let mut cmd = Command::new(&machineplane_binary);
         cmd.arg("--ephemeral")
             .arg("--rest-api-host")
             .arg(&cli.rest_api_host)
@@ -157,8 +157,8 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
         if cli.disable_rest_api {
             cmd.arg("--disable-rest-api");
         }
-        if cli.disable_machine_api {
-            cmd.arg("--disable-machine-api");
+        if cli.disable_machineplane_api {
+            cmd.arg("--disable-machineplane-api");
         }
         if cli.disable_scheduling {
             cmd.arg("--disable-scheduling");
@@ -191,12 +191,12 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
         // Set environment variables for this process
         cmd.env("RUST_LOG", "info,libp2p=warn,quinn=warn");
 
-        //println!("Starting machine process on port {}", cli.rest_api_port);
+        //println!("Starting machineplane process on port {}", cli.rest_api_port);
         match cmd.spawn() {
             Ok(child) => {
                 guard.processes.push(child);
             }
-            Err(e) => panic!("failed to start machine process: {:?}", e),
+            Err(e) => panic!("failed to start machineplane process: {:?}", e),
         }
 
         sleep(startup_delay).await;
@@ -216,7 +216,7 @@ pub async fn start_nodes(clis: Vec<Cli>, startup_delay: Duration) -> NodeGuard {
         cleaned_up: false,
     };
     for cli in clis {
-        match start_machine(cli).await {
+        match start_machineplane(cli).await {
             Ok(mut handles) => {
                 guard.handles.append(&mut handles);
             }
@@ -245,9 +245,9 @@ pub fn setup_cleanup_hook() {
 pub fn global_cleanup() {
     eprintln!("Running global cleanup: pkill + rm commands");
 
-    // Kill any remaining machine processes - be more specific about the pattern
+    // Kill any remaining machineplane processes - be more specific about the pattern
     let pkill_result = std::process::Command::new("pkill")
-        .args(["-f", "target/debug/machine"])
+        .args(["-f", "target/debug/machineplane"])
         .output();
 
     match pkill_result {
