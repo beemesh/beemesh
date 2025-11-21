@@ -408,33 +408,6 @@ pub async fn start_libp2p_node(
                              log::error!("Failed to publish scheduler message: {}", e);
                          }
                      }
-                     SchedulerCommand::AnnouncePlacement { manifest_id, metadata } => {
-                         if let Some(manager) = crate::scheduler::get_global_placement_manager().await {
-                             if let Err(e) = manager.announce_placement(&mut swarm, &manifest_id, metadata) {
-                                 log::warn!("Failed to announce placement for manifest {}: {}", manifest_id, e);
-                             }
-                         } else {
-                             log::warn!(
-                                 "No placement manager available to announce manifest {}",
-                                 manifest_id
-                             );
-                         }
-                     }
-                     SchedulerCommand::WithdrawPlacement { manifest_id } => {
-                         if let Some(manager) = crate::scheduler::get_global_placement_manager().await {
-                             if let Err(e) = manager.stop_providing(&manifest_id) {
-                                 log::warn!(
-                                     "Failed to stop providing manifest {} after scheduler event: {}",
-                                     manifest_id, e
-                                 );
-                             }
-                         } else {
-                             log::warn!(
-                                 "No placement manager available to withdraw manifest {}",
-                                 manifest_id
-                             );
-                         }
-                     }
                  }
             }
             // control messages from other parts of the host (REST handlers)
