@@ -61,8 +61,9 @@ pub fn is_scheduling_disabled_for(peer: &PeerId) -> bool {
         .unwrap_or(false)
 }
 
-mod request_response_codec;
-pub use request_response_codec::{ApplyCodec, DeleteCodec, HandshakeCodec};
+pub type ApplyCodec = request_response::codec::ByteCodec;
+pub type DeleteCodec = request_response::codec::ByteCodec;
+pub type HandshakeCodec = request_response::codec::ByteCodec;
 
 use crate::network::{
     behaviour::{MyBehaviour, MyBehaviourEvent},
