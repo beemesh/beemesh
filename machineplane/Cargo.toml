@@ -6,11 +6,11 @@ edition = "2024"
 description = "Beemesh machineplane daemon"
 
 [lib]
-name = "machine"
+name = "machineplane"
 path = "src/lib.rs"
 
 [[bin]]
-name = "machine"
+name = "machineplane"
 path = "src/main.rs"
 
 [dependencies]
