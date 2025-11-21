@@ -1,7 +1,7 @@
 use machineplane::messages::machine::{
     build_apply_request, build_bid, build_task_status_response, compute_manifest_id,
-    compute_manifest_id_from_content, extract_manifest_name, root_as_apply_request,
-    root_as_bid, root_as_task_status_response,
+    compute_manifest_id_from_content, extract_manifest_name, root_as_apply_request, root_as_bid,
+    root_as_task_status_response,
 };
 
 #[test]

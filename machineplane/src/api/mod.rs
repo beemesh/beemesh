@@ -50,10 +50,8 @@ async fn get_nodes(
 
 async fn get_public_key(State(_state): State<RestState>) -> String {
     // Get the machine's libp2p public key
-    if let Some(pair) = crate::network::NODE_KEYPAIR.get() {
-        if let Some((pk, _)) = pair {
-            return base64::engine::general_purpose::STANDARD.encode(pk);
-        }
+    if let Some((pk, _)) = crate::network::get_node_keypair() {
+        return base64::engine::general_purpose::STANDARD.encode(pk);
     }
     "ERROR: No keypair available".to_string()
 }
@@ -132,6 +130,8 @@ pub fn build_router(
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/pubkey", get(get_public_key))
+        .route("/api/v1/kem_pubkey", get(get_public_key))
+        .route("/api/v1/signing_pubkey", get(get_public_key))
         .route("/debug/decrypted_manifests", get(debug_decrypted_manifests))
         .route("/debug/dht/active_announces", get(debug_active_announces))
         .route("/debug/dht/peers", get(debug_dht_peers))

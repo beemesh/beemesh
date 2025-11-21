@@ -4,9 +4,9 @@ systemctl start podman.socket
 ```
 Then run
 ```
-    podman kube play deploy/machine.yml
+    podman kube play deploy/machineplane.yml
 ```
-The machine agent expects an explicit Podman socket argument. Make sure each container spec includes `--podman-socket /run/podman/podman.sock` (or your chosen socket path) so the runtime uses only the mounted socket.
+The machineplane agent expects an explicit Podman socket argument. Make sure each container spec includes `--podman-socket /run/podman/podman.sock` (or your chosen socket path) so the runtime uses only the mounted socket.
 
 Verify peers
 ```
