@@ -1,8 +1,0 @@
-namespace beemesh.machine;
-
-// NodesResponse schema - returns list of peer nodes
-table NodesResponse {
-  peers:[string];
-}
-
-root_type NodesResponse;

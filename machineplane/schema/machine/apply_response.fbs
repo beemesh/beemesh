@@ -1,9 +1,0 @@
-namespace beemesh.machine;
-
-table ApplyResponse {
-  ok:bool;
-  operation_id:string;
-  message:string;
-}
-
-root_type ApplyResponse;

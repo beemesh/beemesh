@@ -1,365 +1,211 @@
-//! Workload Scheduler
+//! Scheduler module for Decentralized Bidding
 //!
-//! This crate provides scheduling strategies for placing workloads on available nodes
-//! in a decentralized environment. The scheduler focuses on optimal node selection
-//! for workload placement rather than cryptographic distribution.
+//! This module implements the "Pull" model where nodes listen for Tasks,
+//! evaluate their fit, submit Bids, and if they win, acquire a Lease.
 
-use log::info;
+use crate::messages::constants::{
+    DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TASKS,
+};
+use crate::messages::machine;
+use crate::messages::types::{Bid, LeaseHint, SchedulerEvent, Task};
+use crate::network::behaviour::MyBehaviour;
+use libp2p::{Swarm, gossipsub};
+use log::{debug, error, info, warn};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
+use tokio::time::sleep;
 
-/// Configuration for scheduling strategy
-#[derive(Debug, Clone)]
-pub struct SchedulerConfig {
-    /// Maximum number of nodes to consider for scheduling
-    pub max_candidates: Option<usize>,
-    /// Scheduling strategy to use
-    pub strategy: SchedulingStrategy,
-    /// Whether to enable load balancing considerations
-    pub enable_load_balancing: bool,
-}
-
-/// Scheduling strategy determines how nodes are selected
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SchedulingStrategy {
-    /// Round-robin selection among available nodes
-    RoundRobin,
-    /// Random selection from available nodes
-    Random,
-    /// Load-based selection (future: consider node capacity/load)
-    LoadBased,
-    /// First available node
-    FirstAvailable,
-}
-
-/// Result of scheduling calculation
-#[derive(Debug, Clone)]
-pub struct SchedulingPlan {
-    /// Selected node candidates for workload placement
-    pub selected_candidates: Vec<usize>,
-    /// Total number of available candidates
-    pub total_candidates: usize,
-    /// Strategy used for selection
-    pub strategy_used: SchedulingStrategy,
-}
-
-/// Node candidate information
-#[derive(Debug, Clone)]
-pub struct NodeCandidate {
-    /// Unique identifier for the node
-    pub node_id: String,
-    /// Current load factor (0.0 = no load, 1.0 = full capacity)
-    pub load_factor: f32,
-    /// Whether the node is currently available
-    pub available: bool,
-    /// Node capabilities/resources
-    pub capabilities: NodeCapabilities,
-}
-
-/// Node capabilities and resources
-#[derive(Debug, Clone)]
-pub struct NodeCapabilities {
-    /// Available CPU cores
-    pub cpu_cores: u32,
-    /// Available memory in MB
-    pub memory_mb: u64,
-    /// Available storage in MB
-    pub storage_mb: u64,
-    /// Supported container runtimes
-    pub container_runtimes: Vec<String>,
-}
-
-impl Default for SchedulerConfig {
-    fn default() -> Self {
-        Self {
-            max_candidates: None,
-            strategy: SchedulingStrategy::RoundRobin,
-            enable_load_balancing: true,
-        }
-    }
-}
-
-impl Default for NodeCapabilities {
-    fn default() -> Self {
-        Self {
-            cpu_cores: 1,
-            memory_mb: 1024,
-            storage_mb: 10240,
-            container_runtimes: vec!["docker".to_string()],
-        }
-    }
-}
-
-/// Main scheduler implementation
+/// Scheduler manages the bidding lifecycle
 pub struct Scheduler {
-    config: SchedulerConfig,
-    round_robin_counter: std::sync::atomic::AtomicUsize,
+    /// Local node ID (PeerId string)
+    local_node_id: String,
+    /// Active bids we are tracking: TaskID -> BidContext
+    active_bids: Arc<Mutex<HashMap<String, BidContext>>>,
+    /// Channel to send messages back to the network loop
+    outbound_tx: mpsc::UnboundedSender<(String, Vec<u8>)>,
+}
+
+struct BidContext {
+    task_id: String,
+    my_bid_score: f64,
+    highest_bid_score: f64,
+    highest_bidder_id: String,
+    selection_window_end: u64,
 }
 
 impl Scheduler {
-    /// Create a new scheduler with the given configuration
-    pub fn new(config: SchedulerConfig) -> Self {
+    pub fn new(local_node_id: String, outbound_tx: mpsc::UnboundedSender<(String, Vec<u8>)>) -> Self {
         Self {
-            config,
-            round_robin_counter: std::sync::atomic::AtomicUsize::new(0),
+            local_node_id,
+            active_bids: Arc::new(Mutex::new(HashMap::new())),
+            outbound_tx,
         }
     }
 
-    /// Schedule a workload on available candidates
-    pub fn schedule_workload(
+    /// Handle incoming Gossipsub message
+    pub async fn handle_message(
         &self,
-        candidates: &[NodeCandidate],
-        required_count: usize,
-    ) -> Result<SchedulingPlan, SchedulingError> {
-        if candidates.is_empty() {
-            return Err(SchedulingError::NoCandidatesAvailable);
-        }
+        topic_hash: &gossipsub::TopicHash,
+        message: &gossipsub::Message,
+    ) {
+        let topic_str = topic_hash.to_string();
 
-        // Filter available candidates
-        let available_candidates: Vec<(usize, &NodeCandidate)> = candidates
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| candidate.available)
-            .collect();
-
-        if available_candidates.is_empty() {
-            return Err(SchedulingError::NoAvailableCandidates);
-        }
-
-        let available_count = available_candidates.len();
-        let actual_required_count = if let Some(max) = self.config.max_candidates {
-            std::cmp::min(required_count, max)
-        } else {
-            required_count
-        };
-
-        if available_count < actual_required_count {
-            return Err(SchedulingError::InsufficientCandidates {
-                available: available_count,
-                required: actual_required_count,
-            });
-        }
-
-        let selected_indices =
-            self.select_candidates(&available_candidates, actual_required_count)?;
-
-        let plan = SchedulingPlan {
-            selected_candidates: selected_indices,
-            total_candidates: candidates.len(),
-            strategy_used: self.config.strategy,
-        };
-
-        info!(
-            "Scheduled workload: selected {} candidates from {} available using {:?} strategy",
-            plan.selected_candidates.len(),
-            available_count,
-            plan.strategy_used
-        );
-
-        Ok(plan)
-    }
-
-    /// Select candidates based on the configured strategy
-    fn select_candidates(
-        &self,
-        available_candidates: &[(usize, &NodeCandidate)],
-        count: usize,
-    ) -> Result<Vec<usize>, SchedulingError> {
-        match self.config.strategy {
-            SchedulingStrategy::FirstAvailable => Ok(available_candidates
-                .iter()
-                .take(count)
-                .map(|(idx, _)| *idx)
-                .collect()),
-            SchedulingStrategy::RoundRobin => self.select_round_robin(available_candidates, count),
-            SchedulingStrategy::Random => self.select_random(available_candidates, count),
-            SchedulingStrategy::LoadBased => self.select_load_based(available_candidates, count),
+        if topic_str.contains(SCHEDULER_TASKS) {
+            self.handle_task(message).await;
+        } else if topic_str.contains(SCHEDULER_PROPOSALS) {
+            self.handle_bid(message).await;
+        } else if topic_str.contains(SCHEDULER_EVENTS) {
+            self.handle_event(message).await;
         }
     }
 
-    /// Round-robin selection
-    fn select_round_robin(
-        &self,
-        available_candidates: &[(usize, &NodeCandidate)],
-        count: usize,
-    ) -> Result<Vec<usize>, SchedulingError> {
-        let start_index = self
-            .round_robin_counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut selected = Vec::new();
+    /// Process a Task message: Evaluate -> Bid
+    async fn handle_task(&self, message: &gossipsub::Message) {
+        match machine::root_as_task(&message.data) {
+            Ok(task) => {
+                let task_id = task.id.clone();
+                info!("Received Task: {}", task_id);
 
-        for i in 0..count {
-            let idx = (start_index + i) % available_candidates.len();
-            selected.push(available_candidates[idx].0);
-        }
+                // 1. Evaluate Fit (Capacity Check)
+                // TODO: Connect to CapacityVerifier
+                let capacity_score = 1.0; // Placeholder: assume perfect fit for now
+                
+                // 2. Calculate Bid Score
+                // Score = (ResourceFit * 0.4) + (NetworkLocality * 0.3) + (Reputation * 0.3)
+                // For now, just use random or static for testing
+                let my_score = capacity_score * 0.8 + 0.2; // Simple formula
 
-        Ok(selected)
-    }
+                // 3. Create BidContext
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+                let window_end = now + DEFAULT_SELECTION_WINDOW_MS;
 
-    /// Random selection
-    fn select_random(
-        &self,
-        available_candidates: &[(usize, &NodeCandidate)],
-        count: usize,
-    ) -> Result<Vec<usize>, SchedulingError> {
-        use std::collections::HashSet;
+                {
+                    let mut bids = self.active_bids.lock().unwrap();
+                    bids.insert(
+                        task_id.to_string(),
+                        BidContext {
+                            task_id: task_id.to_string(),
+                            my_bid_score: my_score,
+                            highest_bid_score: my_score, // Start with our score
+                            highest_bidder_id: self.local_node_id.clone(),
+                            selection_window_end: window_end,
+                        },
+                    );
+                }
 
-        let mut selected = HashSet::new();
-        let mut attempts = 0;
-        const MAX_ATTEMPTS: usize = 1000;
+                // 4. Publish Bid
+                let bid_bytes = machine::build_bid(
+                    &task_id,
+                    &self.local_node_id,
+                    my_score,
+                    capacity_score,
+                    0.5, // Network locality placeholder
+                    now,
+                    &[], // Signature placeholder
+                );
 
-        // Simple pseudo-random selection (in production, use a proper RNG)
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as usize;
+                // 4. Publish Bid
+                let bid_bytes = machine::build_bid(
+                    &task_id,
+                    &self.local_node_id,
+                    my_score,
+                    capacity_score,
+                    0.5, // Network locality placeholder
+                    now,
+                    &[], // Signature placeholder
+                );
 
-        while selected.len() < count && attempts < MAX_ATTEMPTS {
-            let idx = (seed.wrapping_add(attempts)) % available_candidates.len();
-            selected.insert(available_candidates[idx].0);
-            attempts += 1;
-        }
+                if let Err(e) = self.outbound_tx.send((SCHEDULER_PROPOSALS.to_string(), bid_bytes)) {
+                    error!("Failed to queue bid for task {}: {}", task_id, e);
+                } else {
+                    info!("Queued Bid for task {} with score {:.2}", task_id, my_score);
+                }
 
-        if selected.len() < count {
-            return Err(SchedulingError::SelectionFailed);
-        }
+                // 5. Spawn Selection Window Waiter
+                let active_bids = self.active_bids.clone();
+                let task_id_clone = task_id.to_string();
+                let local_id = self.local_node_id.clone();
+                // We need a way to trigger deployment, for now just log
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
+                    
+                    let winner = {
+                        let mut bids = active_bids.lock().unwrap();
+                        if let Some(ctx) = bids.remove(&task_id_clone) {
+                            if ctx.highest_bidder_id == local_id {
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    };
 
-        Ok(selected.into_iter().collect())
-    }
-
-    /// Load-based selection (selects nodes with lowest load first)
-    fn select_load_based(
-        &self,
-        available_candidates: &[(usize, &NodeCandidate)],
-        count: usize,
-    ) -> Result<Vec<usize>, SchedulingError> {
-        let mut candidates_with_load: Vec<_> = available_candidates
-            .iter()
-            .map(|(idx, candidate)| (*idx, candidate.load_factor))
-            .collect();
-
-        // Sort by load factor (lowest first)
-        candidates_with_load
-            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        Ok(candidates_with_load
-            .into_iter()
-            .take(count)
-            .map(|(idx, _)| idx)
-            .collect())
-    }
-
-    /// Get scheduler statistics
-    pub fn get_stats(&self) -> SchedulerStats {
-        SchedulerStats {
-            strategy: self.config.strategy,
-            round_robin_counter: self
-                .round_robin_counter
-                .load(std::sync::atomic::Ordering::Relaxed),
-            load_balancing_enabled: self.config.enable_load_balancing,
-        }
-    }
-}
-
-/// Scheduler statistics
-#[derive(Debug)]
-pub struct SchedulerStats {
-    pub strategy: SchedulingStrategy,
-    pub round_robin_counter: usize,
-    pub load_balancing_enabled: bool,
-}
-
-/// Errors that can occur during scheduling
-#[derive(Debug, Clone)]
-pub enum SchedulingError {
-    /// No candidates provided
-    NoCandidatesAvailable,
-    /// No candidates are currently available
-    NoAvailableCandidates,
-    /// Not enough candidates to meet requirements
-    InsufficientCandidates { available: usize, required: usize },
-    /// Selection algorithm failed
-    SelectionFailed,
-}
-
-impl std::fmt::Display for SchedulingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SchedulingError::NoCandidatesAvailable => {
-                write!(f, "No candidates available for scheduling")
+                    if winner {
+                        info!("WON BID for task {}! Proceeding to Lease...", task_id_clone);
+                        
+                        // TODO: Write LeaseHint to MDHT (dht_manager.put_record)
+                        // For now, we just log it. Real implementation needs access to dht_manager 
+                        // or send a command to the main loop to do it.
+                        
+                        // Publish LeaseHint (simulated via Event for now)
+                        // In reality, we write to DHT and then start the workload.
+                        
+                        // Trigger Deployment (simulated)
+                        info!("Deploying workload for task {}", task_id_clone);
+                        
+                        // TODO: Call run::deploy_task(...)
+                    } else {
+                        info!("Lost bid for task {}.", task_id_clone);
+                    }
+                });
             }
-            SchedulingError::NoAvailableCandidates => {
-                write!(f, "No candidates are currently available")
-            }
-            SchedulingError::InsufficientCandidates {
-                available,
-                required,
-            } => {
-                write!(
-                    f,
-                    "Insufficient candidates: have {}, need {}",
-                    available, required
-                )
-            }
-            SchedulingError::SelectionFailed => {
-                write!(f, "Failed to select candidates")
-            }
+            Err(e) => error!("Failed to parse Task message: {}", e),
         }
     }
-}
 
-impl std::error::Error for SchedulingError {}
+    /// Process a Bid message: Update highest bid
+    async fn handle_bid(&self, message: &gossipsub::Message) {
+                match machine::root_as_bid(&message.data) {
+            Ok(bid) => {
+                let task_id = bid.task_id.clone();
+                let bidder_id = bid.node_id.clone();
+                let score = bid.score;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+                // Ignore our own bids (handled locally)
+                if bidder_id == self.local_node_id {
+                    return;
+                }
 
-    fn create_test_candidates(count: usize) -> Vec<NodeCandidate> {
-        (0..count)
-            .map(|i| NodeCandidate {
-                node_id: format!("node-{}", i),
-                load_factor: (i as f32) * 0.1,
-                available: true,
-                capabilities: NodeCapabilities::default(),
-            })
-            .collect()
+                let mut bids = self.active_bids.lock().unwrap();
+                if let Some(ctx) = bids.get_mut(&task_id) {
+                    if score > ctx.highest_bid_score {
+                        info!("Saw higher bid for task {}: {:.2} from {}", task_id, score, bidder_id);
+                        ctx.highest_bid_score = score;
+                        ctx.highest_bidder_id = bidder_id.to_string();
+                    }
+                }
+            }
+            Err(e) => error!("Failed to parse Bid message: {}", e),
+        }
     }
 
-    #[test]
-    fn test_first_available_scheduling() {
-        let config = SchedulerConfig {
-            strategy: SchedulingStrategy::FirstAvailable,
-            ..Default::default()
-        };
-        let scheduler = Scheduler::new(config);
-        let candidates = create_test_candidates(5);
-
-        let plan = scheduler.schedule_workload(&candidates, 2).unwrap();
-        assert_eq!(plan.selected_candidates, vec![0, 1]);
-    }
-
-    #[test]
-    fn test_insufficient_candidates() {
-        let config = SchedulerConfig::default();
-        let scheduler = Scheduler::new(config);
-        let candidates = create_test_candidates(2);
-
-        let result = scheduler.schedule_workload(&candidates, 5);
-        assert!(matches!(
-            result,
-            Err(SchedulingError::InsufficientCandidates { .. })
-        ));
-    }
-
-    #[test]
-    fn test_load_based_scheduling() {
-        let config = SchedulerConfig {
-            strategy: SchedulingStrategy::LoadBased,
-            ..Default::default()
-        };
-        let scheduler = Scheduler::new(config);
-        let candidates = create_test_candidates(5);
-
-        let plan = scheduler.schedule_workload(&candidates, 2).unwrap();
-        // Should select nodes with lowest load (0 and 1)
-        assert_eq!(plan.selected_candidates, vec![0, 1]);
+    /// Process Scheduler Events (e.g. Cancelled, Preempted)
+    async fn handle_event(&self, message: &gossipsub::Message) {
+        match machine::root_as_scheduler_event(&message.data) {
+            Ok(event) => {
+                let task_id = event.task_id.clone();
+                info!(
+                    "Received Scheduler Event for task {}: {:?}",
+                    task_id,
+                    event.event_type
+                );
+                // Handle cancellation etc.
+            }
+            Err(e) => error!("Failed to parse SchedulerEvent message: {}", e),
+        }
     }
 }

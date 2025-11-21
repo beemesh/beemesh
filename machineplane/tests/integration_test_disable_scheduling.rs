@@ -19,7 +19,7 @@ use kube_helpers::apply_manifest_via_kube_api;
 #[tokio::test]
 async fn test_disabled_nodes_do_not_schedule_workloads() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_cluster_nodes(&[true, false, true]).await;
+    let mut guard = start_fabric_nodes(&[true, false, true]).await;
 
     sleep(Duration::from_secs(3)).await;
     let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(15)).await;
@@ -74,7 +74,7 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
 #[tokio::test]
 async fn test_scheduling_fails_when_all_nodes_disabled() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_cluster_nodes(&[true, true, true]).await;
+    let mut guard = start_fabric_nodes(&[true, true, true]).await;
 
     sleep(Duration::from_secs(3)).await;
     let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(10)).await;

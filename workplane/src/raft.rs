@@ -77,7 +77,7 @@ impl RaftManager {
         info!(
             leader = %self.leader_id.as_deref().unwrap_or("unknown"),
             epoch = self.epoch,
-            "bootstrapped raft cluster"
+            "bootstrapped raft group"
         );
         metrics::increment_counter!("workplane.raft.leader_elections");
         LeadershipUpdate {
@@ -99,7 +99,7 @@ impl RaftManager {
         self.leader_id = ranked.first().map(|record| record.peer_id.clone());
         if ranked.is_empty() {
             self.read_only = true;
-            warn!("raft cluster has no visible members; entering read-only mode");
+            warn!("raft group has no visible members; entering read-only mode");
         } else {
             self.read_only = self.leader_id.as_deref() != self.self_id.as_deref();
         }
