@@ -23,7 +23,6 @@ pub fn handshake_request<F>(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            let nonce = format!("handshake_resp_{}", rand::random::<u32>());
 
             // Build simple handshake response
             let handshake_response = crate::messages::machine::build_handshake(

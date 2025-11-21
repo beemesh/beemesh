@@ -1,6 +1,5 @@
-use crate::network::utils;
 use libp2p::{PeerId, Swarm};
-use log::{debug, info, warn};
+use log::{debug, info};
 use tokio::sync::mpsc;
 
 use crate::network::behaviour::MyBehaviour;

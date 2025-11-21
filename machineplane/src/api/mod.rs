@@ -5,13 +5,12 @@ use crate::runtimes::RuntimeEngine;
 use axum::{
     Router,
     body::Bytes,
-    extract::{Extension, Path, Query, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
-    middleware,
     routing::{delete, get, post},
 };
 use base64::Engine;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use once_cell::sync::Lazy;
 use serde_json::Value;
 
@@ -293,8 +292,7 @@ pub async fn create_task(
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     debug!("create_task: parsing payload");
 
-    // The envelope middleware has already decrypted the payload for us
-    // We receive the inner EncryptedManifest flatbuffer directly
+    // Payload is received directly over the mutually authenticated transport.
     let payload_bytes_for_parsing = body.to_vec();
 
     log::info!(
@@ -361,18 +359,7 @@ pub async fn create_task(
     // Store the operation_id -> manifest_id mapping for later self-apply lookups
     store_operation_manifest_mapping(&operation_id, &manifest_id).await;
 
-    // No owner tracking without envelope metadata
     let owner_pubkey = Vec::new();
-
-    // Parse as EncryptedManifest flatbuffer only (no YAML support)
-    log::info!(
-        "create_task: attempting to parse payload_bytes len={} as EncryptedManifest",
-        payload_bytes_for_parsing.len()
-    );
-    log::info!(
-        "create_task: payload_bytes first 20 bytes={:02x?}",
-        &payload_bytes_for_parsing[..std::cmp::min(20, payload_bytes_for_parsing.len())]
-    );
 
     // Store manifest bytes as-is
     let manifest_bytes_to_store = payload_bytes_for_parsing;
@@ -688,7 +675,7 @@ async fn get_task_manifest_id(
 
     let response_data = serde_json::json!({"ok": true, "manifest_id": &manifest_id});
     let response_str = serde_json::to_string(&response_data).unwrap_or_default();
-    // No envelope metadata available, return unencrypted response
+    // Response is already protected by the transport; return as plain bytes
     create_response_with_fallback(response_str.as_bytes()).await
 }
 
@@ -717,7 +704,7 @@ pub async fn get_task_status(
 /// Delete a task by task ID - discovers providers and sends delete requests
 pub async fn delete_task(
     Path(task_id): Path<String>,
-    State(state): State<RestState>,
+    State(_state): State<RestState>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {

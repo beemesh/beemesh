@@ -1,4 +1,4 @@
-use machine::messages::machine::{
+use machineplane::messages::machine::{
     build_capacity_request_with_id, extract_manifest_name, root_as_apply_request,
     root_as_capacity_request,
 };

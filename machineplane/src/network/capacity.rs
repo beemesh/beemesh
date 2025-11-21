@@ -1,8 +1,7 @@
 use anyhow::{Result, anyhow};
-use libp2p::{gossipsub, request_response};
+use libp2p::gossipsub;
 
 use crate::network::reply::{self, CapacityReply, CapacityReplyParams};
-use crate::network::request_response_codec::SchedulerCodec;
 
 /// Build a capacity reply, apply optional adjustments, and emit standard KEM warnings.
 pub fn compose_capacity_reply<'a, F>(
@@ -40,15 +39,4 @@ pub fn publish_gossipsub_capacity_reply(
         .publish(topic.clone(), reply.payload.clone())
         .map(|_| ())
         .map_err(|err| anyhow!("failed to publish capacity reply: {:?}", err))
-}
-
-/// Send a capacity reply through the scheduler request-response channel.
-pub fn send_scheduler_capacity_reply(
-    behaviour: &mut request_response::Behaviour<SchedulerCodec>,
-    channel: request_response::ResponseChannel<Vec<u8>>,
-    reply: CapacityReply,
-) -> Result<()> {
-    behaviour
-        .send_response(channel, reply.payload)
-        .map_err(|err| anyhow!("failed to send capacity reply: {:?}", err))
 }

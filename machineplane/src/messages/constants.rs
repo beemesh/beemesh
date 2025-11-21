@@ -54,11 +54,6 @@ pub const REPLICAS_FIELD: &str = "replicas";
 /// JSON path field used for replica count in manifests under `spec.replicas`.
 pub const SPEC_REPLICAS_FIELD: &str = "spec";
 
-// === PROTOCOL VERSIONING ===
-
-/// Version byte used in the compact binary envelope for capreq/capreply messages.
-pub const BINARY_ENVELOPE_VERSION: u8 = 1;
-
 // === RESOURCE MANAGEMENT CONSTANTS ===
 
 /// Maximum percentage of CPU that can be allocated to workloads (90% to leave headroom)

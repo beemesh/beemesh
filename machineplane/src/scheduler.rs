@@ -53,13 +53,15 @@ impl Scheduler {
         topic_hash: &gossipsub::TopicHash,
         message: &gossipsub::Message,
     ) {
-        let topic_str = topic_hash.to_string();
+        let tenders = gossipsub::IdentTopic::new(SCHEDULER_TENDERS).hash();
+        let proposals = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS).hash();
+        let events = gossipsub::IdentTopic::new(SCHEDULER_EVENTS).hash();
 
-        if topic_str.contains(SCHEDULER_TENDERS) {
+        if *topic_hash == tenders {
             self.handle_task(message).await;
-        } else if topic_str.contains(SCHEDULER_PROPOSALS) {
+        } else if *topic_hash == proposals {
             self.handle_bid(message).await;
-        } else if topic_str.contains(SCHEDULER_EVENTS) {
+        } else if *topic_hash == events {
             self.handle_event(message).await;
         }
     }

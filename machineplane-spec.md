@@ -136,9 +136,11 @@ graph TD
 * **Tender ID**: ULID string. **MUST** be globally unique for de-duplication.
 * **Lease Key**: `lease/<tender_id>` in MDHT (value is a **LeaseHint**, not an exclusive lock).
 
-### **3.2 Message Schemas (FlatBuffer Protocol)**
+### **3.2 Message Schemas (libp2p-secured binary payloads)**
 
-All inter-node communication uses **FlatBuffers** wrapped in signed **Envelope** structures.
+All inter-node communication uses **bincode-encoded Rust structs** transported over
+libp2p **Noise/TLS** streams. No additional envelope or per-message encryption layer
+is required because libp2p sessions are already mutually authenticated and encrypted.
 
 **Tender (additions)**
 
@@ -159,7 +161,8 @@ All inter-node communication uses **FlatBuffers** wrapped in signed **Envelope**
 
 > **Interpretation:** `LeaseHint` is **non-exclusive**. It signals intent and enables backoff; multiple hints **MAY** coexist.
 
-**Existing messages** (`ApplyRequest/Response`, `CapacityRequest/Reply`, `Envelope`) stay as in v0.1.
+**Existing messages** (`ApplyRequest/Response`, `CapacityRequest/Reply`) stay as in v0.1,
+but are encoded directly with bincode without an envelope wrapper.
 
 ### **3.3 Cryptography**
 
@@ -315,8 +318,8 @@ machineplane:
 
 ## **11. Interop & Compatibility**
 
-* Wire formats **MUST** be FlatBuffers with signed Envelope wrappers; unknown fields in FlatBuffers are automatically ignored (forward-compat).
-* Versioning **MUST** appear in FlatBuffer schema evolution; nodes **MUST** expose supported protocol versions in MDHT metadata.
+* Wire formats **MUST** be bincode-encoded structs sent over libp2p secure channels; add new optional fields in a backward-compatible manner.
+* Versioning **MUST** be tracked with explicit protocol version fields; nodes **MUST** expose supported protocol versions in MDHT metadata.
 
 ---
 

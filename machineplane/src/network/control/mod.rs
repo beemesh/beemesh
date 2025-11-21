@@ -357,13 +357,13 @@ pub enum Libp2pControl {
     },
     SendApplyRequest {
         peer_id: PeerId,
-        /// FlatBuffer ApplyRequest bytes
+        /// ApplyRequest bytes (bincode)
         manifest: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<String, String>>,
     },
     SendDeleteRequest {
         peer_id: PeerId,
-        /// FlatBuffer DeleteRequest bytes
+        /// DeleteRequest bytes (bincode)
         delete_request: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<String, String>>,
     },

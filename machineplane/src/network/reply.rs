@@ -1,4 +1,3 @@
-use base64::Engine;
 use log::warn;
 
 /// Input parameters for building a capacity reply.
@@ -13,7 +12,7 @@ pub struct CapacityReplyParams<'a> {
     pub capabilities: &'a [&'a str],
 }
 
-/// Flatbuffer capacity reply alongside optional encoded KEM public key.
+/// Binary capacity reply alongside optional encoded KEM public key.
 pub struct CapacityReply {
     pub payload: Vec<u8>,
     pub kem_pub_b64: Option<String>,
@@ -42,7 +41,7 @@ pub fn baseline_capacity_params<'a>(
     }
 }
 
-/// Build the flatbuffer payload for a capacity reply and capture the associated KEM public key.
+/// Build the bincode payload for a capacity reply and capture the associated KEM public key.
 pub fn build_capacity_reply(params: CapacityReplyParams<'_>) -> CapacityReply {
     let kem_pub_b64: Option<String> = None;
 

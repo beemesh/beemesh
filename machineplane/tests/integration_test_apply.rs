@@ -14,7 +14,7 @@ mod test_utils;
 
 use apply_common::{
     check_workload_deployment, get_peer_ids, setup_test_environment, start_cluster_nodes,
-    wait_for_mesh_formation,
+    start_fabric_nodes, wait_for_mesh_formation,
 };
 use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};

@@ -1,6 +1,7 @@
 use anyhow::Result;
 
-use futures::stream::StreamExt;
+use async_trait::async_trait;
+use futures::{stream::StreamExt, AsyncReadExt, AsyncWriteExt};
 use libp2p::{
     PeerId, Swarm, gossipsub, kad, multiaddr::Multiaddr, multiaddr::Protocol, request_response,
     swarm::SwarmEvent,
@@ -29,6 +30,81 @@ static DISABLED_SCHEDULING: OnceCell<Mutex<StdHashMap<PeerId, bool>>> = OnceCell
 fn scheduling_map() -> &'static Mutex<StdHashMap<PeerId, bool>> {
     DISABLED_SCHEDULING.get_or_init(|| Mutex::new(StdHashMap::new()))
 }
+
+#[derive(Clone, Copy)]
+pub struct ByteProtocol(&'static str);
+
+impl AsRef<str> for ByteProtocol {
+    fn as_ref(&self) -> &str {
+        self.0
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ByteCodec;
+
+#[async_trait]
+impl request_response::Codec for ByteCodec {
+    type Protocol = ByteProtocol;
+    type Request = Vec<u8>;
+    type Response = Vec<u8>;
+
+    async fn read_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> std::io::Result<Self::Request>
+    where
+        T: futures::AsyncRead + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        io.read_to_end(&mut buf).await?;
+        Ok(buf)
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> std::io::Result<Self::Response>
+    where
+        T: futures::AsyncRead + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        io.read_to_end(&mut buf).await?;
+        Ok(buf)
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        req: Self::Request,
+    ) -> std::io::Result<()>
+    where
+        T: futures::AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&req).await?;
+        io.close().await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        res: Self::Response,
+    ) -> std::io::Result<()>
+    where
+        T: futures::AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&res).await?;
+        io.close().await
+    }
+}
+
+pub type ApplyCodec = ByteCodec;
+pub type DeleteCodec = ByteCodec;
+pub type HandshakeCodec = ByteCodec;
 
 fn extract_listen_endpoint(addr: &Multiaddr) -> Option<(String, u16)> {
     let mut host: Option<String> = None;
@@ -60,9 +136,6 @@ pub fn is_scheduling_disabled_for(peer: &PeerId) -> bool {
         .copied()
         .unwrap_or(false)
 }
-
-mod request_response_codec;
-pub use request_response_codec::{ApplyCodec, DeleteCodec, HandshakeCodec};
 
 use crate::network::{
     behaviour::{MyBehaviour, MyBehaviourEvent},
@@ -135,7 +208,7 @@ pub fn setup_libp2p_node(
             // Create the request-response behavior for apply protocol
             let apply_rr = request_response::Behaviour::new(
                 std::iter::once((
-                    "/beemesh/apply/1.0.0",
+                    ByteProtocol("/beemesh/apply/1.0.0"),
                     request_response::ProtocolSupport::Full,
                 )),
                 request_response::Config::default(),
@@ -144,16 +217,7 @@ pub fn setup_libp2p_node(
             // Create the request-response behavior for handshake protocol
             let handshake_rr = request_response::Behaviour::new(
                 std::iter::once((
-                    "/beemesh/handshake/1.0.0",
-                    request_response::ProtocolSupport::Full,
-                )),
-                request_response::Config::default(),
-            );
-
-            // Create the request-response behavior for scheduler (capacity/proposals)
-            let scheduler_rr = request_response::Behaviour::new(
-                std::iter::once((
-                    "/beemesh/scheduler-tenders/1.0.0",
+                    ByteProtocol("/beemesh/handshake/1.0.0"),
                     request_response::ProtocolSupport::Full,
                 )),
                 request_response::Config::default(),
@@ -162,7 +226,7 @@ pub fn setup_libp2p_node(
             // Create the request-response behavior for delete protocol
             let delete_rr = request_response::Behaviour::new(
                 std::iter::once((
-                    "/beemesh/delete/1.0.0",
+                    ByteProtocol("/beemesh/delete/1.0.0"),
                     request_response::ProtocolSupport::Full,
                 )),
                 request_response::Config::default(),
@@ -171,7 +235,7 @@ pub fn setup_libp2p_node(
             // Create the request-response behavior for manifest fetch protocol
             let manifest_fetch_rr = request_response::Behaviour::new(
                 std::iter::once((
-                    "/beemesh/manifest-fetch/1.0.0",
+                    ByteProtocol("/beemesh/manifest-fetch/1.0.0"),
                     request_response::ProtocolSupport::Full,
                 )),
                 request_response::Config::default(),
@@ -207,7 +271,6 @@ pub fn setup_libp2p_node(
                 gossipsub,
                 apply_rr,
                 handshake_rr,
-                scheduler_rr,
                 delete_rr,
                 manifest_fetch_rr,
                 kademlia,
@@ -276,7 +339,7 @@ pub fn setup_libp2p_node(
     Ok((swarm, topic, peer_rx, peer_tx))
 }
 
-// Global node keypair set at startup by machine::main
+// Global node keypair set at startup by machineplane::main
 pub static NODE_KEYPAIR: OnceCell<Option<(Vec<u8>, Vec<u8>)>> = OnceCell::new();
 
 pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
@@ -302,11 +365,6 @@ pub async fn start_libp2p_node(
 ) -> Result<()> {
     use std::collections::HashMap;
     use tokio::time::Instant;
-
-    // Create topic handles for scheduler
-    let tasks_topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
-    let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
-    let events_topic = gossipsub::IdentTopic::new(SCHEDULER_EVENTS);
 
     // pending queries: map request_id -> vec of reply_senders
     let mut pending_queries: StdHashMap<String, Vec<mpsc::UnboundedSender<String>>> =
@@ -411,11 +469,6 @@ pub async fn start_libp2p_node(
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(event)) => {
                         behaviour::kademlia_event(event, None);
-                    }
-
-                    SwarmEvent::Behaviour(MyBehaviourEvent::SchedulerRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        let local_peer = *swarm.local_peer_id();
-                        behaviour::scheduler_message(message, peer, &mut swarm, local_peer, &mut pending_queries);
                     }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::OutboundFailure { peer, request_id, error, connection_id: _ })) => {
