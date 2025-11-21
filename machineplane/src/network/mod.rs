@@ -153,7 +153,7 @@ pub fn setup_libp2p_node(
             // Create the request-response behavior for scheduler (capacity/proposals)
             let scheduler_rr = request_response::Behaviour::new(
                 std::iter::once((
-                    "/beemesh/scheduler-tenders/1.0.0",
+                    "/beemesh/scheduler-proposals/1.0.0",
                     request_response::ProtocolSupport::Full,
                 )),
                 request_response::Config::default(),
