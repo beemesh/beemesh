@@ -67,7 +67,7 @@ Beemesh uses **two distinct Distributed Hash Tables (DHTs):**
 
 Traditional systems bind **consistency to infrastructure**:
 
-* Kubernetes uses `etcd` for fabric state.
+* Kubernetes uses `etcd` for cluster state.
 * Nomad/Consul use Raft quorums for global consensus.
 
 **Beemesh flips the model:**
@@ -112,9 +112,9 @@ All communication in Beemesh is **mutually authenticated** and **end-to-end encr
 
 | System      | Control Plane                   | Scaling Limit                | State Model                         | Notes                                            |
 | ----------- | ------------------------------- | ---------------------------- | ----------------------------------- | ------------------------------------------------ |
-| Kubernetes  | Centralized (etcd + API server) | \~5,000 nodes / 150,000 pods | Strong consistency fabric-wide     | Rich ecosystem but control-plane limited         |
+| Kubernetes  | Centralized (etcd + API server) | \~5,000 nodes / 150,000 pods | Strong consistency cluster-wide     | Rich ecosystem but control-plane limited         |
 | Nomad       | Centralized Raft quorum         | Thousands of nodes           | Strong consistency global scheduler | Lighter than K8s but still infra-bound           |
-| Swarm       | Raft manager nodes              | \~1,000 nodes                | Strong consistency fabric-wide     | Simple but infra-coupled                         |
+| Swarm       | Raft manager nodes              | \~1,000 nodes                | Strong consistency cluster-wide     | Simple but infra-coupled                         |
 | **Beemesh** | **None – scale-out fabric**     | **Tens of thousands+**       | **Consistency scoped to workload**  | Scale out; only stateful workloads run Raft |
 
 ---
@@ -387,7 +387,7 @@ Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. M
 
 ## **14. Summary**
 
-Beemesh represents a **paradigm shift** in choreography:
+Beemesh represents a **paradigm shift** in orchestration:
 
 * Eliminates centralized control planes and scaling bottlenecks.
 * Uses **ephemeral, decentralized scheduling** for effectively unparalleled scalability.
@@ -396,7 +396,7 @@ Beemesh represents a **paradigm shift** in choreography:
 * Scales to **tens of thousands of nodes**, ideal for edge, IoT, cloud, **multicloud**, and **air-gapped** environments.
 * **Disposable, fully decoupled Machine Plane** → autonomous, low-toil operations.
 
-> **Beemesh isn't just another choreography system - it's a secure, scale-out fabric for the future of global computing.**
+> **Beemesh isn't just another orchestration system - it's a secure, scale-out fabric for the future of global computing.**
 
 ---
 
