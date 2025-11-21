@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use async_trait::async_trait;
-use futures::{stream::StreamExt, AsyncReadExt, AsyncWriteExt};
+use futures::{AsyncReadExt, AsyncWriteExt, stream::StreamExt};
 use libp2p::{
     PeerId, Swarm, gossipsub, kad, multiaddr::Multiaddr, multiaddr::Protocol, request_response,
     swarm::SwarmEvent,
@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, watch};
 use crate::messages::libp2p_constants::{
     BEEMESH_FABRIC, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
+use crate::scheduler::SchedulerCommand;
 
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
@@ -379,7 +380,7 @@ pub async fn start_libp2p_node(
     // --- Scheduler Setup ---
     let (sched_input_tx, mut sched_input_rx) =
         mpsc::unbounded_channel::<(gossipsub::TopicHash, gossipsub::Message)>();
-    let (sched_output_tx, mut sched_output_rx) = mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (sched_output_tx, mut sched_output_rx) = mpsc::unbounded_channel::<SchedulerCommand>();
 
     // Initialize global input sender for gossipsub_message.rs
     behaviour::gossipsub_message::set_scheduler_input(sched_input_tx);
@@ -399,10 +400,41 @@ pub async fn start_libp2p_node(
     loop {
         tokio::select! {
             // Handle scheduler output (bids/leases to publish)
-            Some((topic_str, payload)) = sched_output_rx.recv() => {
-                 let topic = gossipsub::IdentTopic::new(topic_str);
-                 if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, payload) {
-                     log::error!("Failed to publish scheduler message: {}", e);
+            Some(command) = sched_output_rx.recv() => {
+                 match command {
+                     SchedulerCommand::Publish { topic, payload } => {
+                         let topic = gossipsub::IdentTopic::new(topic);
+                         if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, payload) {
+                             log::error!("Failed to publish scheduler message: {}", e);
+                         }
+                     }
+                     SchedulerCommand::AnnouncePlacement { manifest_id, metadata } => {
+                         if let Some(manager) = crate::scheduler::get_global_placement_manager().await {
+                             if let Err(e) = manager.announce_placement(&mut swarm, &manifest_id, metadata) {
+                                 log::warn!("Failed to announce placement for manifest {}: {}", manifest_id, e);
+                             }
+                         } else {
+                             log::warn!(
+                                 "No placement manager available to announce manifest {}",
+                                 manifest_id
+                             );
+                         }
+                     }
+                     SchedulerCommand::WithdrawPlacement { manifest_id } => {
+                         if let Some(manager) = crate::scheduler::get_global_placement_manager().await {
+                             if let Err(e) = manager.stop_providing(&manifest_id) {
+                                 log::warn!(
+                                     "Failed to stop providing manifest {} after scheduler event: {}",
+                                     manifest_id, e
+                                 );
+                             }
+                         } else {
+                             log::warn!(
+                                 "No placement manager available to withdraw manifest {}",
+                                 manifest_id
+                             );
+                         }
+                     }
                  }
             }
             // control messages from other parts of the host (REST handlers)
@@ -430,7 +462,7 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         let local_peer = *swarm.local_peer_id();
                         // Create a future for the workload manager handler and drive it immediately
-                        let future = crate::run::handle_apply_message_with_podman_manager(
+                        let future = crate::scheduler::handle_apply_message_with_podman_manager(
                             message, peer, &mut swarm, local_peer
                         );
                         // Since we're in an async context, we can await this directly

@@ -1,7 +1,7 @@
 use crate::capacity::{CapacityCheckResult, ResourceRequest};
 use crate::messages::constants::{SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
 use crate::network::{capacity, utils};
-use crate::run::get_global_capacity_verifier;
+use crate::scheduler::get_global_capacity_verifier;
 use libp2p::gossipsub;
 use log::{debug, error, info, warn};
 use std::sync::OnceLock;

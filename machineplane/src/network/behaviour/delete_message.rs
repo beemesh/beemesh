@@ -1,6 +1,6 @@
 use super::failure_handlers::{FailureDirection, handle_failure};
 use crate::messages::machine;
-use crate::run::remove_workloads_by_manifest_id;
+use crate::scheduler::remove_workloads_by_manifest_id;
 use libp2p::request_response;
 use log::{error, info, warn};
 
@@ -35,9 +35,7 @@ pub fn delete_message(
                 Ok(delete_req) => {
                     info!(
                         "Delete request - manifest_id={:?} operation_id={:?} force={}",
-                        &delete_req.manifest_id,
-                        &delete_req.operation_id,
-                        delete_req.force
+                        &delete_req.manifest_id, &delete_req.operation_id, delete_req.force
                     );
 
                     // Process the delete request asynchronously
@@ -47,12 +45,8 @@ pub fn delete_message(
                     let requesting_peer = peer.to_string();
 
                     tokio::spawn(async move {
-                        let (success, message, removed_workloads) = process_delete_request(
-                            &manifest_id,
-                            force,
-                            &requesting_peer,
-                        )
-                        .await;
+                        let (success, message, removed_workloads) =
+                            process_delete_request(&manifest_id, force, &requesting_peer).await;
 
                         let _response = machine::build_delete_response(
                             success,

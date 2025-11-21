@@ -340,9 +340,7 @@ impl CapacityVerifier {
     /// Update allocated resources by querying the runtime registry
     async fn update_allocated_resources(&self, resources: &mut SystemResources) {
         // Query the global runtime registry to get current workload allocations
-        if let Some(registry_guard) =
-            crate::run::get_global_runtime_registry().await
-        {
+        if let Some(registry_guard) = crate::scheduler::get_global_runtime_registry().await {
             if let Some(registry) = registry_guard.as_ref() {
                 let mut total_cpu = 0u32;
                 let mut total_memory = 0u64;

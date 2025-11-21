@@ -3,15 +3,12 @@ use clap::Parser;
 use env_logger::Env;
 use std::io::Write;
 
-pub mod network;
-pub mod messages;
-pub mod placement;
-pub mod capacity;
 pub mod api;
+pub mod capacity;
+pub mod messages;
+pub mod network;
 pub mod runtimes;
 pub mod scheduler;
-pub mod run;
-
 
 /// beemesh Host Agent
 #[derive(Parser, Debug)]
@@ -137,7 +134,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
         let mut key_path = std::path::PathBuf::from(&cli.key_dir);
-        
+
         // Helper to create directory with secure permissions
         let ensure_dir = |p: &std::path::Path| -> std::io::Result<()> {
             if !p.exists() {
@@ -171,16 +168,19 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
             let bytes = std::fs::read(&keypair_path)?;
             libp2p::identity::Keypair::from_protobuf_encoding(&bytes)?
         } else {
-            log::info!("Generating new keypair and saving to {}", keypair_path.display());
+            log::info!(
+                "Generating new keypair and saving to {}",
+                keypair_path.display()
+            );
             let keypair = libp2p::identity::Keypair::generate_ed25519();
             let bytes = keypair.to_protobuf_encoding()?;
-            
+
             // Write with secure permissions
             let mut opts = OpenOptions::new();
             opts.write(true).create(true).truncate(true).mode(0o600);
             let mut file = opts.open(&keypair_path)?;
             file.write_all(&bytes)?;
-            
+
             keypair
         }
     };
@@ -228,7 +228,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // Initialize runtime registry and provider manager for manifest deployment
     log::info!("Initializing runtime registry and provider manager...");
-    if let Err(e) = run::initialize_podman_manager(
+    if let Err(e) = scheduler::initialize_podman_manager(
         cli.mock_only_runtime,
         cli.mock_only_runtime,
         scheduling_enabled,
