@@ -227,7 +227,7 @@ The Workplane Agent is responsible for **self-healing within a workload’s trus
 
 * When the number of **healthy** replicas observed (locally + via WDHT) falls below `desired_replicas_at_least`, an Agent **MAY**:
 
-  * Request additional replicas via a local mechanism (for example, write to a manifest controller or trigger a Machineplane Task).
+  * Request additional replicas via a local mechanism (for example, write to a manifest controller or trigger a Machineplane tender).
   * Or, in single-node environments, restart the local replica from manifest.
 
 * On repeated failures:
@@ -235,7 +235,7 @@ The Workplane Agent is responsible for **self-healing within a workload’s trus
   * Agents **SHOULD** back off with jitter.
   * Agents **SHOULD** emit structured events indicating reason codes.
 
-* Workplane Agents **MUST NOT** directly manipulate the Machineplane scheduling algorithm, but **MAY** produce Tasks or hints to be consumed by the Machineplane.
+* Workplane Agents **MUST NOT** directly manipulate the Machineplane scheduling algorithm, but **MAY** produce tenders or hints to be consumed by the Machineplane.
 
 ---
 

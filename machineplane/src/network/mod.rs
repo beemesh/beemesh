@@ -18,7 +18,9 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
-use crate::messages::libp2p_constants::{BEEMESH_FABRIC, SCHEDULER_TASKS, SCHEDULER_PROPOSALS, SCHEDULER_EVENTS};
+use crate::messages::libp2p_constants::{
+    BEEMESH_FABRIC, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
+};
 
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
@@ -151,7 +153,7 @@ pub fn setup_libp2p_node(
             // Create the request-response behavior for scheduler (capacity/proposals)
             let scheduler_rr = request_response::Behaviour::new(
                 std::iter::once((
-                    "/beemesh/scheduler-tasks/1.0.0",
+                    "/beemesh/scheduler-tenders/1.0.0",
                     request_response::ProtocolSupport::Full,
                 )),
                 request_response::Config::default(),
@@ -219,14 +221,23 @@ pub fn setup_libp2p_node(
     register_scheduling_preference(swarm.local_peer_id().clone(), disable_scheduling);
 
     let topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC);
-    let tasks_topic = gossipsub::IdentTopic::new(SCHEDULER_TASKS);
+    let tasks_topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
     let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
     let events_topic = gossipsub::IdentTopic::new(SCHEDULER_EVENTS);
 
-    debug!("Subscribing to topics: {}, {}, {}, {}", topic.hash(), tasks_topic.hash(), proposals_topic.hash(), events_topic.hash());
+    debug!(
+        "Subscribing to topics: {}, {}, {}, {}",
+        topic.hash(),
+        tasks_topic.hash(),
+        proposals_topic.hash(),
+        events_topic.hash()
+    );
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
     swarm.behaviour_mut().gossipsub.subscribe(&tasks_topic)?;
-    swarm.behaviour_mut().gossipsub.subscribe(&proposals_topic)?;
+    swarm
+        .behaviour_mut()
+        .gossipsub
+        .subscribe(&proposals_topic)?;
     swarm.behaviour_mut().gossipsub.subscribe(&events_topic)?;
     // Ensure local host is an explicit mesh peer for the topic so publish() finds at least one subscriber
     let local_peer = swarm.local_peer_id().clone();
@@ -293,7 +304,7 @@ pub async fn start_libp2p_node(
     use tokio::time::Instant;
 
     // Create topic handles for scheduler
-    let tasks_topic = gossipsub::IdentTopic::new(SCHEDULER_TASKS);
+    let tasks_topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
     let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
     let events_topic = gossipsub::IdentTopic::new(SCHEDULER_EVENTS);
 
@@ -308,9 +319,10 @@ pub async fn start_libp2p_node(
     //let mut mesh_alive_interval = tokio::time::interval(Duration::from_secs(1));
 
     // --- Scheduler Setup ---
-    let (sched_input_tx, mut sched_input_rx) = mpsc::unbounded_channel::<(gossipsub::TopicHash, gossipsub::Message)>();
+    let (sched_input_tx, mut sched_input_rx) =
+        mpsc::unbounded_channel::<(gossipsub::TopicHash, gossipsub::Message)>();
     let (sched_output_tx, mut sched_output_rx) = mpsc::unbounded_channel::<(String, Vec<u8>)>();
-    
+
     // Initialize global input sender for gossipsub_message.rs
     behaviour::gossipsub_message::set_scheduler_input(sched_input_tx);
 
@@ -318,7 +330,7 @@ pub async fn start_libp2p_node(
     let local_node_id = swarm.local_peer_id().to_string();
     let scheduler = crate::scheduler::Scheduler::new(local_node_id, sched_output_tx);
     let scheduler = std::sync::Arc::new(scheduler);
-    
+
     tokio::spawn(async move {
         while let Some((topic, msg)) = sched_input_rx.recv().await {
             scheduler.handle_message(&topic, &msg).await;

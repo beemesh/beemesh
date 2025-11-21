@@ -20,8 +20,8 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 ### **1.2 Glossary (selected)**
 
   * **MDHT**: Machine DHT (libp2p Kademlia).
-  * **Task**: Scheduling intent to run a workload.
-  * **Bid**: A machine’s proposal to run a Task.
+  * **Tender**: Scheduling intent to run a workload.
+  * **Bid**: A machine’s proposal to run a Tender.
   * **LeaseHint**: Short-lived **non-exclusive** claim record to progress deployment.
 
 -----
@@ -41,8 +41,8 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 
   * **Pub/Sub Topics (Gossipsub)**:
 
-      * `scheduler-tasks` — task publication (write-once, best-effort fanout)
-      * `scheduler-proposals` — bid publication / request-response to the task publisher
+      * `scheduler-tenders` — tender publication (write-once, best-effort fanout)
+      * `scheduler-proposals` — bid publication / request-response to the tender publisher
       * `scheduler-events` — confirmations (`Deployed`, `Failed`, `Preempted`, `Cancelled`)
 
   * **Secure Streams**: bilateral encrypted channels for optional point-to-point negotiation.
@@ -66,14 +66,14 @@ sequenceDiagram
   participant R as Runtime (Podman)
   participant PubSub as Pub/Sub
 
-  P->>PubSub: Publish Task(task_id, reqs, qos, manifest_ref)
-  Note over N1,N2: All nodes receive task via Pub/Sub
+  P->>PubSub: Publish Tender(tender_id, reqs, qos, manifest_ref)
+  Note over N1,N2: All nodes receive tender via Pub/Sub
 
   N1->>N1: Local Evaluate(reqs, policies)
   N2->>N2: Local Evaluate(reqs, policies)
 
-  N1->>PubSub: Bid(task_id, node_id, score, fit, latency)
-  N2->>PubSub: Bid(task_id, node_id, score, fit, latency)
+  N1->>PubSub: Bid(tender_id, node_id, score, fit, latency)
+  N2->>PubSub: Bid(tender_id, node_id, score, fit, latency)
 
   par Selection Window (~250ms ± jitter)
     N1->>N1: best_bid = argmax(score)
@@ -81,13 +81,13 @@ sequenceDiagram
     N2->>N2: best_bid = argmax(score)
   end
 
-  N1->>MDHT: Put LeaseHint(task_id, node_id, ttl=3s) [best-effort]
-  N2->>MDHT: Put LeaseHint(task_id, node_id, ttl=3s) [best-effort]
+  N1->>MDHT: Put LeaseHint(tender_id, node_id, ttl=3s) [best-effort]
+  N2->>MDHT: Put LeaseHint(tender_id, node_id, ttl=3s) [best-effort]
 
   alt One or more LeaseHints exist
     N1->>R: Deploy(manifest_ref) (if self-hint or allowed by policy)
     R-->>N1: Deployment Result (OK / Failed)
-    N1->>PubSub: Event(task_id, status=Deployed|Failed, node_id)
+    N1->>PubSub: Event(tender_id, status=Deployed|Failed, node_id)
   else No hint observed
     N2->>N2: Backoff and observe events
   end
@@ -96,7 +96,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> Idle
-  Idle --> Bidding: TaskSeen
+  Idle --> Bidding: TenderSeen
   Bidding --> Idle: NotEligible
   Bidding --> Claiming: BestBidder
   Claiming --> Deploying: HintObservedOrWritten
@@ -104,7 +104,7 @@ stateDiagram-v2
   Deploying --> Running: DeployOK
   Deploying --> Observing: DeployFail
   Running --> Observing: EventPublished
-  Observing --> Idle: TTLExpire | TaskComplete
+  Observing --> Idle: TTLExpire | TenderComplete
 ```
 
 ```mermaid
@@ -115,8 +115,8 @@ graph TD
     B -- MDHT --> C
     A ==> D{{Pub/Sub}}
     B ==> D
-    D -- tasks/proposals/events --> A
-    D -- tasks/proposals/events --> B
+    D -- tenders/proposals/events --> A
+    D -- tenders/proposals/events --> B
   end
 
   subgraph "Workplane separate"
@@ -133,14 +133,14 @@ graph TD
 ### **3.1 Identifiers**
 
 * **Machine Peer ID**: `libp2p` peer ID (base58). **MUST** be unique per machine.
-* **Task ID**: ULID string. **MUST** be globally unique for de-duplication.
-* **Lease Key**: `lease/<task_id>` in MDHT (value is a **LeaseHint**, not an exclusive lock).
+* **Tender ID**: ULID string. **MUST** be globally unique for de-duplication.
+* **Lease Key**: `lease/<tender_id>` in MDHT (value is a **LeaseHint**, not an exclusive lock).
 
 ### **3.2 Message Schemas (FlatBuffer Protocol)**
 
 All inter-node communication uses **FlatBuffers** wrapped in signed **Envelope** structures.
 
-**Task (additions)**
+**Tender (additions)**
 
 * `workload_type`: `"stateless" | "stateful"`
 * `duplicate_tolerant`: `bool` (default `true`)
@@ -149,7 +149,7 @@ All inter-node communication uses **FlatBuffers** wrapped in signed **Envelope**
 
 **LeaseHint** (MDHT value)
 
-* `task_id`: ULID
+* `tender_id`: ULID
 * `node_id`: Machine Peer ID
 * `score`: f64
 * `ttl_ms`: u32 (e.g., 3000)
@@ -166,7 +166,7 @@ All inter-node communication uses **FlatBuffers** wrapped in signed **Envelope**
 * All messages **MUST** be signed by the sender’s **Machine Peer ID** key (Ed25519 recommended).
 * All streams **MUST** use `libp2p` **Noise** or **TLS** with mutual authentication.
 * Messages **MUST** include `ts` and **SHOULD** include `nonce` for replay mitigation.
-* Receivers **MUST** reject messages with clock skew > **±30 s** or a repeated `(task_id, node_id, nonce)` tuple within **5 minutes**.
+* Receivers **MUST** reject messages with clock skew > **±30 s** or a repeated `(tender_id, node_id, nonce)` tuple within **5 minutes**.
 
 ---
 
@@ -174,23 +174,23 @@ All inter-node communication uses **FlatBuffers** wrapped in signed **Envelope**
 
 ### **4.1 Flow (Normative)**
 
-1. **Publication**: A producer **MUST** publish a Task once on `scheduler-tasks`.
+1. **Publication**: A producer **MUST** publish a Tender once on `scheduler-tenders`.
 
 2. **Evaluation**: Each node **MUST** locally evaluate eligibility against `reqs`, policies, and real-time resources, and **MUST NOT** submit a Bid if it is ineligible.
 
-3. **Bid Window**: Nodes **SHOULD** submit ≤ 1 Bid per Task within **250 ms ± 100 ms** jitter from first receipt.
+3. **Bid Window**: Nodes **SHOULD** submit ≤ 1 Bid per Tender within **250 ms ± 100 ms** jitter from first receipt.
 
-4. **Score**: Score **MUST** be deterministic given Task + local metrics. **SHOULD** use: Resource fit (50%), Network locality (30%), Historical reliability (10%), Price/QoS or energy (10%).
+4. **Score**: Score **MUST** be deterministic given Tender + local metrics. **SHOULD** use: Resource fit (50%), Network locality (30%), Historical reliability (10%), Price/QoS or energy (10%).
 
 5. **Lease Hint (non-exclusive)**:
 
    * Nodes **MUST** compute `best_bid` (tie-break `(score, node_id)`).
-   * The `best_bid` node **MAY** write a **LeaseHint** at `lease/<task_id>` with TTL **3 s** (best-effort MDHT put). **Multiple LeaseHints MAY coexist**.
+   * The `best_bid` node **MAY** write a **LeaseHint** at `lease/<tender_id>` with TTL **3 s** (best-effort MDHT put). **Multiple LeaseHints MAY coexist**.
 
 6. **Deployment**:
 
    * A node **MAY** proceed to deploy if it wrote or observes a **self-addressed** LeaseHint **and** either `duplicate_tolerant=true` **or** local policy allows tentative start (the **Workplane** gates stateful writes/leadership).
-   * The Machineplane provides **at-least-once** scheduling semantics; multiple concurrent deployments of the same Task are acceptable, and correctness is enforced by the Workplane/workload logic.
+   * The Machineplane provides **at-least-once** scheduling semantics; multiple concurrent deployments of the same Tender are acceptable, and correctness is enforced by the Workplane/workload logic.
 
 7. **Confirmation**: Deployer **MUST** publish `Event{Deployed|Failed}`.
 
@@ -205,7 +205,7 @@ All inter-node communication uses **FlatBuffers** wrapped in signed **Envelope**
 
 ### **4.3 Preemption**
 
-* Tasks marked `qos.preemptible=true` **MAY** be evicted by higher priority tasks. Evicting node **MUST** publish `Event{Preempted}` and **MUST** best-effort re-schedule the evicted task by republishing the original Task payload.
+* Tenders marked `qos.preemptible=true` **MAY** be evicted by higher priority tenders. Evicting node **MUST** publish `Event{Preempted}` and **MUST** best-effort re-schedule the evicted tender by republishing the original Tender payload.
 
 > **Stateful note:** The **Workplane** enforces leader election and minority write refusal. Machineplane **MAY** start more than one replica transiently; Workplane **MUST** gate writes.
 
@@ -254,7 +254,7 @@ podman play kube deployment.yaml --replace --log-driver=journald
 ```yaml
 machineplane:
   topics:
-    tasks: scheduler-tasks
+    tenders: scheduler-tenders
     proposals: scheduler-proposals
     events: scheduler-events
   selection_window_ms: 250
@@ -290,25 +290,25 @@ machineplane:
 
 ### **9.2 Metrics (Prometheus-style)**
 
-* `machineplane_tasks_seen_total{task_id}`
-* `machineplane_bids_submitted_total{task_id}`
+* `machineplane_tenders_seen_total{tender_id}`
+* `machineplane_bids_submitted_total{tender_id}`
 * `machineplane_leasehint_put_total{result="ok|error"}`
 * `machineplane_schedule_latency_ms_bucket{}`          # publish → first deploy attempt
 * `machineplane_deploy_failures_total{reason}`
-* `machineplane_duplicate_deploys_total{task_id}`
+* `machineplane_duplicate_deploys_total{tender_id}`
 * `machineplane_reconcile_kills_total{reason}`
 
 ### **9.3 Logs**
 
-* **SHOULD** include Task ID, Node ID, **LeaseHint** fields (`renew_nonce`, `ttl_ms`), and causal span IDs.
+* **SHOULD** include Tender ID, Node ID, **LeaseHint** fields (`renew_nonce`, `ttl_ms`), and causal span IDs.
 
 ---
 
 ## **10. CLI Integration (`kubectl`)**
 
-* `kubectl create -f app.yaml` **MUST** publish a Task to `scheduler-tasks`.
+* `kubectl create -f app.yaml` **MUST** publish a Tender to `scheduler-tenders`.
 * `kubectl get pods` **SHOULD** read from local node/runtime and/or observe `scheduler-events` for status aggregation (best-effort).
-* `kubectl delete pod <name>` **MUST** result in the Machineplane publishing a cancellation Task or sending a secure stream command to the owning node.
+* `kubectl delete pod <name>` **MUST** result in the Machineplane publishing a cancellation Tender or sending a secure stream command to the owning node.
 * The Machineplane daemon **MUST** expose Kubernetes-compatible REST endpoints (`/version`, `/api`, `/apis/apps/v1/...`) so that the upstream `kubectl` binary can talk to it using its normal HTTP flow.
 
 ---
@@ -344,7 +344,7 @@ Scenario: New node joins the Machine DHT
 ```gherkin
 Scenario: Reject unsigned scheduler messages
   Given a running node subscribed to scheduler topics
-  When it receives an unsigned Task
+  When it receives an unsigned Tender
   Then it MUST discard the message
   And it MUST NOT emit a Bid
 ```
@@ -354,7 +354,7 @@ Scenario: Reject unsigned scheduler messages
 ```gherkin
 Scenario: At-least-once scheduling with LeaseHints
   Given two eligible nodes A and B
-  And a Task T published at time t0
+  And a Tender T published at time t0
   When A and B submit valid Bids within the selection window
   And A and/or B write LeaseHint(T) in the MDHT
   Then one or more nodes MAY proceed to deploy T
@@ -381,11 +381,11 @@ Scenario: Deployment timeout triggers retry
 ### **13.3 Feature: Preemption**
 
 ```gherkin
-Scenario: Higher priority Task preempts lower priority Task
-  Given a node running Task L (low priority)
+Scenario: Higher priority Tender preempts lower priority Tender
+  Given a node running Tender L (low priority)
   And the node is fully utilized
-  When a Task H (high priority) arrives with qos.preemptible=true
+  When a Tender H (high priority) arrives with qos.preemptible=true
   Then the node MUST evict L to make space for H
   And the node MUST publish Event{Preempted} for L
-  And the node MUST republish L to the scheduler-tasks topic
+  And the node MUST republish L to the scheduler-tenders topic
 ```
