@@ -44,7 +44,7 @@ pub fn scheduler_message(
             // Try parse CapacityRequest
             match crate::messages::machine::root_as_capacity_request(&effective_request) {
                 Ok(cap_req) => {
-                    let orig_request_id = cap_req.request_id().unwrap_or("");
+                    let orig_request_id = cap_req.request_id.as_str();
                     let age_ms = utils::make_timestamp_ms().saturating_sub(timestamp_ms);
                     if age_ms > FREE_CAPACITY_TIMEOUT_MS {
                         warn!(
@@ -74,10 +74,10 @@ pub fn scheduler_message(
 
                     // Perform real capacity check using capacity verifier
                     let resource_request = ResourceRequest::new(
-                        Some(cap_req.cpu_milli()),
-                        Some(cap_req.memory_bytes()),
-                        Some(cap_req.storage_bytes()),
-                        cap_req.replicas(),
+                        Some(cap_req.cpu_milli),
+                        Some(cap_req.memory_bytes),
+                        Some(cap_req.storage_bytes),
+                        cap_req.replicas,
                     );
 
                     let verifier = get_global_capacity_verifier();
@@ -210,15 +210,15 @@ pub fn scheduler_message(
         request_response::Message::Response { response, .. } => {
             debug!("libp2p: received scheduler response from peer={}", peer);
             if let Ok(cap_reply) = crate::messages::machine::root_as_capacity_reply(&response) {
-                let request_part = cap_reply.request_id().unwrap_or("").to_string();
+                let request_part = cap_reply.request_id.clone();
                 debug!(
                     "libp2p: scheduler reply ok={} from {} for request_id={}",
-                    cap_reply.ok(),
+                    cap_reply.ok,
                     peer,
                     request_part
                 );
                 // KEM pubkey caching has been removed - keys are now extracted directly from envelopes
-                let peer_pubkey = cap_reply.kem_pubkey().unwrap_or("").to_string();
+                let peer_pubkey = cap_reply.kem_pubkey.clone();
                 let peer_with_key = format!("{}:{}", peer.to_string(), peer_pubkey);
                 utils::notify_capacity_observers(pending_queries, &request_part, move || {
                     peer_with_key.clone()

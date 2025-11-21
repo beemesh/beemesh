@@ -96,7 +96,7 @@ impl DhtManager {
         let manifest_bytes = {
             // We need to re-serialize the FlatBuffer since we can't clone it directly
             let id = manifest.id().unwrap_or("");
-            let operation_id = manifest.operation_id().unwrap_or("");
+            let operation_id = &manifest.operation_id;
             let origin_peer = manifest.origin_peer().unwrap_or("");
             let owner_pubkey = manifest
                 .owner_pubkey()
@@ -107,7 +107,7 @@ impl DhtManager {
                 .signature()
                 .map(|s| s.iter().collect::<Vec<_>>())
                 .unwrap_or_default();
-            let manifest_json = manifest.manifest_json().unwrap_or("");
+            let manifest_json = &manifest.manifest_json;
             let manifest_kind = manifest.manifest_kind().unwrap_or("");
             let labels = if let Some(labels_vec) = manifest.labels() {
                 labels_vec

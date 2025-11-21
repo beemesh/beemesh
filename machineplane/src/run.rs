@@ -186,13 +186,13 @@ pub async fn handle_apply_message_with_podman_manager(
                 Ok(apply_req) => {
                     info!(
                         "Apply request - operation_id={:?} replicas={}",
-                        apply_req.operation_id(),
-                        apply_req.replicas()
+                        apply_req.operation_id,
+                        apply_req.replicas
                     );
 
                     // Extract and validate manifest
-                    if let Some(manifest_json) = apply_req.manifest_json() {
-                        let manifest_id = apply_req.manifest_id().unwrap_or("");
+                    if !apply_req.manifest_json.is_empty() {
+                        let manifest_id = apply_req.manifest_id.as_str();
                         if manifest_id.is_empty() {
                             warn!(
                                 "Apply request missing manifest_id; rejecting from peer={}",
@@ -316,7 +316,11 @@ async fn process_manifest_deployment(
 
     // Use the manifest_id from the apply request for placement announcements
     // This ensures consistency between apply and delete operations
-    let manifest_id = apply_req.manifest_id().unwrap_or("unknown").to_string();
+    let manifest_id = if apply_req.manifest_id.is_empty() {
+        "unknown".to_string()
+    } else {
+        apply_req.manifest_id.clone()
+    };
 
     info!(
         "Processing manifest deployment for manifest_id: {}",
@@ -529,13 +533,13 @@ fn create_deployment_config(apply_req: &machine::ApplyRequest) -> DeploymentConf
     let mut config = DeploymentConfig::default();
 
     // Set replicas
-    config.replicas = apply_req.replicas();
+    config.replicas = apply_req.replicas;
 
     // Metadata from apply request can be added here if needed
-    if let Some(operation_id) = apply_req.operation_id() {
+    if !apply_req.operation_id.is_empty() {
         config
             .env
-            .insert("BEEMESH_OPERATION_ID".to_string(), operation_id.to_string());
+            .insert("BEEMESH_OPERATION_ID".to_string(), apply_req.operation_id.clone());
     }
 
     config
@@ -554,17 +558,23 @@ pub async fn process_enhanced_self_apply_request(manifest: &[u8], swarm: &mut Sw
         Ok(apply_req) => {
             debug!(
                 "Enhanced self-apply request - operation_id={:?} replicas={}",
-                apply_req.operation_id(),
-                apply_req.replicas()
+                apply_req.operation_id,
+                apply_req.replicas
             );
 
-            if let Some(manifest_json) = apply_req.manifest_json() {
+            if !apply_req.manifest_json.is_empty() {
+                let manifest_json = apply_req.manifest_json.clone();
                 let owner_pubkey =
                     crate::crypto::keypair_manager::KeypairManager::get_default_signing_keypair()
                         .map(|(pub_bytes, _)| pub_bytes)
                         .unwrap_or_default();
 
-                match process_manifest_deployment(swarm, &apply_req, manifest_json, &owner_pubkey)
+                match process_manifest_deployment(
+                    swarm,
+                    &apply_req,
+                    &manifest_json,
+                    &owner_pubkey,
+                )
                     .await
                 {
                     Ok(workload_id) => {

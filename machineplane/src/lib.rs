@@ -118,7 +118,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
     let scheduling_enabled = !cli.disable_scheduling;
 
     if scheduling_enabled {
-        runtime::configure_podman_runtime(cli.podman_socket.clone());
+        runtimes::configure_podman_runtime(cli.podman_socket.clone());
     } else {
         if cli.mock_only_runtime {
             log::warn!(

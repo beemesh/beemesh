@@ -54,7 +54,7 @@ pub fn gossipsub_message(
 
     // Then try CapacityReply
     if let Ok(cap_req) = crate::messages::machine::root_as_capacity_request(payload.as_slice()) {
-        let orig_request_id = cap_req.request_id().unwrap_or("").to_string();
+        let orig_request_id = cap_req.request_id.clone();
         let responder_peer = swarm.local_peer_id().to_string();
 
         let age_ms = utils::make_timestamp_ms().saturating_sub(timestamp_ms);
@@ -78,10 +78,10 @@ pub fn gossipsub_message(
         };
 
         let resource_request = ResourceRequest::new(
-            Some(cap_req.cpu_milli()),
-            Some(cap_req.memory_bytes()),
-            Some(cap_req.storage_bytes()),
-            cap_req.replicas(),
+            Some(cap_req.cpu_milli),
+            Some(cap_req.memory_bytes),
+            Some(cap_req.storage_bytes),
+            cap_req.replicas,
         );
 
         info!(
@@ -198,7 +198,7 @@ pub fn gossipsub_message(
     }
 
     if let Ok(cap_reply) = crate::messages::machine::root_as_capacity_reply(payload.as_slice()) {
-        let request_part = cap_reply.request_id().unwrap_or("").to_string();
+        let request_part = cap_reply.request_id.clone();
         info!(
             "libp2p: received capreply for id={} from peer={}",
             request_part, peer_id

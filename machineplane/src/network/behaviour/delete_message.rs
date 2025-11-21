@@ -53,14 +53,14 @@ pub fn delete_message(
                 Ok(delete_req) => {
                     info!(
                         "Delete request - manifest_id={:?} operation_id={:?} force={}",
-                        delete_req.manifest_id(),
-                        delete_req.operation_id(),
+                        &delete_req.manifest_id,
+                        &delete_req.operation_id,
                         delete_req.force()
                     );
 
                     // Process the delete request asynchronously
-                    let manifest_id = delete_req.manifest_id().unwrap_or("").to_string();
-                    let operation_id = delete_req.operation_id().unwrap_or("").to_string();
+                    let manifest_id = delete_req.manifest_id.clone();
+                    let operation_id = delete_req.operation_id.clone();
                     let force = delete_req.force();
                     let requesting_peer = peer.to_string();
                     let envelope_pubkey_inner = envelope_pubkey.clone();
@@ -92,8 +92,8 @@ pub fn delete_message(
 
                     // Send immediate acknowledgment (the actual processing happens async)
                     let ack_response = delete_ack_response(
-                        delete_req.operation_id().unwrap_or(UNKNOWN_OPERATION),
-                        delete_req.manifest_id().unwrap_or(UNKNOWN_MANIFEST),
+                        delete_req.operation_id.as_str(),
+                        delete_req.manifest_id.as_str(),
                     );
                     let _ = swarm
                         .behaviour_mut()
@@ -119,7 +119,7 @@ pub fn delete_message(
                     info!(
                         "Delete response - ok={} operation_id={:?} message={:?} removed_workloads={:?}",
                         delete_resp.ok(),
-                        delete_resp.operation_id(),
+                        &delete_resp.operation_id,
                         delete_resp.message(),
                         delete_resp
                             .removed_workloads()
