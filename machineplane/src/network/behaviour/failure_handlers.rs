@@ -26,10 +26,7 @@ pub fn handle_failure<E: std::fmt::Debug>(
 ) {
     warn!(
         "{} {} failure with peer {}: {:?}",
-        protocol,
-        direction,
-        peer,
-        error
+        protocol, direction, peer, error
     );
 }
 

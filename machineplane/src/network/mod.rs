@@ -8,7 +8,7 @@ use libp2p::{
 };
 use libp2p::{autonat, identify, relay};
 use log::{debug, info, warn};
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use std::collections::HashMap as StdHashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
@@ -27,6 +27,7 @@ use crate::scheduler::SchedulerCommand;
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
 static DISABLED_SCHEDULING: OnceCell<Mutex<StdHashMap<PeerId, bool>>> = OnceCell::new();
+static NODE_KEYPAIR: Lazy<Mutex<Option<(Vec<u8>, Vec<u8>)>>> = Lazy::new(|| Mutex::new(None));
 
 fn scheduling_map() -> &'static Mutex<StdHashMap<PeerId, bool>> {
     DISABLED_SCHEDULING.get_or_init(|| Mutex::new(StdHashMap::new()))
@@ -168,14 +169,13 @@ pub fn setup_libp2p_node(
     watch::Sender<Vec<String>>,
 )> {
     // Load the node keypair (set by lib.rs startup) or generate a new one
-    let keypair = if let Some(pair) = NODE_KEYPAIR.get() {
-        if let Some((_pk, sk)) = pair {
+    let keypair = {
+        let slot = NODE_KEYPAIR.lock().unwrap();
+        if let Some((_pk, sk)) = &*slot {
             libp2p::identity::Keypair::from_protobuf_encoding(sk)?
         } else {
             libp2p::identity::Keypair::generate_ed25519()
         }
-    } else {
-        libp2p::identity::Keypair::generate_ed25519()
     };
 
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
@@ -340,11 +340,14 @@ pub fn setup_libp2p_node(
     Ok((swarm, topic, peer_rx, peer_tx))
 }
 
-// Global node keypair set at startup by machineplane::main
-pub static NODE_KEYPAIR: OnceCell<Option<(Vec<u8>, Vec<u8>)>> = OnceCell::new();
-
+// Global node keypair set at startup by machineplane::main. Mutable to support multiple in-process nodes in tests.
 pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
-    let _ = NODE_KEYPAIR.set(pair);
+    let mut slot = NODE_KEYPAIR.lock().unwrap();
+    *slot = pair;
+}
+
+pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
+    NODE_KEYPAIR.lock().unwrap().clone()
 }
 
 /// Set the global control sender for distributed operations
@@ -500,6 +503,15 @@ pub async fn start_libp2p_node(
                         // Use the connection endpoint address for Kademlia
                         let addr = endpoint.get_remote_address();
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+
+                        // Ensure we track handshake state and proactively include the peer in our mesh
+                        handshake_states.entry(peer_id).or_insert(HandshakeState {
+                            attempts: 0,
+                            // Make the peer immediately eligible for the next handshake tick
+                            last_attempt: Instant::now() - Duration::from_secs(3),
+                            confirmed: false,
+                        });
+                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
 
                         // Bootstrap DHT after establishing connections to improve local test reliability
                         let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();

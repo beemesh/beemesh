@@ -332,10 +332,7 @@ pub mod machine {
         })
     }
 
-    pub fn build_candidates_response_with_keys(
-        ok: bool,
-        candidates: &[CandidateNode],
-    ) -> Vec<u8> {
+    pub fn build_candidates_response_with_keys(ok: bool, candidates: &[CandidateNode]) -> Vec<u8> {
         serialize(&CandidatesResponse {
             ok,
             candidates: candidates.to_vec(),

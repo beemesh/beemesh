@@ -7,8 +7,6 @@ use crate::messages::constants::{
     DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
 use crate::messages::machine;
-use crate::network::behaviour::MyBehaviour;
-use libp2p::Swarm;
 use libp2p::gossipsub;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
@@ -30,7 +28,6 @@ pub struct Scheduler {
 struct BidContext {
     task_id: String,
     manifest_id: String,
-    placement_metadata: HashMap<String, String>,
     replicas: u32,
     bids: Vec<BidEntry>,
 }
@@ -89,12 +86,6 @@ impl Scheduler {
 
                 let replicas = std::cmp::max(1, task.max_parallel_duplicates);
 
-                let mut placement_metadata = HashMap::new();
-                placement_metadata.insert("task_id".to_string(), task_id.clone());
-                placement_metadata.insert("manifest_ref".to_string(), task.manifest_ref.clone());
-                placement_metadata
-                    .insert("placement_token".to_string(), task.placement_token.clone());
-
                 // 1. Evaluate Fit (Capacity Check)
                 // TODO: Connect to CapacityVerifier
                 let capacity_score = 1.0; // Placeholder: assume perfect fit for now
@@ -117,7 +108,6 @@ impl Scheduler {
                         BidContext {
                             task_id: task_id.to_string(),
                             manifest_id: manifest_id.clone(),
-                            placement_metadata: placement_metadata.clone(),
                             replicas,
                             bids: vec![BidEntry {
                                 bidder_id: self.local_node_id.clone(),
@@ -151,12 +141,11 @@ impl Scheduler {
                 let active_bids = self.active_bids.clone();
                 let task_id_clone = task_id.to_string();
                 let local_id = self.local_node_id.clone();
-                let placement_sender = self.outbound_tx.clone();
                 // We need a way to trigger deployment, for now just log
                 tokio::spawn(async move {
                     sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
 
-                    let (winners, manifest_id) = {
+                    let winners = {
                         let mut bids = active_bids.lock().unwrap();
                         if let Some(ctx) = bids.remove(&task_id_clone) {
                             let winners = select_winners(&ctx, &local_id);
@@ -176,9 +165,9 @@ impl Scheduler {
                                     ctx.task_id, ctx.manifest_id
                                 );
                             }
-                            (winners, Some(ctx.manifest_id))
+                            winners
                         } else {
-                            (Vec::new(), None)
+                            Vec::new()
                         }
                     };
 
@@ -261,7 +250,6 @@ impl Scheduler {
 struct BidOutcome {
     bidder_id: String,
     score: f64,
-    placement_metadata: HashMap<String, String>,
 }
 
 fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> {
@@ -301,7 +289,6 @@ fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> 
             outcomes.push(BidOutcome {
                 bidder_id: bid.bidder_id,
                 score: bid.score,
-                placement_metadata: context.placement_metadata.clone(),
             });
         }
     }
@@ -1108,15 +1095,11 @@ mod runtime_integration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libp2p::PeerId;
-    use std::time::Duration;
-
     #[test]
     fn selects_unique_winners_for_multiple_replicas() {
         let context = BidContext {
             task_id: "task-a".to_string(),
             manifest_id: "task-a".to_string(),
-            placement_metadata: HashMap::new(),
             replicas: 2,
             bids: vec![
                 BidEntry {
@@ -1145,7 +1128,6 @@ mod tests {
         let context = BidContext {
             task_id: "task-b".to_string(),
             manifest_id: "task-b".to_string(),
-            placement_metadata: HashMap::new(),
             replicas: 3,
             bids: vec![
                 BidEntry {
