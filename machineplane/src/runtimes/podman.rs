@@ -8,7 +8,7 @@
 //! # Why Podman?
 //!
 //! Podman is the only container runtime that provides **native Kubernetes Pod support**
-//! without requiring a full Kubernetes cluster. Key features:
+//! without requiring Kubernetes. Key features:
 //!
 //! ## Native Pod Support via `podman kube play`
 //!
@@ -37,7 +37,7 @@
 //!
 //! - Workload ID: `beemesh-{manifest_id}`
 //! - Pod name: `beemesh-{manifest_id}` (Podman may add `-pod` suffix)
-//! - Ensures consistent identification across the cluster
+//! - Ensures consistent identification
 //!
 //! ## Manifest Modification
 //!
