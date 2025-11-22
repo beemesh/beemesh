@@ -6,8 +6,9 @@
 use crate::messages::constants::{
     DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
-use crate::messages::machine;
+use crate::messages::{machine, signatures, types::LeaseHint};
 use libp2p::gossipsub;
+use libp2p::identity::Keypair;
 use log::{error, info};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,8 @@ use tokio::time::sleep;
 pub struct Scheduler {
     /// Local node ID (PeerId string)
     local_node_id: String,
+    /// Node keypair for signing LeaseHints
+    keypair: Keypair,
     /// Active bids we are tracking: TenderID -> BidContext
     active_bids: Arc<Mutex<HashMap<String, BidContext>>>,
     /// Channel to send messages back to the network loop
@@ -58,10 +61,12 @@ pub enum SchedulerCommand {
 impl Scheduler {
     pub fn new(
         local_node_id: String,
+        keypair: Keypair,
         outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
     ) -> Self {
         Self {
             local_node_id,
+            keypair,
             active_bids: Arc::new(Mutex::new(HashMap::new())),
             outbound_tx,
         }
@@ -152,6 +157,7 @@ impl Scheduler {
                 let tender_id_clone = tender_id.to_string();
                 let manifest_json = tender.manifest_json.clone();
                 let local_id = self.local_node_id.clone();
+                let keypair = self.keypair.clone();
                 let outbound_tx = self.outbound_tx.clone();
 
                 // We need a way to trigger deployment, for now just log
@@ -192,29 +198,54 @@ impl Scheduler {
                         info!("Deploying workload for tender {}", tender_id_clone);
 
                         // 1. Publish LeaseHint to DHT
-                        let lease_hint = machine::build_lease_hint(
-                            &tender_id_clone,
-                            &local_id,
-                            1.0,   // score
-                            30000, // ttl_ms
-                            0,     // nonce
-                            SystemTime::now()
+                        let lease_hint = LeaseHint {
+                            tender_id: tender_id_clone.clone(),
+                            node_id: local_id.clone(),
+                            score: 1.0,
+                            ttl_ms: 30000,
+                            renew_nonce: 0,
+                            timestamp: SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap()
                                 .as_millis() as u64,
-                            &[], // signature
-                        );
+                            signature: Vec::new(),
+                        };
 
-                        if let Err(e) = outbound_tx.send(SchedulerCommand::PutDHT {
-                            key: format!("lease:{}", tender_id_clone).into_bytes(),
-                            value: lease_hint,
-                        }) {
-                            error!(
-                                "Failed to publish LeaseHint for tender {}: {}",
-                                tender_id_clone, e
-                            );
-                        } else {
-                            info!("Published LeaseHint for tender {}", tender_id_clone);
+                        let lease_hint_bytes = match {
+                            let mut lease_hint = lease_hint.clone();
+                            signatures::sign_lease_hint(&mut lease_hint, &keypair)
+                                .map(|_| lease_hint)
+                        } {
+                            Ok(signed) => Some(machine::build_lease_hint(
+                                &signed.tender_id,
+                                &signed.node_id,
+                                signed.score,
+                                signed.ttl_ms,
+                                signed.renew_nonce,
+                                signed.timestamp,
+                                &signed.signature,
+                            )),
+                            Err(e) => {
+                                error!(
+                                    "Failed to sign LeaseHint for tender {}: {}",
+                                    tender_id_clone, e
+                                );
+                                None
+                            }
+                        };
+
+                        if let Some(lease_hint_bytes) = lease_hint_bytes {
+                            if let Err(e) = outbound_tx.send(SchedulerCommand::PutDHT {
+                                key: format!("lease:{}", tender_id_clone).into_bytes(),
+                                value: lease_hint_bytes,
+                            }) {
+                                error!(
+                                    "Failed to publish LeaseHint for tender {}: {}",
+                                    tender_id_clone, e
+                                );
+                            } else {
+                                info!("Published LeaseHint for tender {}", tender_id_clone);
+                            }
                         }
 
                         // 2. Trigger Workload Deployment
