@@ -40,9 +40,9 @@ async fn test_run_host_application() {
     let mut guard = start_nodes(vec![cli1], Duration::from_secs(1)).await;
 
     // subsequent nodes use the first node as their bootstrap peer
-    let bootstrap_peer = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
-    let cli2 = make_test_cli(3100, bootstrap_peer.clone(), 4002);
-    let cli3 = make_test_cli(3200, bootstrap_peer, 0);
+    let bootstrap_peers = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
+    let cli2 = make_test_cli(3100, bootstrap_peers.clone(), 4002);
+    let cli3 = make_test_cli(3200, bootstrap_peers, 0);
 
     let mut peer_guard = start_nodes(vec![cli2, cli3], Duration::from_secs(1)).await;
     guard.absorb(&mut peer_guard);
