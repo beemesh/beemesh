@@ -1,10 +1,8 @@
 //! Message helpers for BeeMesh.
 //!
-//! The codebase previously relied on FlatBuffers-generated modules and build
-//! scripts to produce Rust bindings. Those artifacts were removed in the
-//! decentralised resource pool refactor, so this module now implements
-//! equivalent helpers using serde + bincode over the message types defined in
-//! `types.rs`.
+//! This module provides serde + bincode helpers over the message types defined
+//! in `types.rs`. The previous FlatBuffers-specific helpers have been removed in
+//! favour of idiomatic binary encoders/decoders.
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -27,72 +25,72 @@ pub mod machine {
     use super::*;
     use sha2::{Digest, Sha256};
 
-    // ---------------------------- Root readers -----------------------------
-    pub fn root_as_capacity_request(buf: &[u8]) -> bincode::Result<CapacityRequest> {
+    // ------------------------------ Decoders -------------------------------
+    pub fn decode_capacity_request(buf: &[u8]) -> bincode::Result<CapacityRequest> {
         deserialize(buf)
     }
 
-    pub fn root_as_capacity_reply(buf: &[u8]) -> bincode::Result<CapacityReply> {
+    pub fn decode_capacity_reply(buf: &[u8]) -> bincode::Result<CapacityReply> {
         deserialize(buf)
     }
 
-    pub fn root_as_health(buf: &[u8]) -> bincode::Result<Health> {
+    pub fn decode_health(buf: &[u8]) -> bincode::Result<Health> {
         deserialize(buf)
     }
 
-    pub fn root_as_apply_request(buf: &[u8]) -> bincode::Result<ApplyRequest> {
+    pub fn decode_apply_request(buf: &[u8]) -> bincode::Result<ApplyRequest> {
         deserialize(buf)
     }
 
-    pub fn root_as_apply_response(buf: &[u8]) -> bincode::Result<ApplyResponse> {
+    pub fn decode_apply_response(buf: &[u8]) -> bincode::Result<ApplyResponse> {
         deserialize(buf)
     }
 
-    pub fn root_as_delete_request(buf: &[u8]) -> bincode::Result<DeleteRequest> {
+    pub fn decode_delete_request(buf: &[u8]) -> bincode::Result<DeleteRequest> {
         deserialize(buf)
     }
 
-    pub fn root_as_delete_response(buf: &[u8]) -> bincode::Result<DeleteResponse> {
+    pub fn decode_delete_response(buf: &[u8]) -> bincode::Result<DeleteResponse> {
         deserialize(buf)
     }
 
-    pub fn root_as_handshake(buf: &[u8]) -> bincode::Result<Handshake> {
+    pub fn decode_handshake(buf: &[u8]) -> bincode::Result<Handshake> {
         deserialize(buf)
     }
 
-    pub fn root_as_applied_manifest(buf: &[u8]) -> bincode::Result<AppliedManifest> {
+    pub fn decode_applied_manifest(buf: &[u8]) -> bincode::Result<AppliedManifest> {
         deserialize(buf)
     }
 
-    pub fn root_as_tender(buf: &[u8]) -> bincode::Result<Tender> {
+    pub fn decode_tender(buf: &[u8]) -> bincode::Result<Tender> {
         deserialize(buf)
     }
 
-    pub fn root_as_bid(buf: &[u8]) -> bincode::Result<Bid> {
+    pub fn decode_bid(buf: &[u8]) -> bincode::Result<Bid> {
         deserialize(buf)
     }
 
-    pub fn root_as_scheduler_event(buf: &[u8]) -> bincode::Result<SchedulerEvent> {
+    pub fn decode_scheduler_event(buf: &[u8]) -> bincode::Result<SchedulerEvent> {
         deserialize(buf)
     }
 
-    pub fn root_as_lease_hint(buf: &[u8]) -> bincode::Result<LeaseHint> {
+    pub fn decode_lease_hint(buf: &[u8]) -> bincode::Result<LeaseHint> {
         deserialize(buf)
     }
 
-    pub fn root_as_candidates_response(buf: &[u8]) -> bincode::Result<CandidatesResponse> {
+    pub fn decode_candidates_response(buf: &[u8]) -> bincode::Result<CandidatesResponse> {
         deserialize(buf)
     }
 
-    pub fn root_as_nodes_response(buf: &[u8]) -> bincode::Result<NodesResponse> {
+    pub fn decode_nodes_response(buf: &[u8]) -> bincode::Result<NodesResponse> {
         deserialize(buf)
     }
 
-    pub fn root_as_tender_create_response(buf: &[u8]) -> bincode::Result<TenderCreateResponse> {
+    pub fn decode_tender_create_response(buf: &[u8]) -> bincode::Result<TenderCreateResponse> {
         deserialize(buf)
     }
 
-    pub fn root_as_tender_status_response(buf: &[u8]) -> bincode::Result<TenderStatusResponse> {
+    pub fn decode_tender_status_response(buf: &[u8]) -> bincode::Result<TenderStatusResponse> {
         deserialize(buf)
     }
 

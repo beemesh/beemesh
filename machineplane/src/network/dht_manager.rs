@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::messages::machine::root_as_applied_manifest;
+use crate::messages::machine::decode_applied_manifest;
 use crate::messages::types::AppliedManifest;
 use libp2p::{Swarm, kad};
 use log::info;
@@ -159,7 +159,7 @@ impl DhtManager {
                 },
                 DhtQueryContext::GetManifest { reply_tx } => match result {
                     kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))) => {
-                        match root_as_applied_manifest(&peer_record.record.value) {
+                        match decode_applied_manifest(&peer_record.record.value) {
                             Ok(manifest) => {
                                 let _ = reply_tx.send(Ok(Some(manifest)));
                             }
