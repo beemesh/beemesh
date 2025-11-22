@@ -1,7 +1,6 @@
 use crate::messages::constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_MS};
 use crate::messages::types::CandidateNode;
 #[cfg(debug_assertions)]
-use crate::runtimes::RuntimeEngine;
 use axum::{
     Router,
     body::Bytes,
@@ -508,76 +507,14 @@ async fn debug_workloads_by_peer(
     Path(peer_id): Path<String>,
     State(_state): State<RestState>,
 ) -> axum::Json<serde_json::Value> {
-    // Try to access the global runtime registry to get MockEngine state
-    #[cfg(debug_assertions)]
-    {
-        if let Some(registry_guard) = crate::scheduler::get_global_runtime_registry().await {
-            if let Some(ref registry) = *registry_guard {
-                if let Some(mock_engine) = registry.get_engine("mock") {
-                    if let Some(mock_engine) = mock_engine
-                        .as_any()
-                        .downcast_ref::<crate::runtimes::mock::MockEngine>()
-                    {
-                        let peer_workloads = mock_engine.get_workloads_by_peer(&peer_id);
-                        let mut workloads_json = serde_json::Map::new();
-
-                        for workload in &peer_workloads {
-                            let exported_manifest = match mock_engine
-                                .export_manifest(&workload.info.id)
-                                .await
-                            {
-                                Ok(manifest_bytes) => match String::from_utf8(manifest_bytes) {
-                                    Ok(manifest_str) => Some(manifest_str),
-                                    Err(e) => {
-                                        log::warn!(
-                                            "Failed to convert manifest bytes to string for workload {}: {}",
-                                            workload.info.id,
-                                            e
-                                        );
-                                        None
-                                    }
-                                },
-                                Err(e) => {
-                                    log::warn!(
-                                        "Failed to export manifest for workload {}: {}",
-                                        workload.info.id,
-                                        e
-                                    );
-                                    None
-                                }
-                            };
-
-                            workloads_json.insert(
-                                workload.info.id.clone(),
-                                serde_json::json!({
-                                    "manifest_id": workload.info.manifest_id,
-                                    "status": format!("{:?}", workload.info.status),
-                                    "metadata": workload.info.metadata,
-                                    "created_at": workload.info.created_at.duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default().as_secs(),
-                                    "updated_at": workload.info.updated_at.duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default().as_secs(),
-                                    "ports": workload.info.ports,
-                                    "exported_manifest": exported_manifest,
-                                })
-                            );
-                        }
-
-                        return axum::Json(serde_json::json!({
-                            "ok": true,
-                            "peer_id": peer_id,
-                            "workload_count": peer_workloads.len(),
-                            "workloads": workloads_json
-                        }));
-                    }
-                }
-            }
-        }
-    }
+    log::info!(
+        "Debug workload query for peer {} received, but mock runtime support has been removed",
+        peer_id
+    );
 
     axum::Json(serde_json::json!({
         "ok": false,
-        "error": "MockEngine not available",
+        "error": "Mock runtime has been removed; workload inspection is unavailable",
         "peer_id": peer_id,
         "workload_count": 0,
         "workloads": {}

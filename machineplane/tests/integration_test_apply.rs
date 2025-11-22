@@ -5,7 +5,7 @@
 //! - Applying a manifest using `kubectl` (simulated).
 //! - Verifying the workload is scheduled and deployed.
 //! - Verifying the content of the deployed manifest.
-//! - Testing with both mock runtimes and real Podman (if available).
+//! - Testing with the Podman runtime (if available).
 //! - Testing replica distribution.
 
 use env_logger::Env;
@@ -29,7 +29,7 @@ use apply_common::{
 use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
 
-/// Tests the basic apply functionality with a mock runtime.
+/// Tests the basic apply functionality with the Podman runtime.
 ///
 /// This test:
 /// 1. Sets up a test environment with 3 nodes.
@@ -39,6 +39,11 @@ use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
 #[serial]
 #[tokio::test]
 async fn test_apply_functionality() {
+    if !is_podman_available().await {
+        log::warn!("Skipping apply test - Podman not available");
+        return;
+    }
+
     let (client, ports) = setup_test_environment().await;
     let mut guard = start_fabric_nodes().await;
 
@@ -121,9 +126,7 @@ async fn test_apply_with_real_podman() {
     // manifest delivery to fail and the Podman verification to panic later.
     let rest_api_timeout = podman_timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 30);
     if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
-        log::warn!(
-            "Skipping Podman integration test - REST APIs did not become healthy in time"
-        );
+        log::warn!("Skipping Podman integration test - REST APIs did not become healthy in time");
         guard.cleanup().await;
         return;
     }
@@ -131,9 +134,7 @@ async fn test_apply_with_real_podman() {
     let mesh_timeout = podman_timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 30);
     let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_ready {
-        log::warn!(
-            "Skipping Podman integration test - mesh formation did not complete in time"
-        );
+        log::warn!("Skipping Podman integration test - mesh formation did not complete in time");
         guard.cleanup().await;
         return;
     }
@@ -344,7 +345,6 @@ async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
 
 async fn start_test_nodes_for_podman() -> NodeGuard {
     let mut cli1 = make_test_cli(3000, vec![], 4001);
-    cli1.mock_only_runtime = false;
     cli1.signing_ephemeral = false;
     cli1.kem_ephemeral = false;
     cli1.ephemeral_keys = false;
@@ -354,7 +354,6 @@ async fn start_test_nodes_for_podman() -> NodeGuard {
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
     );
-    cli2.mock_only_runtime = false;
     cli2.signing_ephemeral = false;
     cli2.kem_ephemeral = false;
     cli2.ephemeral_keys = false;
@@ -365,7 +364,6 @@ async fn start_test_nodes_for_podman() -> NodeGuard {
     ];
 
     let mut cli3 = make_test_cli(3200, bootstrap_peers.clone(), 0);
-    cli3.mock_only_runtime = false;
     cli3.signing_ephemeral = false;
     cli3.kem_ephemeral = false;
     cli3.ephemeral_keys = false;

@@ -55,15 +55,12 @@
 //! for BeeMesh and should not be added.
 
 use async_trait::async_trait;
-#[cfg(not(debug_assertions))]
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use thiserror::Error;
 
-#[cfg(debug_assertions)]
-pub mod mock;
 pub mod podman;
 
 /// Configure the Podman runtime using CLI-provided settings.
@@ -396,55 +393,15 @@ pub async fn create_default_registry() -> RuntimeRegistry {
     // Register Podman engine (only runtime that supports K8s pods)
     registry.register(Box::new(podman::PodmanEngine::new()));
 
-    // Register mock engine for testing and debug builds only
-    #[cfg(debug_assertions)]
-    {
-        registry.register(Box::new(mock::MockEngine::new()));
-    }
-
-    // Try to set the best available engine as default
+    // Try to set Podman as default engine
     let available = registry.check_available_engines().await;
-
-    // Prefer Podman if available, otherwise mock for testing
-    if *available.get("podman").unwrap_or(&false) {
-        let _ = registry.set_default_engine("podman");
-    } else {
-        #[cfg(debug_assertions)]
-        {
-            let _ = registry.set_default_engine("mock");
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            log::warn!("Podman not available and no fallback runtime configured");
-        }
+    if !*available.get("podman").unwrap_or(&false) {
+        warn!("Podman not available; setting Podman as default engine anyway");
     }
 
-    registry
-}
-
-/// Create a mock-only runtime registry for testing
-/// This registry only contains the MockEngine, useful for integration tests
-/// where we want to verify manifest application without real containers
-#[cfg(debug_assertions)]
-pub async fn create_mock_only_registry() -> RuntimeRegistry {
-    let mut registry = RuntimeRegistry::new();
-
-    // Register only the mock engine for testing
-    registry.register(Box::new(mock::MockEngine::new()));
-
-    // Set mock as the default engine
-    let _ = registry.set_default_engine("mock");
+    let _ = registry.set_default_engine("podman");
 
     registry
-}
-
-/// Fallback mock-only registry accessor for release builds where the mock engine
-/// is not compiled in. We return the default registry to ensure callers have a
-/// functional runtime configuration without linking the mock implementation.
-#[cfg(not(debug_assertions))]
-pub async fn create_mock_only_registry() -> RuntimeRegistry {
-    warn!("mock runtime requested in release build; returning default registry");
-    create_default_registry().await
 }
 
 #[cfg(all(test, debug_assertions))]
@@ -455,16 +412,17 @@ mod tests {
     async fn test_runtime_registry() {
         let mut registry = RuntimeRegistry::new();
 
-        // Register mock engine
-        registry.register(Box::new(mock::MockEngine::new()));
+        // Register Podman engine
+        registry.register(Box::new(podman::PodmanEngine::new()));
 
-        // Check that engine is registered
-        assert!(registry.get_engine("mock").is_some());
-        assert_eq!(registry.get_default_engine().unwrap().name(), "mock");
+        // Check that engine is registered and can be set as default
+        assert!(registry.get_engine("podman").is_some());
+        let _ = registry.set_default_engine("podman");
+        assert_eq!(registry.get_default_engine().unwrap().name(), "podman");
 
         // List engines
         let engines = registry.list_engines();
-        assert!(engines.contains(&"mock"));
+        assert!(engines.contains(&"podman"));
     }
 
     #[tokio::test]
