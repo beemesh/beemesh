@@ -4,6 +4,8 @@ use env_logger::Env;
 use std::io::Write;
 use std::str::FromStr;
 
+use libp2p::{multiaddr::Protocol, Multiaddr};
+
 pub mod api;
 pub mod capacity;
 pub mod messages;
@@ -106,6 +108,44 @@ impl Default for Cli {
     }
 }
 
+const DEFAULT_BOOTSTRAP_ENV: &str = "BEE_DEFAULT_BOOTSTRAP_PEERS";
+
+fn parse_env_bootstrap_peers() -> Vec<String> {
+    let raw = match std::env::var(DEFAULT_BOOTSTRAP_ENV) {
+        Ok(val) if !val.trim().is_empty() => val,
+        _ => return Vec::new(),
+    };
+
+    raw.split(',')
+        .map(str::trim)
+        .filter(|addr| !addr.is_empty())
+        .filter_map(|addr| match validate_bootstrap_multiaddr(addr) {
+            Ok(_) => Some(addr.to_string()),
+            Err(err) => {
+                log::warn!(
+                    "Skipping invalid bootstrap peer from {} ({}): {}",
+                    DEFAULT_BOOTSTRAP_ENV,
+                    addr,
+                    err
+                );
+                None
+            }
+        })
+        .collect()
+}
+
+fn validate_bootstrap_multiaddr(addr: &str) -> anyhow::Result<()> {
+    let multiaddr: Multiaddr = addr.parse()?;
+    if multiaddr
+        .iter()
+        .any(|protocol| matches!(protocol, Protocol::P2p(_)))
+    {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("missing /p2p/ component"))
+    }
+}
+
 /// Start the machineplane runtime using the provided CLI configuration.
 /// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
 pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
@@ -113,23 +153,39 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     if cli.bootstrap_peer.is_empty() {
-        let mut defaults = Vec::new();
-        for (peer_id, addr) in messages::constants::DEFAULT_BOOTSTRAP_PEERS {
-            match libp2p::PeerId::from_str(peer_id) {
-                Ok(pid) => defaults.push(format!("{}/p2p/{}", addr, pid)),
-                Err(_) => log::warn!(
-                    "Skipping invalid default bootstrap peer id {} at {}",
-                    peer_id,
-                    addr
-                ),
-            }
-        }
-
-        if defaults.is_empty() {
-            log::info!("No bootstrap peers provided and no valid defaults available");
+        let env_peers = parse_env_bootstrap_peers();
+        if !env_peers.is_empty() {
+            log::info!("No bootstrap peers provided; using {} peers from {}", env_peers.len(), DEFAULT_BOOTSTRAP_ENV);
+            cli.bootstrap_peer = env_peers;
         } else {
-            log::info!("No bootstrap peers provided; using built-in defaults");
-            cli.bootstrap_peer = defaults;
+            let mut defaults = Vec::new();
+            for (peer_id, addr) in messages::constants::DEFAULT_BOOTSTRAP_PEERS {
+                match libp2p::PeerId::from_str(peer_id) {
+                    Ok(pid) => {
+                        let peer_addr = format!("{}/p2p/{}", addr, pid);
+                        if let Err(err) = validate_bootstrap_multiaddr(&peer_addr) {
+                            log::warn!(
+                                "Skipping invalid default bootstrap peer {} at {}: {}",
+                                peer_id, addr, err
+                            );
+                        } else {
+                            defaults.push(peer_addr);
+                        }
+                    }
+                    Err(_) => log::warn!(
+                        "Skipping invalid default bootstrap peer id {} at {}",
+                        peer_id,
+                        addr
+                    ),
+                }
+            }
+
+            if defaults.is_empty() {
+                log::info!("No bootstrap peers provided and no valid defaults available");
+            } else {
+                log::info!("No bootstrap peers provided; using built-in defaults");
+                cli.bootstrap_peer = defaults;
+            }
         }
     }
 
