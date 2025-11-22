@@ -2,6 +2,7 @@
 name = "workplane"
 version = "0.1.0"
 edition = "2024"
+description = "Beemesh workplane sidecar"
 
 [dependencies]
 anyhow = { workspace = true }
