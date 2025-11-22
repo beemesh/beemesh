@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ main ]
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build-and-test:
@@ -29,7 +32,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Cargo build
-        run: cargo build --workspace --all-targets --locked
+        run: cargo build --workspace --all-targets --locked --verbose
 
       - name: Install dependencies
         run: |
@@ -47,4 +50,4 @@ jobs:
       - name: Cargo test
         env:
           PODMAN_HOST: ${{ env.PODMAN_HOST }}
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --verbose
