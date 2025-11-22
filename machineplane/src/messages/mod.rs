@@ -13,6 +13,7 @@ pub mod types;
 pub use types::*;
 pub mod constants;
 pub use constants as libp2p_constants;
+pub mod signatures;
 
 fn serialize<T: Serialize>(value: &T) -> Vec<u8> {
     bincode::serialize(value).expect("failed to serialize message")
@@ -165,6 +166,7 @@ pub mod machine {
             manifest_json: manifest_json.to_string(),
             origin_peer: origin_peer.to_string(),
             manifest_id: manifest_id.to_string(),
+            signature: Vec::new(),
         })
     }
 
@@ -173,6 +175,7 @@ pub mod machine {
             ok,
             operation_id: operation_id.to_string(),
             message: message.to_string(),
+            signature: Vec::new(),
         })
     }
 
@@ -289,6 +292,7 @@ pub mod machine {
             placement_token: placement_token.to_string(),
             qos_preemptible,
             timestamp,
+            signature: Vec::new(),
         })
     }
 
