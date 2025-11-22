@@ -18,7 +18,21 @@ use crate::discovery::ServiceRecord;
 use crate::manifest::WorkloadManifest;
 use crate::network::Network;
 use crate::streams::{RPCRequest, send_request};
-use crate::tender::Tender;
+
+#[derive(Debug, Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Tender {
+    pub tender_id: String,
+    pub kind: String,
+    pub name: String,
+    pub manifest: Vec<u8>,
+    pub destination: String,
+    pub clone_request: bool,
+    pub replicas: usize,
+    pub namespace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec: Option<serde_json::Value>,
+}
 
 pub struct SelfHealer {
     network: Network,
