@@ -5,7 +5,7 @@ pub mod network;
 pub mod raft;
 pub mod self_heal;
 pub mod streams;
-pub mod task;
+pub mod tender;
 pub mod workload;
 
 pub use config::Config;
