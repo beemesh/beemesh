@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 
 const MAX_CLOCK_SKEW_MS: i64 = 30_000; // ±30s per spec
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServiceRecord {
     pub workload_id: String,
     pub namespace: String,
