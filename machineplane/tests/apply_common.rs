@@ -9,16 +9,15 @@ use std::collections::HashMap as StdHashMap;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
 
-#[path = "test_utils/mod.rs"]
-mod test_utils;
-use self::test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
-use machineplane::Cli;
+#[path = "runtime_helpers.rs"]
+mod runtime_helpers;
+use runtime_helpers::{make_test_cli, start_nodes};
+use tokio::task::JoinHandle;
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 
 /// Prepare logging and environment for runtime tests.
 pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
-    setup_cleanup_hook();
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     let client = reqwest::Client::new();
@@ -26,11 +25,11 @@ pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
 }
 
 /// Build standard three-node fabric configuration.
-/// Returns a guard that shuts down nodes when dropped.
-pub async fn start_fabric_nodes() -> NodeGuard {
+/// Returns JoinHandles for the spawned tasks so tests can abort them when finished.
+pub async fn start_fabric_nodes() -> Vec<JoinHandle<()>> {
     // Start a single bootstrap node first to give it time to initialize.
     let bootstrap_cli = make_test_cli(3000, vec![], 4001);
-    let mut guard = start_nodes(vec![bootstrap_cli], Duration::from_secs(1)).await;
+    let mut handles = start_nodes(vec![bootstrap_cli], Duration::from_secs(1)).await;
 
     // Allow the bootstrap node to settle before connecting peers.
     sleep(Duration::from_secs(2)).await;
@@ -40,9 +39,8 @@ pub async fn start_fabric_nodes() -> NodeGuard {
     let cli2 = make_test_cli(3100, bootstrap_peers.clone(), 4002);
     let cli3 = make_test_cli(3200, bootstrap_peers, 0);
 
-    let mut additional_guard = start_nodes(vec![cli2, cli3], Duration::from_secs(1)).await;
-    guard.absorb(&mut additional_guard);
-    guard
+    handles.append(&mut start_nodes(vec![cli2, cli3], Duration::from_secs(1)).await);
+    handles
 }
 
 /// Fetch peer ids for provided REST API ports.
