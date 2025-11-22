@@ -13,9 +13,9 @@ use log::info;
 use std::time::Duration;
 use tokio::time::sleep;
 
-#[path = "test_utils/mod.rs"]
-mod test_utils;
-use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
+#[path = "runtime_helpers.rs"]
+mod runtime_helpers;
+use runtime_helpers::{make_test_cli, shutdown_nodes, start_nodes};
 
 // We will start machines directly in this process by calling `start_machineplane(cli).await`.
 
@@ -31,21 +31,19 @@ use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
 /// - The public key endpoints return valid keys.
 #[tokio::test]
 async fn test_run_host_application() {
-    // Setup cleanup hook and initialize logger
-    setup_cleanup_hook();
+    // Initialize logger
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     // start a bootstrap node first
     let cli1 = make_test_cli(3000, vec![], 4001);
-    let mut guard = start_nodes(vec![cli1], Duration::from_secs(1)).await;
+    let mut handles = start_nodes(vec![cli1], Duration::from_secs(1)).await;
 
     // subsequent nodes use the first node as their bootstrap peer
     let bootstrap_peers = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
     let cli2 = make_test_cli(3100, bootstrap_peers.clone(), 4002);
     let cli3 = make_test_cli(3200, bootstrap_peers, 0);
 
-    let mut peer_guard = start_nodes(vec![cli2, cli3], Duration::from_secs(1)).await;
-    guard.absorb(&mut peer_guard);
+    handles.append(&mut start_nodes(vec![cli2, cli3], Duration::from_secs(1)).await);
 
     // wait for the mesh to form (poll until peers appear or timeout)
     let verify_peers = wait_for_peers(Duration::from_secs(15)).await;
@@ -55,7 +53,7 @@ async fn test_run_host_application() {
     let kem_pubkey_result = check_pubkey("kem_pubkey").await;
     let signing_pubkey_result = check_pubkey("signing_pubkey").await;
 
-    guard.cleanup().await;
+    shutdown_nodes(&mut handles).await;
 
     assert_eq!(health, "ok");
     assert!(

@@ -20,15 +20,16 @@ use tokio::time::sleep;
 mod apply_common;
 #[path = "kube_helpers.rs"]
 mod kube_helpers;
-#[path = "test_utils/mod.rs"]
-mod test_utils;
+#[path = "runtime_helpers.rs"]
+mod runtime_helpers;
 
 use apply_common::{
     check_workload_deployment, get_peer_ids, setup_test_environment, start_fabric_nodes,
     wait_for_mesh_formation,
 };
 use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
-use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
+use runtime_helpers::{make_test_cli, shutdown_nodes, start_nodes};
+use tokio::task::JoinHandle;
 
 /// Construct a Podman command that respects the PODMAN_HOST (and compatible) environment
 /// variables so the tests work with both local Podman daemons and remote Podman sockets.
@@ -63,7 +64,7 @@ async fn test_apply_functionality() {
     }
 
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_fabric_nodes().await;
+    let mut handles = start_fabric_nodes().await;
 
     // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
@@ -107,6 +108,7 @@ async fn test_apply_functionality() {
             "No nodes reported deployed workloads for tender {} after extended retries",
             tender_id
         );
+        shutdown_nodes(&mut handles).await;
         return;
     }
 
@@ -118,7 +120,7 @@ async fn test_apply_functionality() {
     );
 
     // Clean up nodes
-    guard.cleanup().await;
+    shutdown_nodes(&mut handles).await;
 }
 
 /// Tests the apply functionality using the real Podman runtime.
@@ -137,7 +139,7 @@ async fn test_apply_with_real_podman() {
     }
 
     let (client, ports) = setup_test_environment_for_podman().await;
-    let mut guard = start_test_nodes_for_podman().await;
+    let mut handles = start_test_nodes_for_podman().await;
 
     // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
     // In slower environments the first node can take longer to start, which would cause the
@@ -145,7 +147,7 @@ async fn test_apply_with_real_podman() {
     let rest_api_timeout = podman_timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 30);
     if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
         log::warn!("Skipping Podman integration test - REST APIs did not become healthy in time");
-        guard.cleanup().await;
+        shutdown_nodes(&mut handles).await;
         return;
     }
 
@@ -153,7 +155,7 @@ async fn test_apply_with_real_podman() {
     let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_ready {
         log::warn!("Skipping Podman integration test - mesh formation did not complete in time");
-        guard.cleanup().await;
+        shutdown_nodes(&mut handles).await;
         return;
     }
 
@@ -196,7 +198,7 @@ async fn test_apply_with_real_podman() {
     cleanup_podman_resources(&tender_id).await;
 
     // Clean up nodes
-    guard.cleanup().await;
+    shutdown_nodes(&mut handles).await;
 }
 
 /// Wait for the REST API on each port to return an OK status.
@@ -266,7 +268,7 @@ fn podman_timeout_from_env(var: &str, default_secs: u64) -> Duration {
 #[tokio::test]
 async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_fabric_nodes().await;
+    let mut handles = start_fabric_nodes().await;
 
     // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
@@ -314,6 +316,7 @@ async fn test_apply_nginx_with_replicas() {
         );
 
         if nodes_with_deployed_workloads.is_empty() {
+            shutdown_nodes(&mut handles).await;
             return;
         }
     }
@@ -346,12 +349,11 @@ async fn test_apply_nginx_with_replicas() {
     );
 
     // Clean up nodes
-    guard.cleanup().await;
+    shutdown_nodes(&mut handles).await;
 }
 
 async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
-    // Setup cleanup hook and initialize logger
-    setup_cleanup_hook();
+    // Initialize logger
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     // DO NOT set BEEMESH_MOCK_ONLY_RUNTIME - we want real Podman
@@ -361,7 +363,7 @@ async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
     (client, ports)
 }
 
-async fn start_test_nodes_for_podman() -> NodeGuard {
+async fn start_test_nodes_for_podman() -> Vec<JoinHandle<()>> {
     let mut cli1 = make_test_cli(3000, vec![], 4001);
     cli1.signing_ephemeral = false;
     cli1.kem_ephemeral = false;
