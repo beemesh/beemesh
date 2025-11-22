@@ -145,7 +145,10 @@ pub fn build_router(
             get(debug_workloads_by_peer),
         )
         .route("/debug/local_peer_id", get(debug_local_peer_id))
-        .route("/tenders/{tender_id}/manifest_id", get(get_tender_manifest_id))
+        .route(
+            "/tenders/{tender_id}/manifest_id",
+            get(get_tender_manifest_id),
+        )
         .route("/tenders", post(create_tender))
         .route("/tenders/{tender_id}", get(get_tender_status))
         .route("/tenders/{tender_id}", delete(delete_tender))
@@ -265,10 +268,8 @@ pub(crate) async fn collect_candidate_pubkeys(
 
     // Fallback: if we didn't hear back from enough peers within the timeout,
     // use the currently known peer list so scheduling can still proceed in
-    // test environments where capacity replies arrive slowly. When scheduling
-    // is disabled on this node, skip the fallback and rely solely on responders
-    // so we don't schedule workloads from a node that is configured to abstain.
-    if candidates.len() < max_candidates && state.scheduling_enabled {
+    // test environments where capacity replies arrive slowly.
+    if candidates.len() < max_candidates {
         let peers = state.peer_rx.borrow().clone();
         for peer_id in peers {
             if candidates.iter().any(|c| c.peer_id == peer_id) {

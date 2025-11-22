@@ -77,12 +77,9 @@ impl Drop for NodeGuard {
 #[allow(dead_code)]
 pub fn make_test_cli(
     rest_api_port: u16,
-    disable_rest: bool,
-    disable_machineplane: bool,
     api_socket: Option<String>,
     bootstrap_peers: Vec<String>,
     libp2p_quic_port: u16,
-    disable_scheduling: bool,
 ) -> Cli {
     let podman_socket = std::env::var("PODMAN_HOST")
         .ok()
@@ -93,15 +90,12 @@ pub fn make_test_cli(
         ephemeral: true,
         rest_api_host: "127.0.0.1".to_string(),
         rest_api_port,
-        disable_rest_api: disable_rest,
-        disable_machine_api: disable_machineplane,
         node_name: None,
         api_socket,
         key_dir: String::from("/tmp/.beemesh_test_unused"),
         bootstrap_peer: bootstrap_peers,
         libp2p_quic_port,
         libp2p_host: "0.0.0.0".to_string(),
-        disable_scheduling,
         mock_only_runtime: true,
         podman_socket: Some(podman_socket),
         signing_ephemeral: true,
@@ -153,16 +147,6 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
             .arg(&cli.libp2p_quic_port.to_string())
             .arg("--libp2p-host")
             .arg(&cli.libp2p_host);
-
-        if cli.disable_rest_api {
-            cmd.arg("--disable-rest-api");
-        }
-        if cli.disable_machine_api {
-            cmd.arg("--disable-machine-api");
-        }
-        if cli.disable_scheduling {
-            cmd.arg("--disable-scheduling");
-        }
 
         if cli.mock_only_runtime {
             cmd.arg("--mock-only-runtime");

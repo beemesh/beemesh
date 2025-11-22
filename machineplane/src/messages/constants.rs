@@ -29,6 +29,19 @@ pub const FREE_CAPACITY_PREFIX: &str = "beemesh-free-capacity";
 /// Prefix used for replies to free-capacity queries.
 pub const FREE_CAPACITY_REPLY_PREFIX: &str = "beemesh-free-capacity-reply";
 
+/// Default bootstrap peers exposed for public fabrics (peer_id, multiaddress).
+/// Multiaddrs are combined with the peer ID at runtime when dialing.
+pub const DEFAULT_BOOTSTRAP_PEERS: [(&str, &str); 2] = [
+    (
+        "12D3KooWAbcDefGhijkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoP",
+        "/ip4/203.0.113.10/tcp/4001",
+    ),
+    (
+        "12D3KooWZyxWvuTsRqPoNmLkJiHgFeDcBaZyXwVuTsRqPoNmLk",
+        "/ip4/203.0.113.11/tcp/4001",
+    ),
+];
+
 /// Prefix used for lease-related operations
 pub const LEASE_PREFIX: &str = "lease/";
 

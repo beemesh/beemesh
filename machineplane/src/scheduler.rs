@@ -146,7 +146,10 @@ impl Scheduler {
                 }) {
                     error!("Failed to queue bid for tender {}: {}", tender_id, e);
                 } else {
-                    info!("Queued Bid for tender {} with score {:.2}", tender_id, my_score);
+                    info!(
+                        "Queued Bid for tender {} with score {:.2}",
+                        tender_id, my_score
+                    );
                 }
 
                 // 5. Spawn Selection Window Waiter
@@ -155,7 +158,7 @@ impl Scheduler {
                 let manifest_json = tender.manifest_json.clone();
                 let local_id = self.local_node_id.clone();
                 let outbound_tx = self.outbound_tx.clone();
-                
+
                 // We need a way to trigger deployment, for now just log
                 tokio::spawn(async move {
                     sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
@@ -197,10 +200,13 @@ impl Scheduler {
                         let lease_hint = machine::build_lease_hint(
                             &tender_id_clone,
                             &local_id,
-                            1.0, // score
+                            1.0,   // score
                             30000, // ttl_ms
-                            0, // nonce
-                            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+                            0,     // nonce
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64,
                             &[], // signature
                         );
 
@@ -208,20 +214,27 @@ impl Scheduler {
                             key: format!("lease:{}", tender_id_clone).into_bytes(),
                             value: lease_hint,
                         }) {
-                            error!("Failed to publish LeaseHint for tender {}: {}", tender_id_clone, e);
+                            error!(
+                                "Failed to publish LeaseHint for tender {}: {}",
+                                tender_id_clone, e
+                            );
                         } else {
                             info!("Published LeaseHint for tender {}", tender_id_clone);
                         }
 
                         // 2. Trigger Workload Deployment
-                        let manifest_id = manifest_id_opt.unwrap_or_else(|| tender_id_clone.clone());
+                        let manifest_id =
+                            manifest_id_opt.unwrap_or_else(|| tender_id_clone.clone());
 
                         if let Err(e) = outbound_tx.send(SchedulerCommand::DeployWorkload {
                             manifest_id,
                             manifest_json: manifest_json.clone(),
                             replicas: 1,
                         }) {
-                            error!("Failed to trigger deployment for tender {}: {}", tender_id_clone, e);
+                            error!(
+                                "Failed to trigger deployment for tender {}: {}",
+                                tender_id_clone, e
+                            );
                         } else {
                             info!("Triggered deployment for tender {}", tender_id_clone);
                         }
@@ -386,15 +399,7 @@ mod runtime_integration {
     pub async fn initialize_podman_manager(
         force_mock_runtime: bool,
         mock_only_runtime: bool,
-        scheduling_enabled: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if !scheduling_enabled {
-            info!(
-                "Scheduling disabled; skipping runtime registry and provider manager initialization"
-            );
-            return Ok(());
-        }
-
         info!("Initializing runtime registry for manifest deployment");
 
         // Create runtime registry - use mock-only for tests if environment variable is set
@@ -1081,7 +1086,7 @@ mod runtime_integration {
 
         #[tokio::test]
         async fn test_runtime_registry_initialization() {
-            let result = initialize_podman_manager(false, false, true).await;
+            let result = initialize_podman_manager(false, false).await;
             assert!(result.is_ok());
 
             let stats = get_runtime_registry_stats().await;
@@ -1095,7 +1100,7 @@ mod runtime_integration {
         #[tokio::test]
         async fn test_runtime_engine_selection() {
             // Initialize registry for testing
-            let _ = initialize_podman_manager(false, false, true).await;
+            let _ = initialize_podman_manager(false, false).await;
 
             // Test Kubernetes manifest
             let k8s_manifest = r#"

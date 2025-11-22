@@ -1,9 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::{stream::StreamExt, AsyncReadExt, AsyncWriteExt};
+use futures::{AsyncReadExt, AsyncWriteExt, stream::StreamExt};
 use libp2p::{
-    autonat, gossipsub, identify, kad, multiaddr::Multiaddr, multiaddr::Protocol, relay,
-    request_response, swarm::SwarmEvent, PeerId, Swarm,
+    PeerId, Swarm, autonat, gossipsub, identify, kad, multiaddr::Multiaddr, multiaddr::Protocol,
+    relay, request_response, swarm::SwarmEvent,
 };
 use log::{debug, info, warn};
 use once_cell::sync::{Lazy, OnceCell};
@@ -35,12 +35,7 @@ use control::Libp2pControl;
 
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
-static DISABLED_SCHEDULING: OnceCell<Mutex<StdHashMap<PeerId, bool>>> = OnceCell::new();
 static NODE_KEYPAIR: Lazy<Mutex<Option<(Vec<u8>, Vec<u8>)>>> = Lazy::new(|| Mutex::new(None));
-
-fn scheduling_map() -> &'static Mutex<StdHashMap<PeerId, bool>> {
-    DISABLED_SCHEDULING.get_or_init(|| Mutex::new(StdHashMap::new()))
-}
 
 #[derive(Clone, Copy)]
 pub struct ByteProtocol(&'static str);
@@ -127,20 +122,6 @@ pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
     *slot = pair;
 }
 
-pub fn register_scheduling_preference(peer_id: PeerId, disabled: bool) {
-    let mut map = scheduling_map().lock().unwrap();
-    map.insert(peer_id, disabled);
-    debug!(
-        "Registered scheduling preference for {}: disabled={}",
-        peer_id, disabled
-    );
-}
-
-pub fn is_scheduling_disabled_for(peer_id: &PeerId) -> bool {
-    let map = scheduling_map().lock().unwrap();
-    *map.get(peer_id).unwrap_or(&false)
-}
-
 fn extract_listen_endpoint(addr: &Multiaddr) -> Option<(String, u16)> {
     let mut host: Option<String> = None;
     let mut port: Option<u16> = None;
@@ -171,7 +152,6 @@ pub fn get_control_sender() -> Option<&'static mpsc::UnboundedSender<control::Li
 pub fn setup_libp2p_node(
     quic_port: u16,
     host: &str,
-    disable_scheduling: bool,
 ) -> Result<(
     Swarm<MyBehaviour>,
     gossipsub::IdentTopic,
@@ -292,8 +272,6 @@ pub fn setup_libp2p_node(
         })?
         .build();
 
-    register_scheduling_preference(swarm.local_peer_id().clone(), disable_scheduling);
-
     let topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC);
     let tenders_topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
     let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
@@ -350,7 +328,7 @@ pub fn setup_libp2p_node(
     Ok((swarm, topic, peer_rx, peer_tx))
 }
 
-/// Set whether scheduler request handling is disabled for this node
+/// Start the libp2p node event loop and process control messages and swarm events.
 pub async fn start_libp2p_node(
     mut swarm: Swarm<MyBehaviour>,
     topic: gossipsub::IdentTopic, // Main fabric topic
@@ -422,8 +400,8 @@ pub async fn start_libp2p_node(
                              };
                              // We use an empty owner_pubkey for now as we trust the scheduler's decision
                              // In a real scenario, we should pass the owner_pubkey from the Tender/Manifest
-                             let owner_pubkey = Vec::new(); 
-                             
+                             let owner_pubkey = Vec::new();
+
                              if let Err(e) = crate::scheduler::process_manifest_deployment(
                                  &mut swarm,
                                  &apply_req,

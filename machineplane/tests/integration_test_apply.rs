@@ -40,7 +40,7 @@ use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
 #[tokio::test]
 async fn test_apply_functionality() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_fabric_nodes(&[false, false, false]).await;
+    let mut guard = start_fabric_nodes().await;
 
     // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
@@ -168,7 +168,7 @@ async fn test_apply_with_real_podman() {
 #[tokio::test]
 async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
-    let mut guard = start_fabric_nodes(&[false, false, false]).await;
+    let mut guard = start_fabric_nodes().await;
 
     // Wait for libp2p mesh to form before proceeding
     sleep(Duration::from_secs(3)).await;
@@ -256,7 +256,7 @@ async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
 }
 
 async fn start_test_nodes_for_podman() -> NodeGuard {
-    let mut cli1 = make_test_cli(3000, false, true, None, vec![], 4001, false);
+    let mut cli1 = make_test_cli(3000, None, vec![], 4001);
     cli1.mock_only_runtime = false;
     cli1.signing_ephemeral = false;
     cli1.kem_ephemeral = false;
@@ -264,12 +264,9 @@ async fn start_test_nodes_for_podman() -> NodeGuard {
 
     let mut cli2 = make_test_cli(
         3100,
-        false,
-        true,
         None,
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
-        false,
     );
     cli2.mock_only_runtime = false;
     cli2.signing_ephemeral = false;
@@ -281,7 +278,7 @@ async fn start_test_nodes_for_podman() -> NodeGuard {
         "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
 
-    let mut cli3 = make_test_cli(3200, false, true, None, bootstrap_peers.clone(), 0, false);
+    let mut cli3 = make_test_cli(3200, None, bootstrap_peers.clone(), 0);
     cli3.mock_only_runtime = false;
     cli3.signing_ephemeral = false;
     cli3.kem_ephemeral = false;
@@ -353,7 +350,8 @@ async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> b
                                 {
                                     for name in names {
                                         if let Some(name_str) = name.as_str() {
-                                            if name_str.contains(&format!("beemesh-{}", tender_id)) {
+                                            if name_str.contains(&format!("beemesh-{}", tender_id))
+                                            {
                                                 log::info!(
                                                     "Found matching Podman container: {}",
                                                     name_str

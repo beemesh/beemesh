@@ -4,9 +4,7 @@
 //! ensuring they handle missing fields and generate consistent IDs.
 
 use machineplane::messages::machine::{
-    compute_manifest_id,
-    compute_manifest_id_from_content,
-    extract_manifest_name,
+    compute_manifest_id, compute_manifest_id_from_content, extract_manifest_name,
 };
 
 /// Verifies that `extract_manifest_name` returns `None` for invalid or incomplete JSON.
@@ -33,7 +31,10 @@ fn compute_manifest_id_hashes_content() {
     assert_eq!(manifest_id, compute_manifest_id_from_content(manifest));
 
     let different_manifest = br#"{"apiVersion":"v1","kind":"Pod","metadata":{"name":"other"}}"#;
-    assert_ne!(manifest_id, compute_manifest_id_from_content(different_manifest));
+    assert_ne!(
+        manifest_id,
+        compute_manifest_id_from_content(different_manifest)
+    );
 }
 
 /// Verifies that `compute_manifest_id` includes a version suffix to distinguish updates.
