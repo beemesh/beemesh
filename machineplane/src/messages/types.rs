@@ -91,7 +91,7 @@ pub struct Tender {
     pub timestamp: u64,
 }
 
-/// Bidding message for task assignment
+/// Bidding message for tender assignment
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Bid {
     pub tender_id: String,
@@ -124,7 +124,7 @@ pub struct SchedulerEvent {
     pub timestamp: u64,
 }
 
-/// Lease hint for task assignment
+/// Lease hint for tender assignment
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LeaseHint {
     pub tender_id: String,
@@ -166,7 +166,7 @@ pub struct CapacityReply {
 }
 
 // ============================================================================
-// Task Response Messages
+// Tender Response Messages
 // ============================================================================
 
 /// Response to tender creation request

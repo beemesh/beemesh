@@ -20,14 +20,6 @@ where
     reply
 }
 
-/// Build a baseline capacity reply without any field overrides.
-pub fn compose_default_capacity_reply(
-    warn_context: &str,
-    request_id: &str,
-    responder_peer: &str,
-) -> CapacityReply {
-    compose_capacity_reply(warn_context, request_id, responder_peer, |_| {})
-}
 
 /// Sign and publish a capacity reply over GossipSub.
 pub fn publish_gossipsub_capacity_reply(

@@ -1,24 +1,68 @@
-use libp2p::kad::RecordKey;
-use libp2p::{PeerId, Swarm, gossipsub};
-use log::info;
+use crate::messages::constants::SCHEDULER_PROPOSALS;
+use crate::network::behaviour::MyBehaviour;
+use crate::network::{capacity, utils};
+use libp2p::kad::{QueryId, RecordKey};
+use libp2p::{gossipsub, PeerId, Swarm};
+use log::{debug, info, warn};
 use once_cell::sync::Lazy;
-use std::collections::HashMap as StdHashMap;
 use std::collections::HashMap;
+use std::collections::HashMap as StdHashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
 type ManifestRequestSender = mpsc::UnboundedSender<Result<(), String>>;
 
-use crate::network::behaviour::MyBehaviour;
-use libp2p::kad::QueryId;
+/// Control messages sent from the rest API or other parts of the host to the libp2p task.
+#[derive(Debug)]
+pub enum Libp2pControl {
+    QueryCapacityWithPayload {
+        request_id: String,
+        reply_tx: mpsc::UnboundedSender<String>,
+        payload: Vec<u8>,
+    },
+    SendApplyRequest {
+        peer_id: PeerId,
+        /// ApplyRequest bytes (bincode)
+        manifest: Vec<u8>,
+        reply_tx: mpsc::UnboundedSender<Result<String, String>>,
+    },
+    SendDeleteRequest {
+        peer_id: PeerId,
+        /// DeleteRequest bytes (bincode)
+        delete_request: Vec<u8>,
+        reply_tx: mpsc::UnboundedSender<Result<String, String>>,
+    },
 
-mod query_capacity;
-mod send_apply_request;
-mod send_delete_request;
-
-pub use query_capacity::handle_query_capacity_with_payload;
-pub use send_apply_request::handle_send_apply_request;
-pub use send_delete_request::handle_send_delete_request;
+    /// Find peers that hold shares for a given manifest id using DHT providers
+    FindManifestHolders {
+        manifest_id: String,
+        reply_tx: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
+    },
+    /// Bootstrap the DHT by connecting to known peers
+    BootstrapDht {
+        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
+    },
+    /// Announce that this node hosts the workload for the given CID (uses Kademlia provider records for placement)
+    AnnounceProvider {
+        cid: String,
+        ttl_ms: u64,
+        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
+    },
+    /// Withdraw a previously announced placement
+    WithdrawProvider {
+        cid: String,
+        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
+    },
+    /// Get DHT peer information for debugging
+    GetDhtPeers {
+        reply_tx: mpsc::UnboundedSender<Result<serde_json::Value, String>>,
+    },
+    /// Get the local peer ID
+    GetLocalPeerId {
+        reply_tx: mpsc::UnboundedSender<libp2p::PeerId>,
+    },
+}
 
 /// Handle incoming control messages from other parts of the host (REST handlers)
 pub async fn handle_control_message(
@@ -169,11 +213,6 @@ pub async fn handle_control_message(
                     let _ = reply_tx.send(Err(e));
                 }
             }
-        }
-        Libp2pControl::GetConnectedPeers { reply_tx } => {
-            // Get list of currently connected peers
-            let connected_peers: Vec<libp2p::PeerId> = swarm.connected_peers().cloned().collect();
-            let _ = reply_tx.send(connected_peers);
         }
         Libp2pControl::GetLocalPeerId { reply_tx } => {
             // Get the local peer ID
@@ -347,57 +386,166 @@ pub fn list_active_announces() -> Vec<String> {
     map.keys().cloned().collect()
 }
 
-/// Control messages sent from the rest API or other parts of the host to the libp2p task.
-#[derive(Debug)]
-pub enum Libp2pControl {
-    QueryCapacityWithPayload {
-        request_id: String,
-        reply_tx: mpsc::UnboundedSender<String>,
-        payload: Vec<u8>,
-    },
-    SendApplyRequest {
-        peer_id: PeerId,
-        /// ApplyRequest bytes (bincode)
-        manifest: Vec<u8>,
-        reply_tx: mpsc::UnboundedSender<Result<String, String>>,
-    },
-    SendDeleteRequest {
-        peer_id: PeerId,
-        /// DeleteRequest bytes (bincode)
-        delete_request: Vec<u8>,
-        reply_tx: mpsc::UnboundedSender<Result<String, String>>,
-    },
+// ============================================================================
+// Control Message Handlers
+// ============================================================================
 
-    /// Find peers that hold shares for a given manifest id using DHT providers
-    FindManifestHolders {
-        manifest_id: String,
-        reply_tx: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
-    },
-    /// Bootstrap the DHT by connecting to known peers
-    BootstrapDht {
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
-    /// Announce that this node hosts the workload for the given CID (uses Kademlia provider records for placement)
-    AnnounceProvider {
-        cid: String,
-        ttl_ms: u64,
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
-    /// Withdraw a previously announced placement
-    WithdrawProvider {
-        cid: String,
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
-    /// Get DHT peer information for debugging
-    GetDhtPeers {
-        reply_tx: mpsc::UnboundedSender<Result<serde_json::Value, String>>,
-    },
-    /// Get list of currently connected peers
-    GetConnectedPeers {
-        reply_tx: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
-    },
-    /// Get the local peer ID
-    GetLocalPeerId {
-        reply_tx: mpsc::UnboundedSender<libp2p::PeerId>,
-    },
+/// Handle QueryCapacityWithPayload control message
+pub async fn handle_query_capacity_with_payload(
+    request_id: String,
+    reply_tx: mpsc::UnboundedSender<String>,
+    payload: Vec<u8>,
+    swarm: &mut Swarm<MyBehaviour>,
+    _topic: &gossipsub::IdentTopic,
+    pending_queries: &mut StdHashMap<String, Vec<mpsc::UnboundedSender<String>>>,
+) {
+    // register the reply channel so incoming reply messages can be forwarded
+    log::debug!(
+        "libp2p: control QueryCapacityWithPayload received request_id={} payload_len={}",
+        request_id,
+        payload.len()
+    );
+    pending_queries
+        .entry(request_id.clone())
+        .or_insert_with(Vec::new)
+        .push(reply_tx);
+
+    // Parse the provided payload and rebuild it into a TopicMessage wrapper
+    match crate::messages::machine::root_as_capacity_request(&payload) {
+        Ok(cap_req) => {
+            let finished = crate::messages::machine::build_capacity_request_with_id(
+                &request_id,
+                cap_req.cpu_milli,
+                cap_req.memory_bytes,
+                cap_req.storage_bytes,
+                cap_req.replicas,
+            );
+            let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
+            match swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(proposals_topic, finished)
+            {
+                Ok(_) => {
+                    log::info!(
+                        "libp2p: published capreq request_id={} to scheduler-proposals",
+                        request_id
+                    );
+                }
+                Err(err) => {
+                    log::error!(
+                        "libp2p: failed to publish capreq request_id={} to scheduler-proposals: {:?}",
+                        request_id,
+                        err
+                    );
+                }
+            }
+
+            // Also notify local pending senders directly so the originator is always considered
+            // a potential responder. This ensures single-node operation and makes the
+            // origining host countable when collecting responders.
+            // When scheduling is disabled, skip the local response to honour the configuration.
+            // Include the local KEM public key in the same format as remote responses.
+            if crate::network::is_scheduling_disabled_for(swarm.local_peer_id()) {
+                log::info!(
+                    "libp2p: local scheduling disabled, skipping local capacity response for {}",
+                    request_id
+                );
+            } else {
+                let responder_peer = swarm.local_peer_id().to_string();
+                let reply = capacity::compose_capacity_reply(
+                    "local",
+                    &request_id,
+                    &responder_peer,
+                    |params| {
+                        params.cpu_milli = cap_req.cpu_milli;
+                        params.memory_bytes = cap_req.memory_bytes;
+                        params.storage_bytes = cap_req.storage_bytes;
+                    },
+                );
+                let local_response = format!(
+                    "{}:{}",
+                    swarm.local_peer_id(),
+                    reply.kem_pub_b64.unwrap_or_default()
+                );
+                utils::notify_capacity_observers(pending_queries, &request_id, move || {
+                    local_response.clone()
+                });
+            }
+        }
+        Err(e) => {
+            log::error!("libp2p: failed to parse provided capacity payload: {:?}", e);
+        }
+    }
+}
+
+/// Handle SendApplyRequest control message
+pub async fn handle_send_apply_request(
+    peer_id: PeerId,
+    manifest: Vec<u8>,
+    reply_tx: mpsc::UnboundedSender<Result<String, String>>,
+    swarm: &mut Swarm<MyBehaviour>,
+) {
+    info!(
+        "libp2p: control SendApplyRequest received for peer={}",
+        peer_id
+    );
+
+    // Check if this is a self-send - handle locally instead of using RequestResponse
+    if peer_id == *swarm.local_peer_id() {
+        debug!("libp2p: handling self-apply locally for peer {}", peer_id);
+
+        // Use the new workload manager integration for self-apply as well
+        crate::scheduler::process_enhanced_self_apply_request(&manifest, swarm).await;
+
+        let _ = reply_tx.send(Ok(format!("Apply request handled locally for {}", peer_id)));
+        return;
+    }
+
+    // For remote peers, use the normal RequestResponse protocol
+    // Before sending the apply, create a capability token tied to this manifest and
+    // send it to the target peer so they can store it in their keystore.
+    // No capability token needed - direct manifest application
+
+    // Finally send the apply request
+    let request_id = swarm
+        .behaviour_mut()
+        .apply_rr
+        .send_request(&peer_id, manifest);
+    info!(
+        "libp2p: sent apply request to peer={} request_id={:?}",
+        peer_id, request_id
+    );
+
+    // For now, just send success immediately - proper response handling is done elsewhere
+    let _ = reply_tx.send(Ok(format!("Apply request sent to {}", peer_id)));
+}
+
+/// Handle sending a delete request to a specific peer via libp2p request-response
+pub async fn handle_send_delete_request(
+    peer_id: PeerId,
+    delete_request: Vec<u8>,
+    reply_tx: mpsc::UnboundedSender<Result<String, String>>,
+    swarm: &mut Swarm<MyBehaviour>,
+) {
+    info!(
+        "handle_send_delete_request: sending delete request to peer {}",
+        peer_id
+    );
+
+    // Send the delete request via request-response protocol
+    let request_id = swarm
+        .behaviour_mut()
+        .delete_rr
+        .send_request(&peer_id, delete_request);
+
+    info!(
+        "handle_send_delete_request: delete request sent to peer {} with request_id {:?}",
+        peer_id, request_id
+    );
+
+    // For now, send immediate success response
+    // In a complete implementation, we would track the request_id and wait for the actual response
+    // from the peer, but that requires more complex request tracking infrastructure
+    let _ = reply_tx.send(Ok("Delete request sent".to_string()));
 }

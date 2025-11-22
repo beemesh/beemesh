@@ -41,7 +41,7 @@ async fn test_apply_functionality() {
         .await
         .expect("Failed to read original manifest file for verification");
 
-    let task_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
+    let tender_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
         .await
         .expect("kubectl apply should succeed");
 
@@ -53,7 +53,7 @@ async fn test_apply_functionality() {
     let (nodes_with_deployed_workloads, nodes_with_content_mismatch) = check_workload_deployment(
         &client,
         &ports,
-        &task_id,
+        &tender_id,
         &original_content,
         &port_to_peer_id,
         false, // Don't expect modified replicas for single replica test
@@ -103,7 +103,7 @@ async fn test_apply_with_real_podman() {
         .await
         .expect("Failed to read original manifest file for verification");
 
-    let task_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
+    let tender_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
         .await
         .expect("kubectl apply should succeed with real Podman");
 
@@ -112,7 +112,7 @@ async fn test_apply_with_real_podman() {
 
     // Verify actual Podman deployment
     let podman_verification_successful =
-        verify_podman_deployment(&task_id, &original_content).await;
+        verify_podman_deployment(&tender_id, &original_content).await;
 
     assert!(
         podman_verification_successful,
@@ -123,14 +123,14 @@ async fn test_apply_with_real_podman() {
     sleep(Duration::from_secs(5)).await;
 
     let podman_verification_successful =
-        verify_podman_deployment(&task_id, &original_content).await;
+        verify_podman_deployment(&tender_id, &original_content).await;
     assert!(
         !podman_verification_successful,
         "Podman deployment still exists after deletion attempt"
     );
 
     // Clean up Podman resources before test cleanup
-    cleanup_podman_resources(&task_id).await;
+    cleanup_podman_resources(&tender_id).await;
 
     // Clean up nodes
     guard.cleanup().await;
@@ -158,7 +158,7 @@ async fn test_apply_nginx_with_replicas() {
         .await
         .expect("Failed to read nginx_with_replicas manifest file for verification");
 
-    let task_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
+    let tender_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
         .await
         .expect("kubectl apply should succeed for nginx_with_replicas");
 
@@ -170,7 +170,7 @@ async fn test_apply_nginx_with_replicas() {
     let (nodes_with_deployed_workloads, nodes_with_content_mismatch) = check_workload_deployment(
         &client,
         &ports,
-        &task_id,
+        &tender_id,
         &original_content,
         &port_to_peer_id,
         true, // Expect modified replicas=1 for replica distribution test
@@ -206,7 +206,7 @@ async fn test_apply_nginx_with_replicas() {
 
     log::info!(
         "✓ MockEngine verification passed: nginx_with_replicas manifest {} deployed on {} nodes as expected: {:?}",
-        task_id,
+        tender_id,
         nodes_with_deployed_workloads.len(),
         nodes_with_deployed_workloads
     );
@@ -276,10 +276,10 @@ async fn is_podman_available() -> bool {
     }
 }
 
-async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> bool {
+async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> bool {
     // The pod name should now be in the format "beemesh-{manifest_id}-pod"
     // Podman adds "-pod" suffix when creating pods from Kubernetes Deployment manifests
-    let expected_pod_name = format!("beemesh-{}-pod", task_id);
+    let expected_pod_name = format!("beemesh-{}-pod", tender_id);
 
     // Check if the pod was created by Podman
     let output = tokio::process::Command::new("podman")
@@ -325,7 +325,7 @@ async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> boo
                                 {
                                     for name in names {
                                         if let Some(name_str) = name.as_str() {
-                                            if name_str.contains(&format!("beemesh-{}", task_id)) {
+                                            if name_str.contains(&format!("beemesh-{}", tender_id)) {
                                                 log::info!(
                                                     "Found matching Podman container: {}",
                                                     name_str
@@ -350,11 +350,11 @@ async fn verify_podman_deployment(task_id: &str, _original_content: &str) -> boo
     }
 }
 
-async fn cleanup_podman_resources(task_id: &str) {
-    log::info!("Cleaning up Podman resources for task: {}", task_id);
+async fn cleanup_podman_resources(tender_id: &str) {
+    log::info!("Cleaning up Podman resources for task: {}", tender_id);
 
     // Try to remove the specific pod by the expected name (with -pod suffix)
-    let expected_pod_name = format!("beemesh-{}-pod", task_id);
+    let expected_pod_name = format!("beemesh-{}-pod", tender_id);
     let _ = tokio::process::Command::new("podman")
         .args(&["pod", "rm", "-f", &expected_pod_name])
         .output()
@@ -362,7 +362,7 @@ async fn cleanup_podman_resources(task_id: &str) {
     log::info!("Attempted to clean up Podman pod: {}", expected_pod_name);
 
     // Also try the name without -pod suffix (fallback)
-    let expected_pod_name_alt = format!("beemesh-{}", task_id);
+    let expected_pod_name_alt = format!("beemesh-{}", tender_id);
     let _ = tokio::process::Command::new("podman")
         .args(&["pod", "rm", "-f", &expected_pod_name_alt])
         .output()

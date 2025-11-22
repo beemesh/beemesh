@@ -34,7 +34,7 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
         .await
         .expect("Failed to read manifest for verification");
 
-    let task_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
+    let tender_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
         .await
         .expect("kubectl apply should succeed");
 
@@ -44,7 +44,7 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
     let (nodes_with_deployed_workloads, nodes_with_content_mismatch) = check_workload_deployment(
         &client,
         &ports,
-        &task_id,
+        &tender_id,
         &original_content,
         &port_to_peer_id,
         false,

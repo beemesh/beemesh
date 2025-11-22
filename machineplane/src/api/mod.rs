@@ -334,7 +334,7 @@ pub async fn create_tender(
         let manifest_id = format!("{:x}", hasher.finish())[..16].to_string();
         (manifest_id, operation_id.clone())
     } else {
-        // Fallback: use a UUID for task_id but also generate manifest_id from content
+        // Fallback: use a UUID for tender_id but also generate manifest_id from content
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let operation_id = uuid::Uuid::new_v4().to_string();
@@ -795,7 +795,7 @@ async fn handle_local_delete(manifest_id: &str, _force: bool) -> Result<Vec<Stri
 }
 
 /// Forward an ApplyRequest directly to a specific peer via libp2p
-/// This bypasses centralized task storage and forwards the request directly
+/// This bypasses centralized tender storage and forwards the request directly
 pub async fn apply_direct(
     Path(peer_id): Path<String>,
     State(state): State<RestState>,

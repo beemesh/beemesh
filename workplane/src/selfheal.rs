@@ -280,15 +280,15 @@ async fn reconcile_replicas(
 /// used for each scale-up and it responds with any `2xx` on acceptance. Non-successful status codes
 /// are treated as errors so the caller can retry until the request succeeds or the backoff policy is
 /// exhausted.
-async fn publish_clone_task(
+async fn publish_clone_tender(
     cfg: &Config,
     client: &Client,
     manifest: &Arc<Vec<u8>>,
     manifest_spec: &WorkloadManifest,
     ordinal: Option<u32>,
 ) -> Result<()> {
-    let task = Task {
-        task_id: Uuid::new_v4().to_string(),
+    let tender = Tender {
+        tender_id: Uuid::new_v4().to_string(),
         kind: manifest_spec.kind.task_kind().to_string(),
         name: manifest_spec.name.clone(),
         manifest: manifest.as_ref().clone(),
@@ -299,16 +299,16 @@ async fn publish_clone_task(
         spec: ordinal.map(|ord| json!({ "ordinal": ord })),
     };
 
-    let url = format!("{}/v1/publish_task", cfg.beemesh_api.trim_end_matches('/'));
+    let url = format!("{}/v1/publish_tender", cfg.beemesh_api.trim_end_matches('/'));
     let resp = client
         .post(url)
-        .json(&task)
+        .json(&tender)
         .send()
         .await
-        .context("send clone task")?;
+        .context("send clone tender")?;
     if !resp.status().is_success() {
         return Err(anyhow!(
-            "publish clone task failed with status {}",
+            "publish clone tender failed with status {}",
             resp.status()
         ));
     }
@@ -323,7 +323,7 @@ async fn request_new_replica(
     ordinal: Option<u32>,
 ) -> Result<()> {
     let action =
-        || async { publish_clone_task(cfg, client, manifest, manifest_spec, ordinal).await };
+        || async { publish_clone_tender(cfg, client, manifest, manifest_spec, ordinal).await };
     retry_with_backoff(action, cfg.replica_check_interval).await
 }
 

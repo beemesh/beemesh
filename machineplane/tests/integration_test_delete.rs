@@ -40,7 +40,7 @@ async fn start_test_nodes() -> test_utils::NodeGuard {
 /// Test basic delete endpoint functionality using CLI
 #[tokio::test]
 #[serial]
-async fn test_delete_task_endpoint() {
+async fn test_delete_tender_endpoint() {
     let (client, ports) = setup_test_environment().await;
     let _node_guard = start_test_nodes().await;
 
@@ -52,8 +52,8 @@ async fn test_delete_task_endpoint() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sample_manifests/nginx.yml");
 
     // First apply the manifest to have something to delete
-    let task_id_result = apply_manifest_via_kube_api(&client, ports[0], &manifest_path).await;
-    println!("Apply result: {:?}", task_id_result);
+    let tender_id_result = apply_manifest_via_kube_api(&client, ports[0], &manifest_path).await;
+    println!("Apply result: {:?}", tender_id_result);
 
     // Give time for apply to propagate
     sleep(Duration::from_millis(500)).await;
@@ -81,7 +81,7 @@ async fn test_delete_task_endpoint() {
 /// Test delete with force flag using CLI
 #[tokio::test]
 #[serial]
-async fn test_delete_task_with_force() {
+async fn test_delete_tender_with_force() {
     let (client, ports) = setup_test_environment().await;
     let _node_guard = start_test_nodes().await;
 
@@ -123,7 +123,7 @@ async fn test_delete_task_with_force() {
 /// Test delete with non-existent manifest using CLI
 #[tokio::test]
 #[serial]
-async fn test_delete_nonexistent_task() {
+async fn test_delete_nonexistent_tender() {
     let (client, ports) = setup_test_environment().await;
     let _node_guard = start_test_nodes().await;
 
@@ -143,14 +143,14 @@ async fn test_delete_nonexistent_task() {
     match delete_result {
         Ok(manifest_id) => {
             println!(
-                "Delete nonexistent task CLI command succeeded with manifest_id: {}",
+                "Delete nonexistent tender CLI command succeeded with manifest_id: {}",
                 manifest_id
             );
             assert!(!manifest_id.is_empty());
             // This is expected since the REST API returns success for "no providers found"
         }
         Err(e) => {
-            println!("Delete nonexistent task CLI command failed: {}", e);
+            println!("Delete nonexistent tender CLI command failed: {}", e);
             // This is also acceptable depending on how we handle "no providers found"
         }
     }

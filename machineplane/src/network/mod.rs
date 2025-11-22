@@ -1,12 +1,10 @@
 use anyhow::Result;
-
 use async_trait::async_trait;
-use futures::{AsyncReadExt, AsyncWriteExt, stream::StreamExt};
+use futures::{stream::StreamExt, AsyncReadExt, AsyncWriteExt};
 use libp2p::{
-    PeerId, Swarm, gossipsub, kad, multiaddr::Multiaddr, multiaddr::Protocol, request_response,
-    swarm::SwarmEvent,
+    autonat, gossipsub, identify, kad, multiaddr::Multiaddr, multiaddr::Protocol, relay,
+    request_response, swarm::SwarmEvent, PeerId, Swarm,
 };
-use libp2p::{autonat, identify, relay};
 use log::{debug, info, warn};
 use once_cell::sync::{Lazy, OnceCell};
 use std::collections::HashMap as StdHashMap;
@@ -23,6 +21,17 @@ use crate::messages::libp2p_constants::{
     BEEMESH_FABRIC, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
 use crate::scheduler::SchedulerCommand;
+
+// Flattened modules
+pub mod behaviour;
+pub mod capacity;
+pub mod control;
+pub mod dht_manager;
+pub mod reply;
+pub mod utils;
+
+use behaviour::{MyBehaviour, MyBehaviourEvent};
+use control::Libp2pControl;
 
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
@@ -104,9 +113,41 @@ impl request_response::Codec for ByteCodec {
     }
 }
 
+// Protocol definitions
 pub type ApplyCodec = ByteCodec;
-pub type DeleteCodec = ByteCodec;
 pub type HandshakeCodec = ByteCodec;
+pub type DeleteCodec = ByteCodec;
+
+// Handshake state used by the handshake behaviour handlers
+#[derive(Debug)]
+pub struct HandshakeState {
+    pub attempts: u8,
+    pub last_attempt: tokio::time::Instant,
+    pub confirmed: bool,
+}
+
+pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
+    NODE_KEYPAIR.lock().unwrap().clone()
+}
+
+pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
+    let mut slot = NODE_KEYPAIR.lock().unwrap();
+    *slot = pair;
+}
+
+pub fn register_scheduling_preference(peer_id: PeerId, disabled: bool) {
+    let mut map = scheduling_map().lock().unwrap();
+    map.insert(peer_id, disabled);
+    debug!(
+        "Registered scheduling preference for {}: disabled={}",
+        peer_id, disabled
+    );
+}
+
+pub fn is_scheduling_disabled_for(peer_id: &PeerId) -> bool {
+    let map = scheduling_map().lock().unwrap();
+    *map.get(peer_id).unwrap_or(&false)
+}
 
 fn extract_listen_endpoint(addr: &Multiaddr) -> Option<(String, u16)> {
     let mut host: Option<String> = None;
@@ -125,37 +166,14 @@ fn extract_listen_endpoint(addr: &Multiaddr) -> Option<(String, u16)> {
     host.zip(port)
 }
 
-pub fn register_scheduling_preference(peer: PeerId, disabled: bool) {
-    let mut map = scheduling_map().lock().unwrap();
-    map.insert(peer, disabled);
+/// Set the global control sender for distributed operations
+pub fn set_control_sender(sender: mpsc::UnboundedSender<control::Libp2pControl>) {
+    let _ = CONTROL_SENDER.set(sender);
 }
 
-pub fn is_scheduling_disabled_for(peer: &PeerId) -> bool {
-    scheduling_map()
-        .lock()
-        .unwrap()
-        .get(peer)
-        .copied()
-        .unwrap_or(false)
-}
-
-use crate::network::{
-    behaviour::{MyBehaviour, MyBehaviourEvent},
-    control::Libp2pControl,
-};
-
-pub mod behaviour;
-pub mod capacity;
-pub mod control;
-pub mod reply;
-pub mod utils;
-
-// Handshake state used by the handshake behaviour handlers
-#[derive(Debug)]
-pub struct HandshakeState {
-    pub attempts: u8,
-    pub last_attempt: tokio::time::Instant,
-    pub confirmed: bool,
+/// Get the global control sender for distributed operations
+pub fn get_control_sender() -> Option<&'static mpsc::UnboundedSender<control::Libp2pControl>> {
+    CONTROL_SENDER.get()
 }
 
 pub fn setup_libp2p_node(
@@ -285,19 +303,19 @@ pub fn setup_libp2p_node(
     register_scheduling_preference(swarm.local_peer_id().clone(), disable_scheduling);
 
     let topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC);
-    let tasks_topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
+    let tenders_topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
     let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
     let events_topic = gossipsub::IdentTopic::new(SCHEDULER_EVENTS);
 
     debug!(
         "Subscribing to topics: {}, {}, {}, {}",
         topic.hash(),
-        tasks_topic.hash(),
+        tenders_topic.hash(),
         proposals_topic.hash(),
         events_topic.hash()
     );
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-    swarm.behaviour_mut().gossipsub.subscribe(&tasks_topic)?;
+    swarm.behaviour_mut().gossipsub.subscribe(&tenders_topic)?;
     swarm
         .behaviour_mut()
         .gossipsub
@@ -340,26 +358,6 @@ pub fn setup_libp2p_node(
     Ok((swarm, topic, peer_rx, peer_tx))
 }
 
-// Global node keypair set at startup by machineplane::main. Mutable to support multiple in-process nodes in tests.
-pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
-    let mut slot = NODE_KEYPAIR.lock().unwrap();
-    *slot = pair;
-}
-
-pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
-    NODE_KEYPAIR.lock().unwrap().clone()
-}
-
-/// Set the global control sender for distributed operations
-pub fn set_control_sender(sender: mpsc::UnboundedSender<control::Libp2pControl>) {
-    let _ = CONTROL_SENDER.set(sender);
-}
-
-/// Get the global control sender for distributed operations
-pub fn get_control_sender() -> Option<&'static mpsc::UnboundedSender<control::Libp2pControl>> {
-    CONTROL_SENDER.get()
-}
-
 /// Set whether scheduler request handling is disabled for this node
 pub async fn start_libp2p_node(
     mut swarm: Swarm<MyBehaviour>,
@@ -386,7 +384,7 @@ pub async fn start_libp2p_node(
     let (sched_output_tx, mut sched_output_rx) = mpsc::unbounded_channel::<SchedulerCommand>();
 
     // Initialize global input sender for gossipsub_message.rs
-    behaviour::gossipsub_message::set_scheduler_input(sched_input_tx);
+    behaviour::SCHEDULER_INPUT_TX.set(sched_input_tx).ok();
 
     // Spawn Scheduler
     let local_node_id = swarm.local_peer_id().to_string();

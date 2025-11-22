@@ -19,7 +19,7 @@ pub fn notify_capacity_observers<F>(
     }
 }
 
-/// Extract the manifest/task identifier encoded in a capacity request id.
+/// Extract the manifest/tender identifier encoded in a capacity request id.
 /// Supports the current `prefix:manifest_id:uuid` format and falls back to the
 /// legacy `prefix-manifest_id-uuid` pattern for compatibility.
 pub fn extract_manifest_id_from_request_id(request_id: &str) -> Option<String> {
