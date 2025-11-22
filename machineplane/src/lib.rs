@@ -2,9 +2,6 @@
 use clap::Parser;
 use env_logger::Env;
 use std::io::Write;
-use std::str::FromStr;
-
-use libp2p::{Multiaddr, multiaddr::Protocol};
 
 pub mod api;
 pub mod messages;
@@ -30,10 +27,6 @@ pub struct Cli {
     /// Custom node name (optional)
     #[arg(long)]
     pub node_name: Option<String>,
-
-    /// Force the workload manager to use the mock runtime registry (testing only)
-    #[arg(long, default_value_t = false)]
-    pub mock_only_runtime: bool,
 
     /// Override the Podman socket URL used by runtime engines (defaults to PODMAN_HOST env)
     #[arg(long, env = "PODMAN_HOST")]
@@ -75,7 +68,6 @@ impl Default for Cli {
             rest_api_host: "127.0.0.1".to_string(),
             rest_api_port: 3000,
             node_name: None,
-            mock_only_runtime: false,
             podman_socket: None,
             signing_ephemeral: false,
             kem_ephemeral: false,
@@ -90,7 +82,7 @@ impl Default for Cli {
 
 /// Start the machineplane runtime using the provided CLI configuration.
 /// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
-pub async fn start_machineplane(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
+pub async fn start_machineplane(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     // initialize logger but don't panic if already initialized
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
@@ -197,9 +189,7 @@ pub async fn start_machineplane(mut cli: Cli) -> anyhow::Result<Vec<tokio::task:
 
     // Initialize runtime registry and provider manager for manifest deployment
     log::info!("Initializing runtime registry and provider manager...");
-    if let Err(e) =
-        scheduler::initialize_podman_manager(cli.mock_only_runtime, cli.mock_only_runtime).await
-    {
+    if let Err(e) = scheduler::initialize_podman_manager().await {
         log::warn!(
             "Failed to initialize runtime registry: {}. Will use legacy deployment only.",
             e

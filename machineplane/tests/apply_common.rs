@@ -16,7 +16,7 @@ use machineplane::Cli;
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 
-/// Prepare logging and environment for mock runtime tests.
+/// Prepare logging and environment for runtime tests.
 pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
     setup_cleanup_hook();
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();

@@ -105,7 +105,6 @@ pub fn make_test_cli(
         bootstrap_peer: bootstrap_peers,
         libp2p_quic_port,
         libp2p_host: "0.0.0.0".to_string(),
-        mock_only_runtime: true,
         podman_socket: Some(podman_socket),
         signing_ephemeral: true,
         kem_ephemeral: true,
@@ -156,10 +155,6 @@ pub async fn start_nodes_as_processes(clis: Vec<Cli>, startup_delay: Duration) -
             .arg(&cli.libp2p_quic_port.to_string())
             .arg("--libp2p-host")
             .arg(&cli.libp2p_host);
-
-        if cli.mock_only_runtime {
-            cmd.arg("--mock-only-runtime");
-        }
 
         if cli.signing_ephemeral {
             cmd.arg("--signing-ephemeral");

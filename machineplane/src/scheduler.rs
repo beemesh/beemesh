@@ -375,32 +375,10 @@ mod runtime_integration {
         Lazy::new(|| RwLock::new(HashMap::new()));
 
     /// Initialize the runtime registry and provider manager
-    pub async fn initialize_podman_manager(
-        force_mock_runtime: bool,
-        mock_only_runtime: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn initialize_podman_manager() -> Result<(), Box<dyn std::error::Error>> {
         info!("Initializing runtime registry for manifest deployment");
 
-        // Create runtime registry - use mock-only for tests if environment variable is set
-        let use_mock_registry = force_mock_runtime || mock_only_runtime;
-
-        #[cfg(debug_assertions)]
-        let registry = if use_mock_registry {
-            info!("Using mock-only runtime registry for testing");
-            crate::runtimes::create_mock_only_registry().await
-        } else {
-            create_default_registry().await
-        };
-
-        #[cfg(not(debug_assertions))]
-        let registry = {
-            if use_mock_registry {
-                warn!(
-                    "mock runtime requested but not compiled in release build; falling back to default registry"
-                );
-            }
-            create_default_registry().await
-        };
+        let registry = create_default_registry().await;
         let available_engines = registry.check_available_engines().await;
 
         info!("Available runtime engines: {:?}", available_engines);
@@ -627,50 +605,9 @@ mod runtime_integration {
             .ok_or(format!("Runtime engine '{}' not available", engine_name))?;
 
         // Deploy the workload with modified manifest (replicas=1)
-        // use peer-aware deployment for mock engine when compiled in debug builds
-        #[cfg(debug_assertions)]
-        let workload_info = {
-            if engine_name == "mock" {
-                if let Some(mock_engine) = engine
-                    .as_any()
-                    .downcast_ref::<crate::runtimes::mock::MockEngine>()
-                {
-                    debug!("Using peer-aware deployment for mock engine");
-                    mock_engine
-                        .deploy_workload_with_peer(
-                            &manifest_id,
-                            &modified_manifest_content,
-                            &deployment_config,
-                            *swarm.local_peer_id(),
-                        )
-                        .await?
-                } else {
-                    engine
-                        .deploy_workload(
-                            &manifest_id,
-                            &modified_manifest_content,
-                            &deployment_config,
-                        )
-                        .await?
-                }
-            } else {
-                engine
-                    .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
-                    .await?
-            }
-        };
-
-        #[cfg(not(debug_assertions))]
-        let workload_info = {
-            if engine_name == "mock" {
-                warn!(
-                    "mock runtime selected but not included in release build; proceeding with default deployment path"
-                );
-            }
-            engine
-                .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
-                .await?
-        };
+        let workload_info = engine
+            .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
+            .await?;
 
         info!(
             "Workload deployed successfully: {} using engine '{}', status: {:?}",
@@ -783,13 +720,16 @@ mod runtime_integration {
         if let Some(registry) = RUNTIME_REGISTRY.read().await.as_ref() {
             let available = registry.check_available_engines().await;
 
-            // Prefer Podman, then Docker, then mock for testing
             if *available.get("podman").unwrap_or(&false) {
                 return Ok("podman".to_string());
-            } else if *available.get("docker").unwrap_or(&false) {
-                return Ok("docker".to_string());
-            } else if *available.get("mock").unwrap_or(&false) {
-                return Ok("mock".to_string());
+            }
+
+            if let Some(default_engine) = registry.get_default_engine() {
+                warn!(
+                    "Preferred Podman runtime unavailable; falling back to default engine '{}'",
+                    default_engine.name()
+                );
+                return Ok(default_engine.name().to_string());
             }
         }
 
@@ -1052,7 +992,7 @@ mod runtime_integration {
 
         #[tokio::test]
         async fn test_runtime_registry_initialization() {
-            let result = initialize_podman_manager(false, false).await;
+            let result = initialize_podman_manager().await;
             assert!(result.is_ok());
 
             let stats = get_runtime_registry_stats().await;
@@ -1060,13 +1000,13 @@ mod runtime_integration {
 
             let engines = list_available_engines().await;
             assert!(!engines.is_empty());
-            assert!(engines.contains(&"mock".to_string()));
+            assert!(engines.contains(&"podman".to_string()));
         }
 
         #[tokio::test]
         async fn test_runtime_engine_selection() {
             // Initialize registry for testing
-            let _ = initialize_podman_manager(false, false).await;
+            let _ = initialize_podman_manager().await;
 
             // Test Kubernetes manifest
             let k8s_manifest = r#"
@@ -1081,9 +1021,8 @@ mod runtime_integration {
     "#;
             let engine = select_runtime_engine(k8s_manifest.as_bytes()).await;
             assert!(engine.is_ok());
-            // Should select mock engine in test environment
             let engine_name = engine.unwrap();
-            assert!(engine_name == "mock" || engine_name == "podman");
+            assert_eq!(engine_name, "podman");
 
             // Test Docker Compose manifest
             let docker_manifest = r#"
