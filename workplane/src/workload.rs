@@ -47,7 +47,7 @@ impl Workload {
 
         let manifest = Arc::new(manifest);
 
-        let leader_state = Arc::new(RwLock::new(None));
+        let leader_state: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let handler_network = network.clone();
         let local_peer_id = handler_network.peer_id();
         let leader_state_for_handler = leader_state.clone();

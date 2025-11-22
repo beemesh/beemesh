@@ -3,22 +3,17 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use futures::StreamExt;
+use async_trait::async_trait;
 use libp2p::identity::Keypair;
-use libp2p::kad::{
-    self, GetRecordOk, Kademlia, KademliaConfig, KademliaEvent, PutRecordOk, QueryId, QueryResult,
-    Quorum, Record, RecordKey, store::MemoryStore,
-};
-use libp2p::request_response::{
-    self, ProtocolSupport, RequestId, RequestResponse, RequestResponseConfig, RequestResponseEvent,
-    RequestResponseMessage,
-};
-use libp2p::swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent};
-use libp2p::{Multiaddr, PeerId, Swarm, Transport};
+use libp2p::kad;
+use libp2p::request_response;
+use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::{Multiaddr, PeerId, Swarm, SwarmBuilder};
+use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -29,82 +24,82 @@ use crate::streams::{RPCRequest, RPCResponse};
 
 #[derive(NetworkBehaviour)]
 struct WorkplaneBehaviour {
-    kademlia: Kademlia<MemoryStore>,
-    request_response: RequestResponse<RPCCodec>,
+    kademlia: kad::Behaviour<kad::store::MemoryStore>,
+    request_response: request_response::Behaviour<RPCCodec>,
 }
 
 // --- RPC Codec ---
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct RPCCodec;
 
-#[derive(Debug, Clone)]
-struct RPCProtocol;
+#[derive(Debug, Clone, Copy)]
+struct RPCProtocol(&'static str);
 
-impl libp2p::request_response::ProtocolName for RPCProtocol {
-    fn protocol_name(&self) -> &[u8] {
-        b"/workplane/rpc/1.0.0"
+impl AsRef<str> for RPCProtocol {
+    fn as_ref(&self) -> &str {
+        self.0
     }
 }
 
-#[async_trait::async_trait]
-impl libp2p::request_response::Codec for RPCCodec {
+#[async_trait]
+impl request_response::Codec for RPCCodec {
     type Protocol = RPCProtocol;
     type Request = RPCRequest;
     type Response = RPCResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &RPCProtocol,
+        _protocol: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Request>
     where
-        T: futures::AsyncRead + Unpin + Send,
+        T: AsyncRead + Unpin + Send,
     {
         let mut vec = Vec::new();
-        futures::AsyncReadExt::read_to_end(io, &mut vec).await?;
+        AsyncReadExt::read_to_end(io, &mut vec).await?;
         serde_json::from_slice(&vec).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     async fn read_response<T>(
         &mut self,
-        _: &RPCProtocol,
+        _protocol: &Self::Protocol,
         io: &mut T,
     ) -> std::io::Result<Self::Response>
     where
-        T: futures::AsyncRead + Unpin + Send,
+        T: AsyncRead + Unpin + Send,
     {
         let mut vec = Vec::new();
-        futures::AsyncReadExt::read_to_end(io, &mut vec).await?;
+        AsyncReadExt::read_to_end(io, &mut vec).await?;
         serde_json::from_slice(&vec).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     async fn write_request<T>(
         &mut self,
-        _: &RPCProtocol,
+        _protocol: &Self::Protocol,
         io: &mut T,
         req: Self::Request,
     ) -> std::io::Result<()>
     where
-        T: futures::AsyncWrite + Unpin + Send,
+        T: AsyncWrite + Unpin + Send,
     {
         let data = serde_json::to_vec(&req)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        futures::AsyncWriteExt::write_all(io, &data).await
+        AsyncWriteExt::write_all(io, &data).await
     }
 
     async fn write_response<T>(
         &mut self,
-        _: &RPCProtocol,
+        _protocol: &Self::Protocol,
         io: &mut T,
         res: Self::Response,
     ) -> std::io::Result<()>
     where
-        T: futures::AsyncWrite + Unpin + Send,
+        T: AsyncWrite + Unpin + Send,
     {
         let data = serde_json::to_vec(&res)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        futures::AsyncWriteExt::write_all(io, &data).await
+        AsyncWriteExt::write_all(io, &data).await
     }
 }
 
@@ -203,25 +198,29 @@ impl Network {
             healthy: false,
         };
 
-        // Initialize Swarm
-        let transport = libp2p::tokio_development_transport(keypair.clone())?;
-        
-        // Kademlia
-        let store = MemoryStore::new(peer_id);
-        let kad_config = KademliaConfig::default();
-        let kademlia = Kademlia::with_config(peer_id, store, kad_config);
+        let swarm = SwarmBuilder::with_existing_identity(keypair)
+            .with_tokio()
+            .with_quic()
+            .with_dns()? 
+            .with_behaviour(|key| {
+                let peer_id = key.public().to_peer_id();
+                let store = kad::store::MemoryStore::new(peer_id);
+                let kad_config = kad::Config::default();
+                let kademlia = kad::Behaviour::with_config(peer_id, store, kad_config);
 
-        // Request-Response
-        let protocols = std::iter::once((RPCProtocol, ProtocolSupport::Full));
-        let rr_config = RequestResponseConfig::default();
-        let request_response = RequestResponse::new(RPCCodec, protocols, rr_config);
+                let protocols = std::iter::once((
+                    RPCProtocol("/workplane/rpc/1.0.0"),
+                    request_response::ProtocolSupport::Full,
+                ));
+                let rr_config = request_response::Config::default();
+                let request_response = request_response::Behaviour::new(protocols, rr_config);
 
-        let behaviour = WorkplaneBehaviour {
-            kademlia,
-            request_response,
-        };
-
-        let swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
+                Ok(WorkplaneBehaviour {
+                    kademlia,
+                    request_response,
+                })
+            })?
+            .build();
 
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
 
@@ -244,7 +243,7 @@ impl Network {
         // Start listening
         for addr_str in &self.inner.cfg.listen_addrs {
             if let Ok(addr) = addr_str.parse::<Multiaddr>() {
-                let (tx, rx) = oneshot::channel();
+                let (tx, _rx) = oneshot::channel();
                 let _ = self.cmd_tx.try_send(NetworkCommand::StartListening { addr, reply_tx: tx });
                 // We don't block on this, just fire and forget for start()
             }
@@ -253,7 +252,7 @@ impl Network {
         // Connect to bootstrap peers
         for peer_str in &self.inner.cfg.bootstrap_peer_strings {
              if let Ok(addr) = peer_str.parse::<Multiaddr>() {
-                 let (tx, rx) = oneshot::channel();
+                 let (tx, _rx) = oneshot::channel();
                  let _ = self.cmd_tx.try_send(NetworkCommand::Dial { addr, reply_tx: tx });
              }
         }
@@ -301,8 +300,6 @@ impl Network {
             let _ = handle.stop_tx.send(true);
             let _ = handle.join_handle.await;
         }
-
-        let record = self.local_record();
         // In real DHT, we might want to publish a "tombstone" or rely on TTL expiration.
         // For now, we just stop refreshing.
     }
@@ -457,16 +454,16 @@ async fn network_event_loop(
     mut swarm: Swarm<WorkplaneBehaviour>,
     mut cmd_rx: mpsc::Receiver<NetworkCommand>,
 ) {
-    let mut pending_requests = HashMap::new();
+    let mut pending_requests: HashMap<request_response::OutboundRequestId, oneshot::Sender<Result<RPCResponse>>> = HashMap::new();
 
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::Kademlia(KademliaEvent::OutboundQueryProgressed { result, .. })) => {
+                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed { result, .. })) => {
                         match result {
-                            QueryResult::GetRecord(Ok(GetRecordOk::FoundRecord(Record { key, value, .. }))) => {
-                                if let Ok(record) = serde_json::from_slice::<ServiceRecord>(&value) {
+                            kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))) => {
+                                if let Ok(record) = serde_json::from_slice::<ServiceRecord>(&peer_record.record.value) {
                                     // Update local cache (discovery module)
                                     // We'll keep discovery::put as a way to update the in-memory cache
                                     // even though we removed the networking logic from it.
@@ -476,22 +473,22 @@ async fn network_event_loop(
                             _ => {}
                         }
                     }
-                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::RequestResponse(RequestResponseEvent::Message { peer, message })) => {
+                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::RequestResponse(request_response::Event::Message { peer, message, .. })) => {
                         match message {
-                            RequestResponseMessage::Request { request, channel, .. } => {
+                            request_response::Message::Request { request, channel, .. } => {
                                 // Handle incoming RPC
                                 // We need to call the registered handler
                                 let response = crate::streams::handle_request(&peer.to_string(), request).await;
                                 let _ = swarm.behaviour_mut().request_response.send_response(channel, response);
                             }
-                            RequestResponseMessage::Response { request_id, response } => {
+                            request_response::Message::Response { request_id, response } => {
                                 if let Some(tx) = pending_requests.remove(&request_id) {
                                     let _ = tx.send(Ok(response));
                                 }
                             }
                         }
                     }
-                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::RequestResponse(RequestResponseEvent::OutboundFailure { request_id, error, .. })) => {
+                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::RequestResponse(request_response::Event::OutboundFailure { request_id, error, .. })) => {
                         if let Some(tx) = pending_requests.remove(&request_id) {
                             let _ = tx.send(Err(anyhow!("RPC failed: {:?}", error)));
                         }
@@ -502,16 +499,16 @@ async fn network_event_loop(
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     NetworkCommand::PublishRecord { record, ttl } => {
-                        let key = RecordKey::new(&record.workload_id);
+                        let key = kad::RecordKey::new(&record.workload_id);
                         if let Ok(data) = serde_json::to_vec(&record) {
-                            let record = Record {
+                            let kad_record = kad::Record {
                                 key,
                                 value: data,
                                 publisher: None,
                                 expires: None, // TODO: Handle TTL
                             };
-                            let _ = swarm.behaviour_mut().kademlia.put_record(record, Quorum::One);
-                            
+                            let _ = swarm.behaviour_mut().kademlia.put_record(kad_record, kad::Quorum::One);
+
                             // Also update local cache
                             discovery::put(record.clone(), ttl);
                         }
