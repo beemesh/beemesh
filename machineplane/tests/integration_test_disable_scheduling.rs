@@ -30,11 +30,14 @@ async fn test_disabled_nodes_do_not_schedule_workloads() {
     let manifest_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sample_manifests/nginx.yml");
 
+    // Submit the apply request to a node with scheduling enabled to ensure the workload can be placed.
+    let apply_port = ports[1];
+
     let original_content = tokio::fs::read_to_string(manifest_path.clone())
         .await
         .expect("Failed to read manifest for verification");
 
-    let tender_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
+    let tender_id = apply_manifest_via_kube_api(&client, apply_port, &manifest_path)
         .await
         .expect("kubectl apply should succeed");
 

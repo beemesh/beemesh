@@ -35,7 +35,11 @@ pub const LEASE_PREFIX: &str = "lease/";
 // === TIMEOUTS AND TIMING ===
 
 /// Timeout, in milliseconds, to wait for free-capacity responses from peers.
-pub const FREE_CAPACITY_TIMEOUT_MS: u64 = 500;
+///
+/// A longer window gives slower nodes time to answer capacity queries so
+/// replica scheduling (e.g., replicas=3) can gather enough candidates instead
+/// of failing with HTTP 503 due to under-counted peers.
+pub const FREE_CAPACITY_TIMEOUT_MS: u64 = 2000;
 
 /// Timeout, in seconds, to wait for request-response RPCs (ApplyRequest/ApplyResponse)
 pub const REQUEST_RESPONSE_TIMEOUT_SECS: u64 = 3;
