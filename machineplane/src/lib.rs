@@ -29,10 +29,6 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub disable_rest_api: bool,
 
-    /// Disable REST API server
-    #[arg(long, default_value_t = false)]
-    pub disable_machine_api: bool,
-
     /// Disable participation in scheduling (no capacity replies)
     #[arg(long, default_value_t = false)]
     pub disable_scheduling: bool,
@@ -61,9 +57,6 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub ephemeral_keys: bool,
 
-    #[arg(long, default_value = "/run/beemesh/host.sock")]
-    pub api_socket: Option<String>,
-
     /// Directory to store machineplane keypair (default: /etc/beemesh/machineplane)
     #[arg(long, default_value = "/etc/beemesh/machineplane")]
     pub key_dir: String,
@@ -88,7 +81,6 @@ impl Default for Cli {
             rest_api_host: "127.0.0.1".to_string(),
             rest_api_port: 3000,
             disable_rest_api: false,
-            disable_machine_api: false,
             disable_scheduling: false,
             node_name: None,
             mock_only_runtime: false,
@@ -96,7 +88,6 @@ impl Default for Cli {
             signing_ephemeral: false,
             kem_ephemeral: false,
             ephemeral_keys: false,
-            api_socket: Some("/run/beemesh/host.sock".to_string()),
             key_dir: "/etc/beemesh/machineplane".to_string(),
             bootstrap_peer: Vec::new(),
             libp2p_quic_port: 0,
@@ -260,59 +251,6 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
         }));
     } else {
         log::info!("REST API disabled");
-    }
-
-    // host api server - for gateway to host accesss
-    if !cli.disable_machine_api {
-        if let Some(socket_path) = cli.api_socket.clone() {
-            // Ensure parent directory exists for the UDS socket. If we cannot create it,
-            // log and skip starting the host API rather than causing the whole process to exit.
-            let socket = socket_path.clone();
-            let mut start_uds = true;
-            if let Some(parent) = std::path::Path::new(&socket).parent() {
-                if !parent.exists() {
-                    match std::fs::create_dir_all(parent) {
-                        Ok(_) => {
-                            // set permissive dir perms if possible
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                let _ = std::fs::set_permissions(
-                                    parent,
-                                    std::fs::Permissions::from_mode(0o755),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "could not create parent dir for UDS {}: {}. Skipping host API.",
-                                parent.display(),
-                                e
-                            );
-                            start_uds = false;
-                        }
-                    }
-                }
-            }
-
-            if start_uds {
-                // remove stale socket file if present
-                let _ = std::fs::remove_file(&socket);
-                let app2 = axum::Router::new(); // Empty UDS API (hostapi removed)
-                let socket_clone = socket.clone();
-                handles.push(tokio::spawn(async move {
-                    // bind a unix domain socket and serve the axum app on it
-                    match tokio::net::UnixListener::bind(&socket_clone) {
-                        Ok(listener) => {
-                            if let Err(e) = axum::serve(listener, app2.into_make_service()).await {
-                                log::error!("axum UDS server error: {}", e);
-                            }
-                        }
-                        Err(e) => log::error!("failed to bind UDS {}: {}", socket_clone, e),
-                    }
-                }));
-            }
-        }
     }
 
     // Prepend libp2p handle so caller can decide how to await
