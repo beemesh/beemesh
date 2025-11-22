@@ -1,9 +1,8 @@
-use crate::capacity::{CapacityCheckResult, ResourceRequest};
 use crate::messages::constants::{SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
 use crate::messages::machine;
 use crate::network::{ApplyCodec, DeleteCodec, HandshakeCodec};
 use crate::network::{capacity, control, utils};
-use crate::scheduler::{get_global_capacity_verifier, remove_workloads_by_manifest_id};
+use crate::scheduler::remove_workloads_by_manifest_id;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{PeerId, autonat, gossipsub, identify, kad, relay, request_response};
 use log::{debug, error, info, warn};
@@ -154,13 +153,6 @@ pub fn gossipsub_message(
             }
         };
 
-        let resource_request = ResourceRequest::new(
-            Some(cap_req.cpu_milli),
-            Some(cap_req.memory_bytes),
-            Some(cap_req.storage_bytes),
-            cap_req.replicas,
-        );
-
         info!(
             "libp2p: received capreq id={} manifest_id={} from peer={} payload_bytes={}",
             orig_request_id,
@@ -169,86 +161,15 @@ pub fn gossipsub_message(
             message.data.len()
         );
 
-        let verifier = get_global_capacity_verifier();
-
-        // Perform synchronous capacity check using cached resources.
-        let request_id_for_check = orig_request_id.clone();
-        let verifier_for_check = verifier.clone();
-        let resource_request_for_check = resource_request.clone();
-        let check_handle = tokio::runtime::Handle::current();
-        let check_result = std::thread::spawn(move || {
-            check_handle.block_on(verifier_for_check.verify_capacity(&resource_request_for_check))
-        })
-        .join()
-        .unwrap_or_else(|_| {
-            warn!(
-                "libp2p: capacity check thread panicked for request_id={}",
-                request_id_for_check
-            );
-            CapacityCheckResult {
-                has_capacity: false,
-                rejection_reason: Some("internal error".to_string()),
-                available_cpu_milli: 0,
-                available_memory_bytes: 0,
-                available_storage_bytes: 0,
-            }
-        });
-
-        if !check_result.has_capacity {
-            info!(
-                "libp2p: capacity check failed for request_id={} manifest_id={} reason={:?}",
-                orig_request_id, manifest_id, check_result.rejection_reason
-            );
-            return;
-        }
-
-        // Reserve resources for a short period to back the bid.
-        let reserve_request_id = orig_request_id.clone();
-        let reserve_manifest_id = manifest_id.clone();
-        let verifier_for_reserve = verifier.clone();
-        let resource_request_for_reserve = resource_request.clone();
-        let reserve_handle = tokio::runtime::Handle::current();
-        let reserve_outcome = std::thread::spawn(move || {
-            reserve_handle.block_on(verifier_for_reserve.reserve_capacity(
-                &reserve_request_id,
-                Some(reserve_manifest_id.as_str()),
-                &resource_request_for_reserve,
-            ))
-        })
-        .join();
-
-        match reserve_outcome {
-            Ok(Ok(())) => {
-                info!(
-                    "libp2p: reserved resources for request_id={} manifest_id={}",
-                    orig_request_id, manifest_id
-                );
-            }
-            Ok(Err(err)) => {
-                warn!(
-                    "libp2p: failed to reserve resources for request_id={} manifest_id={}: {}",
-                    orig_request_id, manifest_id, err
-                );
-                return;
-            }
-            Err(_) => {
-                warn!(
-                    "libp2p: reservation thread panicked for request_id={} manifest_id={}",
-                    orig_request_id, manifest_id
-                );
-                return;
-            }
-        }
-
         let reply = capacity::compose_capacity_reply(
             "gossipsub",
             &orig_request_id,
             &responder_peer,
             |params| {
                 params.ok = true;
-                params.cpu_milli = check_result.available_cpu_milli;
-                params.memory_bytes = check_result.available_memory_bytes;
-                params.storage_bytes = check_result.available_storage_bytes;
+                params.cpu_milli = cap_req.cpu_milli;
+                params.memory_bytes = cap_req.memory_bytes;
+                params.storage_bytes = cap_req.storage_bytes;
             },
         );
         let payload_len = reply.payload.len();

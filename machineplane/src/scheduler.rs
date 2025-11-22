@@ -98,8 +98,7 @@ impl Scheduler {
 
                 let replicas = std::cmp::max(1, tender.max_parallel_duplicates);
 
-                // 1. Evaluate Fit (Capacity Check)
-                // TODO: Connect to CapacityVerifier
+                // 1. Evaluate Fit
                 let capacity_score = 1.0; // Placeholder: assume perfect fit for now
 
                 // 2. Calculate Bid Score
@@ -369,7 +368,6 @@ mod runtime_integration {
     //! and the new workload manager system. It updates the apply message handler to use
     //! the runtime engines and provider announcement system.
 
-    use crate::capacity::CapacityVerifier;
     use crate::messages::machine;
     use crate::messages::types::ApplyRequest;
     use crate::network::behaviour::MyBehaviour;
@@ -387,10 +385,6 @@ mod runtime_integration {
     /// Global runtime registry for all available engines
     static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
         Lazy::new(|| Arc::new(RwLock::new(None)));
-
-    /// Global capacity verifier for resource checks
-    static CAPACITY_VERIFIER: Lazy<Arc<CapacityVerifier>> =
-        Lazy::new(|| Arc::new(CapacityVerifier::new()));
 
     /// Node-local cache mapping manifest IDs to owner public keys.
     static MANIFEST_OWNER_MAP: Lazy<RwLock<HashMap<String, Vec<u8>>>> =
@@ -433,13 +427,6 @@ mod runtime_integration {
             *global_registry = Some(registry);
         }
 
-        // Initialize capacity verifier with system resources
-        info!("Initializing capacity verifier");
-        let verifier = get_global_capacity_verifier();
-        if let Err(e) = verifier.update_system_resources().await {
-            warn!("Failed to update system resources: {}", e);
-        }
-
         info!("Runtime registry initialized successfully");
         Ok(())
     }
@@ -478,11 +465,6 @@ mod runtime_integration {
         }
     }
 
-    /// Get access to the global capacity verifier
-    pub fn get_global_capacity_verifier() -> Arc<CapacityVerifier> {
-        Arc::clone(&CAPACITY_VERIFIER)
-    }
-
     /// Enhanced apply message handler that uses the workload manager
     pub async fn handle_apply_message_with_podman_manager(
         message: request_response::Message<Vec<u8>, Vec<u8>>,
@@ -518,26 +500,6 @@ mod runtime_integration {
                                     false,
                                     "unknown",
                                     "missing manifest id",
-                                );
-                                let _ = swarm
-                                    .behaviour_mut()
-                                    .apply_rr
-                                    .send_response(channel, error_response);
-                                return;
-                            }
-
-                            let reservation_ok = get_global_capacity_verifier()
-                                .has_active_reservation_for_manifest(manifest_id)
-                                .await;
-                            if !reservation_ok {
-                                warn!(
-                                    "Apply request for manifest_id={} from peer={} without prior reservation",
-                                    manifest_id, peer
-                                );
-                                let error_response = machine::build_apply_response(
-                                    false,
-                                    manifest_id,
-                                    "no active capacity reservation",
                                 );
                                 let _ = swarm
                                     .behaviour_mut()
