@@ -16,23 +16,6 @@ use machineplane::Cli;
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 
-fn make_standard_node_clis() -> Vec<Cli> {
-    let cli1 = make_test_cli(3000, vec![], 4001);
-    let cli2 = make_test_cli(
-        3100,
-        vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
-        4002,
-    );
-
-    let bootstrap_peers = vec![
-        "/ip4/127.0.0.1/udp/4001/quic-v1".to_string(),
-        "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
-    ];
-    let cli3 = make_test_cli(3200, bootstrap_peers, 0);
-
-    vec![cli1, cli2, cli3]
-}
-
 /// Prepare logging and environment for mock runtime tests.
 pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
     setup_cleanup_hook();
@@ -45,8 +28,21 @@ pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
 /// Build standard three-node fabric configuration.
 /// Returns a guard that shuts down nodes when dropped.
 pub async fn start_fabric_nodes() -> NodeGuard {
-    let clis = make_standard_node_clis();
-    start_nodes(clis, Duration::from_secs(1)).await
+    // Start a single bootstrap node first to give it time to initialize.
+    let bootstrap_cli = make_test_cli(3000, vec![], 4001);
+    let mut guard = start_nodes(vec![bootstrap_cli], Duration::from_secs(1)).await;
+
+    // Allow the bootstrap node to settle before connecting peers.
+    sleep(Duration::from_secs(2)).await;
+
+    // Start additional nodes that exclusively use the first node as bootstrap.
+    let secondary_peers = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
+    let cli2 = make_test_cli(3100, secondary_peers.clone(), 4002);
+    let cli3 = make_test_cli(3200, secondary_peers, 0);
+
+    let mut additional_guard = start_nodes(vec![cli2, cli3], Duration::from_secs(1)).await;
+    guard.absorb(&mut additional_guard);
+    guard
 }
 
 /// Fetch peer ids for provided REST API ports.
@@ -275,9 +271,11 @@ pub async fn check_workload_deployment(
         let verification_results = join_all(verification_tasks).await;
         let nodes_with_deployed_workloads: Vec<u16> = verification_results
             .iter()
-            .filter_map(|(port, has_workload, _)| {
-                if *has_workload { Some(*port) } else { None }
-            })
+            .filter_map(
+                |(port, has_workload, _)| {
+                    if *has_workload { Some(*port) } else { None }
+                },
+            )
             .collect();
 
         let nodes_with_content_mismatch: Vec<u16> = verification_results
@@ -311,4 +309,3 @@ pub async fn check_workload_deployment(
         sleep(Duration::from_millis(500)).await;
     }
 }
-

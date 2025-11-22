@@ -67,22 +67,22 @@ async fn test_apply_functionality() {
 
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;
-    let (nodes_with_deployed_workloads, nodes_with_content_mismatch) =
-        check_workload_deployment(
-            &client,
-            &ports,
-            &tender_id,
-            &original_content,
-            &port_to_peer_id,
-            false, // Don't expect modified replicas for single replica test
-            Some(1),
-        )
-        .await;
+    let (nodes_with_deployed_workloads, nodes_with_content_mismatch) = check_workload_deployment(
+        &client,
+        &ports,
+        &tender_id,
+        &original_content,
+        &port_to_peer_id,
+        false, // Don't expect modified replicas for single replica test
+        Some(1),
+    )
+    .await;
 
     // With peer ID filtering, we can now properly verify that only the intended node has the workload
     if nodes_with_deployed_workloads.is_empty() {
         log::warn!(
-            "No nodes reported deployed workloads for tender {} after extended retries", tender_id
+            "No nodes reported deployed workloads for tender {} after extended retries",
+            tender_id
         );
         return;
     }
@@ -196,17 +196,16 @@ async fn test_apply_nginx_with_replicas() {
 
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;
-    let (nodes_with_deployed_workloads, nodes_with_content_mismatch) =
-        check_workload_deployment(
-            &client,
-            &ports,
-            &tender_id,
-            &original_content,
-            &port_to_peer_id,
-            true, // Expect modified replicas=1 for replica distribution test
-            Some(1),
-        )
-        .await;
+    let (nodes_with_deployed_workloads, nodes_with_content_mismatch) = check_workload_deployment(
+        &client,
+        &ports,
+        &tender_id,
+        &original_content,
+        &port_to_peer_id,
+        true, // Expect modified replicas=1 for replica distribution test
+        Some(1),
+    )
+    .await;
 
     // For replicas=3 we still expect broad distribution, but in resource constrained or slow environments we
     // allow tests to proceed as long as at least one node has taken the workload.
