@@ -1,8 +1,9 @@
-name: CI
+name: Machineplane
 
 on:
   pull_request:
     branches: [ "main" ]
+    paths: [ "machineplane/**" ]
 
 env:
   CARGO_TERM_COLOR: always
