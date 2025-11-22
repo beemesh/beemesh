@@ -1,14 +1,39 @@
-# 4. Scheduler (Implementation-Specific Spec)
+# Scheduler Implementation Spec (machineplane/src/scheduler.rs)
 
-This section describes the *current Rust implementation* of the Machineplane scheduler in `machineplane/src/scheduler.rs`. It refines the normative “ephemeral, duplicate-tolerant” scheduling model with concrete data structures, flows, and behaviors.
+This document describes the *actual* scheduler behavior in the `machineplane` crate, with particular focus on `machineplane/src/scheduler.rs` and the end‑to‑end integration tests under `machineplane/tests`.
 
-The scheduler is local to each node and runs in **pull** mode: it subscribes to the scheduler topics, evaluates Tenders, submits Bids, and if selected as a winner, deploys workloads via the runtime integration module.
+It refines the high‑level Machineplane semantics (ephemeral, duplicate‑tolerant scheduling) with concrete data structures, algorithms, and invariants enforced by the current Rust implementation.
 
-## 4.x Scheduler Data Structures
+---
 
-### 4.x.1 Scheduler State
+## 1. Scope
+
+This spec covers:
+
+- The `Scheduler` struct and its bid‑tracking model.
+- Handling of Tenders, Bids, and Scheduler Events on Gossipsub topics.
+- Winner selection and replica distribution behavior.
+- Runtime integration details relevant to scheduling:
+  - Manifest decoding and modification (replicas → 1).
+  - Runtime engine selection.
+  - `DeploymentConfig` construction.
+
+Out of scope:
+
+- Full libp2p behaviour wiring, HTTP API, or CLI details.
+- Workplane consistency behavior (delegated to workloads / other layers).
+- CapacityVerifier internals (only use as implied in scheduler+runtime code).
+
+---
+
+## 2. Core Types and Responsibilities
+
+### 2.1 `Scheduler`
+
+Location: `machineplane/src/scheduler.rs`
 
 ```rust
+/// Scheduler manages the bidding lifecycle
 pub struct Scheduler {
     /// Local node ID (PeerId string)
     local_node_id: String,
@@ -19,11 +44,45 @@ pub struct Scheduler {
 }
 ```
 
-* `local_node_id` **MUST** be the libp2p `PeerId` of the local node (stringified).
-* `active_bids` tracks all Tenders for which this node has entered the bidding process and not yet fully resolved (i.e., not yet finalized selection / timeout / cleanup).
-* `outbound_tx` is a Tokio `mpsc::UnboundedSender<SchedulerCommand>` used to instruct the libp2p network loop to publish messages (`Publish`), perform DHT operations (`PutDHT`), or trigger deployments (`DeployWorkload`).
+**Responsibilities:**
 
-### 4.x.2 BidContext and BidEntry
+- Subscribe to scheduler topics:
+  - `SCHEDULER_TENDERS`
+  - `SCHEDULER_PROPOSALS`
+  - `SCHEDULER_EVENTS`
+- For each incoming Tender:
+  - Evaluate local eligibility (currently stubbed with a fixed capacity score).
+  - Submit a Bid on the proposals topic.
+  - Track all Bids (local + remote) in `active_bids`.
+  - After a fixed selection window, select winners via `select_winners`.
+  - If local node is a winner:
+    - Write a LeaseHint to MDHT.
+    - Instruct runtime integration to deploy the workload locally.
+- For incoming Bids:
+  - Populate/extend the relevant `BidContext`.
+- For incoming Scheduler Events:
+  - Log and react to termination events relating to local deployments.
+
+The scheduler is instantiated via:
+
+```rust
+impl Scheduler {
+    pub fn new(
+        local_node_id: String,
+        outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
+    ) -> Self { /*...*/ }
+}
+```
+
+Callers **MUST** provide:
+
+- `local_node_id`: stringified libp2p `PeerId` of the node.
+- `outbound_tx`: unbounded channel that the main network loop consumes and maps to:
+  - Gossipsub publish calls.
+  - Kademlia `put_record` calls.
+  - Runtime deployment calls.
+
+### 2.2 Bid Tracking Structures
 
 ```rust
 struct BidContext {
@@ -38,19 +97,31 @@ struct BidEntry {
     bidder_id: String,
     score: f64,
 }
+
+#[derive(Clone)]
+struct BidOutcome {
+    bidder_id: String,
+    score: f64,
+}
 ```
 
-* A `BidContext` represents one active Tender:
-  * `tender_id`: globally unique Tender identifier (string from Flatbuffer `Tender.id`).
-  * `manifest_id`: identifier for the workload manifest associated with the tender. In the current implementation this is set to `tender.id` (i.e., same as `tender_id`).
-  * `replicas`: the number of winners required for this tender. In the current implementation this is derived as:
-    * `replicas = max(1, tender.max_parallel_duplicates)`
-    * That is, the implementation **forces a minimum of 1** replica and uses `max_parallel_duplicates` as the effective replica count.
-  * `bids`: a list of `BidEntry` values collected during the selection window. Each `BidEntry` contains:
-    * `bidder_id`: the node’s `PeerId` string.
-    * `score`: a floating-point bid score.
+**Semantics:**
 
-### 4.x.3 SchedulerCommand
+- `BidContext` is **per Tender** (`tender_id`).
+- `manifest_id` is currently derived as `tender.id` (1:1 mapping).
+- `replicas` is the *target number of distinct winners* for this Tender.
+  - Computed as: `replicas = max(1, tender.max_parallel_duplicates)`.
+- `bids` collects the best known bid per node (after normalization, see `select_winners`).
+
+The scheduler stores these contexts in:
+
+```rust
+active_bids: Arc<Mutex<HashMap<String, BidContext>>>
+```
+
+where the key is `tender_id`.
+
+### 2.3 `SchedulerCommand` Channel Contract
 
 ```rust
 #[derive(Debug, Clone)]
@@ -58,7 +129,6 @@ pub enum SchedulerCommand {
     Publish {
         topic: String,
         payload: Vec<u8>,
-        // (implementation includes additional internal fields such as optional DHT key, etc.)
     },
     PutDHT {
         key: Vec<u8>,
@@ -72,436 +142,528 @@ pub enum SchedulerCommand {
 }
 ```
 
-* `Publish`:
-  * Used to publish to Gossipsub topics (`SCHEDULER_TENDERS`, `SCHEDULER_PROPOSALS`, `SCHEDULER_EVENTS`, or others).
-  * `payload` is a serialized Flatbuffers message (Tender, Proposal, Event, etc.).
-* `PutDHT`:
-  * Used to put scheduler- or workload-related metadata into the Kademlia DHT.
-* `DeployWorkload`:
-  * Used to request the runtime integration module to deploy a workload locally.
-  * `manifest_id`: workload manifest identifier (same as `BidContext.manifest_id`).
-  * `manifest_json`: the manifest in JSON/YAML-compatible string form; the runtime module will further process this.
-  * `replicas`: the (local) replica count. For the machineplane scheduler implementation, **this is always 1** per node (see §4.x.7).
+Implementations of the event loop consuming this channel **MUST**:
 
-The network loop is responsible for consuming `SchedulerCommand` messages and mapping them onto libp2p actions and runtime calls.
+- Map `Publish` to Gossipsub publish with the provided `topic` and serialized `payload`.
+- Map `PutDHT` to a Kademlia `put_record` (or equivalent) with arbitrary `key` / `value`.
+- Map `DeployWorkload` to a local deployment request wired into the runtime integration (`runtime_integration::process_manifest_deployment`).
+
+**Current usage from `Scheduler`:**
+
+- `Publish` is used to send Bids (`scheduler-proposals`).
+- `PutDHT` is used to publish a LeaseHint for a winning node.
+- `DeployWorkload` is used by a winning node to trigger local deployment.
 
 ---
 
-## 4.x Scheduler Construction
+## 3. Message Handling
+
+### 3.1 Topic Dispatch
 
 ```rust
-impl Scheduler {
-    pub fn new(
-        local_node_id: String,
-        outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
-    ) -> Self {
-        Self {
-            local_node_id,
-            active_bids: Arc::new(Mutex::new(HashMap::new())),
-            outbound_tx,
-        }
+pub async fn handle_message(
+    &self,
+    topic_hash: &gossipsub::TopicHash,
+    message: &gossipsub::Message,
+) {
+    let tenders = gossipsub::IdentTopic::new(SCHEDULER_TENDERS).hash();
+    let proposals = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS).hash();
+    let events = gossipsub::IdentTopic::new(SCHEDULER_EVENTS).hash();
+
+    if *topic_hash == tenders {
+        self.handle_tender(message).await;
+    } else if *topic_hash == proposals {
+        self.handle_bid(message).await;
+    } else if *topic_hash == events {
+        self.handle_event(message).await;
     }
 }
 ```
 
-* Callers **MUST** provide the local `PeerId` and an `outbound_tx` channel.
-* `active_bids` is created empty and **MUST** be populated only via scheduler methods (Tender/Proposal handlers).
+The node subscribes to all three topics and dispatches to:
 
----
+- `handle_tender` for `SCHEDULER_TENDERS`
+- `handle_bid` for `SCHEDULER_PROPOSALS`
+- `handle_event` for `SCHEDULER_EVENTS`
 
-## 4.x Tender Handling and Bid Submission
+### 3.2 Tender Handling → Local Bid
 
-### 4.x.1 Tender Receive Path
+**Path:** `Scheduler::handle_tender`
+
+Key steps (as implemented):
+
+1. **Deserialize Tender**
+
+   ```rust
+   let tender = machine::root_as_tender(&message.data)?;
+   let tender_id = tender.id.clone();
+   let manifest_id = tender.id.clone();
+   ```
+
+   - On parse failure, log an error and stop.
+
+2. **Derive replica target**
+
+   ```rust
+   let replicas = std::cmp::max(1, tender.max_parallel_duplicates);
+   ```
+
+   - This enforces a **minimum of 1**.
+   - `max_parallel_duplicates` is interpreted as **requested global replicas**.
+
+3. **Evaluate capacity & compute score (stub)**
+
+   ```rust
+   let capacity_score = 1.0; // placeholder, assume perfect fit
+   let my_score = capacity_score * 0.8 + 0.2;
+   ```
+
+   - Capacity evaluation is currently a stub and **MUST** be replaced later with:
+     - real `CapacityVerifier` queries,
+     - network locality,
+     - reliability, etc.
+   - The score is a deterministic function of `capacity_score` for now.
+
+4. **Create `BidContext`**
+
+   The scheduler writes a fresh context for this Tender:
+
+   ```rust
+   bids.insert(
+       tender_id.to_string(),
+       BidContext {
+           tender_id: tender_id.to_string(),
+           manifest_id: manifest_id.clone(),
+           replicas,
+           bids: vec![BidEntry {
+               bidder_id: self.local_node_id.clone(),
+               score: my_score,
+           }],
+       },
+   );
+   ```
+
+   - The initial `bids` vector **always** contains a single local bid entry.
+
+5. **Publish Bid**
+
+   ```rust
+   let now = SystemTime::now()
+       .duration_since(UNIX_EPOCH)
+       .unwrap()
+       .as_millis() as u64;
+
+   let bid_bytes = machine::build_bid(
+       &tender_id,
+       &self.local_node_id,
+       my_score,
+       capacity_score,
+       0.5, // network locality placeholder
+       now,
+       &[], // signature placeholder
+   );
+
+   self.outbound_tx.send(SchedulerCommand::Publish {
+       topic: SCHEDULER_PROPOSALS.to_string(),
+       payload: bid_bytes,
+   })?;
+   ```
+
+   - The Bid includes:
+     - `tender_id`
+     - `node_id` (local peer)
+     - `score`
+     - `capacity_score`
+     - placeholder `network_locality`
+     - timestamp
+     - empty signature (`[]`) at present.
+
+6. **Spawn selection window task**
+
+   ```rust
+   tokio::spawn(async move {
+       sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
+       // ... compute winners & deploy ...
+   });
+   ```
+
+   - `DEFAULT_SELECTION_WINDOW_MS` is defined in `messages::constants` and effectively implements the bid window.
+   - After sleeping, the task:
+     - takes the `BidContext` out of `active_bids`,
+     - calls `select_winners(&ctx, &local_id)`,
+     - logs the outcome,
+     - if the local node is among winners, proceeds with LeaseHint and deployment steps.
+
+### 3.3 Bid Handling
+
+**Path:** `Scheduler::handle_bid`
 
 ```rust
-impl Scheduler {
-    /// Process a Tender message: Evaluate -> Bid
-    async fn handle_tender(&self, message: &gossipsub::Message) {
-        match machine::root_as_tender(&message.data) {
-            Ok(tender) => {
-                let tender_id = tender.id.clone();
-                info!("Received Tender: {}", tender_id);
+async fn handle_bid(&self, message: &gossipsub::Message) {
+    match machine::root_as_bid(&message.data) {
+        Ok(bid) => {
+            let tender_id = bid.tender_id.clone();
+            let bidder_id = bid.node_id.clone();
+            let score = bid.score;
 
-                let manifest_id = tender.id.clone();
-
-                let replicas = std::cmp::max(1, tender.max_parallel_duplicates);
-
-                // 1. Evaluate Fit (Capacity Check)
-                // TODO: Connect to CapacityVerifier
-                let capacity_score = 1.0; // Placeholder: assume perfect fit for now
-
-                // 2. Calculate Bid Score
-                // Score = (ResourceFit * 0.4) + (NetworkLocality * 0.3) + (Reputation * 0.3)
-                // For now, just use random or static for testing
-                let my_score = capacity_score * 0.8 + 0.2; // Simple formula
-
-                // ... create / update BidContext, emit Proposal, etc.
+            // Ignore our own bids (handled locally)
+            if bidder_id == self.local_node_id {
+                return;
             }
-            Err(err) => {
-                error!("Failed to decode Tender: {:?}", err);
-            }
-        }
-    }
-}
-```
 
-**Observed behavior:**
-
-1. **Deserialization**  
-   * The scheduler **MUST** attempt to parse `message.data` as a `Tender` using `machine::root_as_tender`.
-   * On error, the scheduler **MUST** log an error and **MUST NOT** proceed with bidding.
-
-2. **Tender identity and manifest mapping**
-   * `tender_id` and `manifest_id` are set to `tender.id`.
-   * Current implementation assumes a 1:1 mapping between `Tender` and manifest ID via this single ID string.
-
-3. **Replica count derivation**
-   * `replicas` **MUST** be computed as:
-     ```rust
-     let replicas = std::cmp::max(1, tender.max_parallel_duplicates);
-     ```
-   * If `max_parallel_duplicates` is 0 or negative, the effective `replicas` is 1.
-
-4. **Capacity evaluation and score**
-   * Current implementation sets:
-     ```rust
-     let capacity_score = 1.0;
-     let my_score = capacity_score * 0.8 + 0.2;
-     ```
-   * This is a placeholder: future implementations **MAY** plug in real capacity, locality, and reputation scoring, but **MUST** still produce a `score: f64` for `BidEntry`.
-
-5. **BidContext creation / update**
-   * For a new Tender:
-     * A new `BidContext` **MUST** be created with:
-       * `tender_id`
-       * `manifest_id`
-       * `replicas`
-       * empty `bids` list initially, then eventually populated.
-   * For an existing Tender:
-     * The same `BidContext` is re-used and **MUST** be updated with any newly received bids.
-
-6. **Bid submission**
-   * The scheduler **MUST** publish a proposal/bid to `SCHEDULER_PROPOSALS` via `SchedulerCommand::Publish`.
-   * The payload **MUST** contain the local node ID and `my_score`.
-
----
-
-## 4.x Winner Selection
-
-### 4.x.1 Selection Function
-
-```rust
-fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> {
-    // Implementation at scheduler.rs: ... (hidden in snippet)
-}
-```
-
-* `select_winners`:
-  * Takes a `BidContext` and `local_node_id`.
-  * Returns a **vector of winners** (`BidOutcome`), honoring:
-    * `context.replicas` as the maximum number of winners.
-    * **Uniqueness of winners**: each winner corresponds to a distinct bidder.
-    * **Special handling for the local node**: the local node is considered only once in the winners list even if there are multiple replicas.
-
-From the tests:
-
-```rust
-#[test]
-fn selects_unique_winners_for_multiple_replicas() {
-    /*...*/
-}
-
-#[test]
-fn local_node_only_selected_once_even_with_multiple_replicas() {
-    /*...*/
-}
-```
-
-The tests enforce:
-
-1. **Unique winners per Tender**
-   * When `replicas > 1` and multiple bids are present, the selected winners **MUST** all have distinct `bidder_id`.
-   * There **MUST NOT** be duplicates in the returned `Vec<BidOutcome>` for the same `tender_id`.
-
-2. **Local node uniqueness**
-   * Even if the Tender requires multiple replicas, the local node (`local_node_id`) **MUST** appear at most once in the winners list.
-   * This enforces the invariant that a single node deploys at most one replica for a given Tender.
-
-3. **Sorting / prioritization**
-   * Although not fully exposed in the snippets, the implementation **MUST** effectively:
-     * Sort bids descending by `score`.
-     * Choose the top `replicas` bidders, applying the uniqueness and local-node-only-once rules above.
-
-`BidOutcome` (not fully shown) encapsulates at least the selected `bidder_id` and the decision for whether the local node should deploy.
-
----
-
-## 4.x Runtime Integration and Deployment
-
-The runtime integration module is private to the scheduler, but re-exported for use:
-
-```rust
-// ---------------------------------------------------------------------------
-pub use runtime_integration::*;
-
-// ---------------------------------------------------------------------------
-// Runtime integration and apply handling (merged from run.rs)
-// ---------------------------------------------------------------------------
-
-mod runtime_integration {
-    //! Workload Integration Module
-    // ...
-}
-```
-
-### 4.x.1 Single-Replica Manifest Adaptation
-
-The runtime module includes:
-
-```rust
-/// Modify the manifest to set replicas=1 for single-node deployment
-/// Each node in the fabric will deploy one replica of the workload
-fn modify_manifest_replicas(
-    manifest_content: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let manifest_str = String::from_utf8_lossy(manifest_content);
-
-    // Try to parse as YAML/JSON and modify replicas field
-    if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&manifest_str) {
-        // Check for spec.replicas field (Kubernetes-style)
-        if let Some(spec) = doc.get_mut("spec") {
-            if let Some(spec_map) = spec.as_mapping_mut() {
-                spec_map.insert(
-                    serde_yaml::Value::String("replicas".to_string()),
-                    serde_yaml::Value::Number(serde_yaml::Number::from(1)),
+            let mut bids = self.active_bids.lock().unwrap();
+            if let Some(ctx) = bids.get_mut(&tender_id) {
+                info!(
+                    "Recorded bid for tender {}: {:.2} from {}",
+                    tender_id, score, bidder_id
                 );
+                ctx.bids.push(BidEntry {
+                    bidder_id: bidder_id.to_string(),
+                    score,
+                });
             }
         }
-        // Check for top-level replicas field
-        // ...
+        Err(e) => error!("Failed to parse Bid message: {}", e),
     }
-    // ...
 }
 ```
 
-**Behavior:**
+**Semantics:**
 
-* Before deployment on a given node, the manifest content **MUST** be transformed such that:
-  * `spec.replicas` (Kubernetes-style) is set to `1`, **if present**.
-  * If `spec.replicas` is not present but a top-level `replicas` field exists, that field **MUST** be set to `1`.
-* If parsing fails (non-YAML/JSON manifest), the function **MAY** return an error; the caller **MUST** handle it as deployment failure.
+- Remote Bids (`node_id != local_node_id`) for a known Tender are appended to the corresponding `BidContext.bids`.
+- Local Bids published by this node’s scheduler are **ignored** here and only present via the initial entry added in `handle_tender`.
+- Bids received **after** the context has been removed (i.e. after selection window elapses and `remove(tender_id)` is called) are effectively ignored.
 
-This is validated by:
+### 3.4 Event Handling
+
+**Path:** `Scheduler::handle_event`
 
 ```rust
-#[test]
-fn test_deployment_config_creation() {
-    // This would require creating a mock ApplyRequest
-    let config = DeploymentConfig::default();
-    assert_eq!(config.replicas, 1);
-    assert!(config.env.is_empty());
+async fn handle_event(&self, message: &gossipsub::Message) {
+    match machine::root_as_scheduler_event(&message.data) {
+        Ok(event) => {
+            let tender_id = event.tender_id.clone();
+            info!(
+                "Received Scheduler Event for tender {}: {:?}",
+                tender_id, event.event_type
+            );
+
+            if event.node_id == self.local_node_id {
+                use crate::messages::types::EventType;
+
+                if matches!(
+                    event.event_type,
+                    EventType::Cancelled | EventType::Preempted | EventType::Failed
+                ) {
+                    info!(
+                        "Received termination event for locally deployed tender {}",
+                        tender_id
+                    );
+                }
+            }
+        }
+        Err(e) => error!("Failed to parse SchedulerEvent message: {}", e),
+    }
 }
 ```
 
-and the integration test:
+**Semantics:**
 
-```rust
-/// 2. The deployed manifests on each node have `replicas: 1` (since the scheduler distributes single replicas).
-#[serial]
-#[tokio::test]
-async fn test_apply_nginx_with_replicas() {
-    // ...
-}
-```
-
-Therefore:
-
-* **Normative behavior for the scheduler + runtime integration:**
-  * If a manifest is applied with `replicas: N` (e.g. `3`), and the Tender is scheduled across `N` nodes:
-    * Each node receives a manifest whose replica count is **forced to 1**.
-    * Exactly `N` distinct nodes are selected (subject to availability and bidding), each deploying a single replica.
-
-### 4.x.2 DeploymentConfig Defaults
-
-`DeploymentConfig::default()` must yield:
-
-* `replicas == 1`
-* `env` is empty (`env.is_empty()`)
-
-The runtime module **MUST** interpret omitted replica counts as 1 and not attempt to deploy multiple replicas on a single node unless explicitly configured otherwise.
+- The scheduler currently only **logs** events.
+- For events where `event.node_id == local_node_id` and type is `Cancelled | Preempted | Failed`:
+  - The scheduler logs that a local deployment has been terminated.
+- There is currently **no** automatic restart or re‑bidding triggered here; higher‑level logic or future scheduler extensions are expected to handle retries.
 
 ---
 
-## 4.x Manifest Content Decoding
+## 4. Winner Selection Algorithm
 
-A helper in the scheduler / runtime path handles manifest content that may be either base64-encoded or plain text.
+**Function:** `select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome>`
+
+**Key steps (from source + tests):**
+
+1. **Deduplicate per node, keeping best score**
+
+   ```rust
+   let mut best_by_node: HashMap<String, BidEntry> = HashMap::new();
+
+   for bid in &context.bids {
+       let entry = best_by_node
+           .entry(bid.bidder_id.clone())
+           .or_insert_with(|| bid.clone());
+
+       if bid.score > entry.score {
+           *entry = bid.clone();
+       }
+   }
+   ```
+
+   - If a node submits multiple Bids, only the highest score is kept.
+
+2. **Sort descending by score**
+
+   ```rust
+   let mut bids: Vec<BidEntry> = best_by_node.into_values().collect();
+   bids.sort_by(|a, b| {
+       b.score
+           .partial_cmp(&a.score)
+           .unwrap_or(std::cmp::Ordering::Equal)
+   });
+   ```
+
+3. **Select up to `replicas` distinct winners, with local‑node special rule**
+
+   ```rust
+   let mut selected_nodes = HashSet::new();
+   let mut outcomes = Vec::new();
+
+   for bid in bids.into_iter() {
+       if outcomes.len() as u32 >= context.replicas {
+           break;
+       }
+
+       // Enforce that the local node can never be selected for more than one replica
+       if bid.bidder_id == local_node_id && selected_nodes.contains(local_node_id) {
+           continue;
+       }
+
+       if selected_nodes.insert(bid.bidder_id.clone()) {
+           outcomes.push(BidOutcome {
+               bidder_id: bid.bidder_id,
+               score: bid.score,
+           });
+       }
+   }
+   ```
+
+**Invariants (enforced by tests):**
+
+- For `replicas = N` and multiple unique bidders:
+  - The winners vector **MUST** have length `<= N`.
+  - Winners **MUST** be unique by `bidder_id`.
+- The local node (`local_node_id`) **MUST NOT** appear more than once in `outcomes`, even if `replicas > 1` and multiple high‑scoring bids came from the local node.
 
 From tests:
 
 ```rust
 #[test]
-fn decode_manifest_content_handles_base64_and_plain() {
-    /*...*/
-}
+fn selects_unique_winners_for_multiple_replicas() { /* ... */ }
+
+#[test]
+fn local_node_only_selected_once_even_with_multiple_replicas() { /* ... */ }
 ```
 
-**Required behavior:**
-
-* If the manifest content is valid base64, the function **MUST** decode it and use the decoded bytes as the manifest.
-* If decoding as base64 fails:
-  * The implementation **MUST** treat the original bytes as plain text manifest content.
-* This ensures that both:
-  * `content` fields encoded as base64, and
-  * raw YAML/JSON strings
-  are accepted by the scheduler/runtimes.
+This implements the spec’s “distribute replicas across nodes” semantics: **a node deploys at most one replica of a given Tender**.
 
 ---
 
-## 4.x Integration with Apply Flow
+## 5. LeaseHint & Deployment Trigger (Winner Path)
 
-The `machineplane/tests/integration_test_apply.rs` defines how the scheduler behaves end-to-end.
+Inside the selection‑window task in `handle_tender`, once winners are computed:
 
-Example:
+1. The `BidContext` is removed from `active_bids`.
+2. If `winners` contains this node’s `local_id`:
+   - Log: “WON BID for tender …”
+   - **Step 1**: publish a LeaseHint to DHT.
+   - **Step 2**: trigger `DeployWorkload` via `SchedulerCommand`.
+
+### 5.1 LeaseHint publication
 
 ```rust
-/// Tests the apply functionality with multiple replicas.
-///
-/// This test verifies that:
-/// 1. A manifest specifying `replicas: 3` is distributed to 3 different nodes.
-/// 2. The deployed manifests on each node have `replicas: 1` (since the scheduler distributes single replicas).
-#[serial]
-#[tokio::test]
-async fn test_apply_nginx_with_replicas() {
-    // ...
-    // Read the original manifest content for verification
-    let original_content = tokio::fs::read_to_string(manifest_path.clone())
-        .await
-        .expect("Failed to read nginx_with_replicas manifest file for verification");
+let lease_hint = machine::build_lease_hint(
+    &tender_id_clone,
+    &local_id,
+    1.0,   // score (currently constant here)
+    30000, // ttl_ms (note: currently 30s in code; spec suggests 3s)
+    0,     // nonce
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64,
+    &[], // signature
+);
 
-    let tender_id = apply_manifest_via_kube_api(&client, ports[0], &manifest_path)
-        .await
-        .expect("kubectl apply should succeed for nginx_with_replicas");
-
-    // Wait for direct delivery and deployment to complete
-    sleep(Duration::from_secs(5)).await;
-
-    // Get peer IDs and check workload deployment
-    let port_to_peer_id = get_peer_ids(&client, &ports).await;
-    // ...
-}
+outbound_tx.send(SchedulerCommand::PutDHT {
+    key: format!("lease:{}", tender_id_clone).into_bytes(),
+    value: lease_hint,
+})?;
 ```
 
-and:
+**Implementation notes / gaps vs spec:**
+
+- TTL is currently hardcoded to `30000` ms (30s); the normative spec suggests `3000` ms for LeaseHints.
+- Signature is currently empty; future implementation **MUST** sign LeaseHints.
+
+### 5.2 Deployment trigger
 
 ```rust
-// Verify that all 3 nodes are different (should be all available nodes)
-let mut sorted_nodes = nodes_with_deployed_workloads.clone();
-sorted_nodes.sort();
-let mut expected_nodes = ports.clone();
-expected_nodes.sort();
+let manifest_id = manifest_id_opt.unwrap_or_else(|| tender_id_clone.clone());
+
+outbound_tx.send(SchedulerCommand::DeployWorkload {
+    manifest_id,
+    manifest_json: manifest_json.clone(),
+    replicas: 1,
+})?;
+```
+
+- The scheduler **always** requests `replicas: 1` for the local deployment request, regardless of the global replicas requested by the Tender.
+- Combined with the winner selection invariant, this ensures:
+  - At most one replica per node.
+  - Up to `replicas` distinct nodes (where `replicas = max(1, max_parallel_duplicates)`).
+
+---
+
+## 6. Runtime Integration Behavior (Scheduling‑Relevant Pieces)
+
+The scheduler re‑exports `runtime_integration::*`. Key behaviors that matter for the scheduler’s semantics are:
+
+### 6.1 Manifest Content Decoding
+
+**Function:** `decode_manifest_content(manifest_json: &str) -> Vec<u8>`
+
+Behavior (validated by tests):
+
+- Attempt to base64‑decode `manifest_json` using `STANDARD` base64.
+- If decoding succeeds **and** the decoded bytes are valid UTF‑8:
+  - Return decoded bytes.
+- If decoding fails or the decoded bytes are not valid UTF‑8:
+  - Fall back to `manifest_json.as_bytes()`.
+
+This lets upstream callers provide either:
+
+- raw YAML/JSON strings, or
+- base64‑encoded YAML/JSON content.
+
+### 6.2 Manifest Replica Rewriting
+
+**Function:** `modify_manifest_replicas(manifest_content: &[u8]) -> Result<Vec<u8>, Box<dyn Error>>`
+
+Behavior:
+
+- Interpret `manifest_content` as UTF‑8 and parse as `serde_yaml::Value`.
+- If parsing as YAML succeeds:
+  - If `.spec.replicas` exists:
+    - Set it to `1`.
+  - Else, if a top‑level `replicas` key exists:
+    - Set that to `1`.
+  - Serialize the updated document back to YAML bytes.
+  - Log that the manifest was modified.
+- If parsing fails:
+  - Log a warning.
+  - Return the original bytes unchanged.
+
+This ensures that **each node** that wins for a Tender deploys **one replica**, regardless of the original manifest’s `replicas` field.
+
+### 6.3 DeploymentConfig Defaults
+
+`DeploymentConfig::default()` (as tested) has:
+
+- `replicas == 1`
+- `env.is_empty()`
+
+`create_deployment_config(apply_req: &ApplyRequest)` uses:
+
+- `config.replicas = apply_req.replicas`
+- Adds `BEEMESH_OPERATION_ID` to `env` if `operation_id` is non‑empty.
+
+For workloads scheduled via the scheduler (as opposed to direct apply), the driving code ensures that:
+
+- Manifest replicas are forced to `1` via `modify_manifest_replicas`.
+- The scheduler’s `DeployWorkload` uses `replicas: 1`.
+
+### 6.4 Engine Selection
+
+**Function:** `select_runtime_engine(manifest_content: &[u8]) -> Result<String, Box<dyn Error>>`
+
+Key behavior:
+
+- Parse manifest as YAML if possible.
+- If `.metadata.annotations["beemesh.io/runtime-engine"]` exists:
+  - Use that engine name.
+- Otherwise:
+  - Detect Kubernetes kinds (`Pod`, `Deployment`, …) or Compose (`services` + `version`), but these are hints only.
+- Query `RUNTIME_REGISTRY` for available engines via `check_available_engines()`.
+- Prefer engines in order:
+  1. `"podman"` if available,
+  2. `"docker"` if available,
+  3. `"mock"` if available.
+- If no engines are available:
+  - Return error `"No suitable runtime engine available"`.
+
+The scheduler itself is agnostic to the engine name; it only cares that deployment completes or fails, so it can log and participate in events.
+
+---
+
+## 7. End‑to‑End Replica Distribution Guarantees
+
+Integration test: `machineplane/tests/integration_test_apply.rs::test_apply_nginx_with_replicas`
+
+This test encodes the following effective guarantees:
+
+1. A manifest with `replicas: 3` (e.g. `nginx_with_replicas.yml`) is applied.
+2. After the scheduler and runtime run:
+   - Exactly 3 nodes (`ports`) have a deployed workload for the Tender ID.
+   - These 3 nodes are **all distinct**.
+   - On each node, the deployed manifest content is consistent with the original manifest except for the expected replica handling.
+
+The expectations explicitly state:
+
+> 2. The deployed manifests on each node have `replicas: 1` (since the scheduler distributes single replicas).
+
+and assert:
+
+```rust
+assert_eq!(
+    nodes_with_deployed_workloads.len(),
+    3,
+    "Expected exactly 3 nodes to have workload deployed (replicas=3)..."
+);
+
 assert_eq!(
     sorted_nodes, expected_nodes,
-    "Expected workloads to be deployed on all 3 nodes {:?}, but found on nodes {:?}",
-    expected_nodes, sorted_nodes
+    "Expected workloads to be deployed on all 3 nodes..."
 );
 ```
 
-**Implications:**
+Thus, the **implementation‑level scheduling spec** is:
 
-1. **Global distribution of replicas**
-   * If a manifest specifies `replicas: N` and there are at least `N` nodes:
-     * The scheduler **MUST** arrange so that exactly `N` distinct nodes deploy the workload (assuming they all bid and are eligible).
-   * On each node, the manifest as deployed **MUST** have `replicas: 1`.
-
-2. **Uniqueness of scheduling**
-   * The scheduler’s winner-selection and runtime integration **MUST** be consistent with:
-     * Each selected node gets at most one replica for the Tender.
-     * The sum of nodes with successful deployment == requested `replicas`.
-
-3. **Direct delivery and timeout**
-   * The tests allow up to ~5 seconds for deployment after applying via Kubernetes API, which in practice covers:
-     * Tender creation and gossipsub broadcast.
-     * Bidding and winner selection.
-     * Local deployment through the runtime.
-
-The Gherkin spec fragment:
-
-```gherkin
-When deployment does not complete within deploy_timeout_ms
-Then the node MUST publish Event{Failed}
-And nodes MAY re-enter Claiming for T after LeaseHint expiry
-```
-
-maps to the implementation:
-* Nodes **MUST** enforce a deployment timeout (currently 10 seconds by default via config: `deploy_timeout_ms: 10000`).
-* On timeout, they **MUST** publish `Event{Failed}` to `SCHEDULER_EVENTS` and **MAY** re-enter claiming/bidding after the lease TTL + skew window.
+- For a Tender whose associated manifest requests `replicas = N` and is applied into a fabric with at least `N` eligible nodes:
+  - The scheduler **MUST** converge to `N` distinct winner nodes.
+  - Each winner node **MUST** deploy exactly 1 replica.
+  - Combined, this results in `N` replicas in the fabric, aligned with the high‑level Machineplane semantics: “distribute replicas across machines, not within a single machine.”
 
 ---
 
-## 4.x Runtime Registry and Engine Selection
+## 8. Notable Deviations / TODOs vs High‑Level Spec
 
-Within `runtime_integration`:
+Based on the implementation, the following are **known gaps** relative to the normative spec in `machineplane-spec.md`:
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+- **LeaseHint TTL**
+  - Implementation uses `ttl_ms = 30000` (30s).
+  - Spec suggests `lease_ttl_ms: 3000` (3s) in config.
+  - TODO: align implementation with configurable TTL.
 
-    #[tokio::test]
-    async fn test_runtime_registry_initialization() {
-        /*...*/
-    }
+- **Message Signing**
+  - Bids and LeaseHints currently use `&[]` for signatures.
+  - Spec requires:
+    - Ed25519 signatures,
+    - replay protection with nonce and timestamp checks.
+  - TODO: integrate real signing and verification into scheduler paths.
 
-    #[tokio::test]
-    async fn test_runtime_engine_selection() {
-        /*...*/
-    }
+- **Capacity‑aware scoring**
+  - `capacity_score` is currently a constant `1.0`.
+  - Spec requires deterministic scoring including:
+    - resource fit,
+    - network locality,
+    - historical reliability,
+    - (optional) price/energy.
+  - TODO: plug in `CapacityVerifier` and metrics.
 
-    #[test]
-    fn test_deployment_config_creation() {
-        // This would require creating a mock ApplyRequest
-        let config = DeploymentConfig::default();
-        assert_eq!(config.replicas, 1);
-        assert!(config.env.is_empty());
-    }
-}
-```
+- **Backoff and retries based on events**
+  - The current `handle_event` only logs.
+  - Spec allows nodes to re‑enter Claiming after LeaseHint expiry and `Event{Failed}`.
+  - TODO: implement reactive behavior to Failed/Cancelled/Preempted events in scheduler.
 
-**Contract:**
-
-* The runtime registry **MUST** be initializable without external state and **MUST** be capable of selecting a runtime engine based on configuration (e.g., Podman vs future runtimes).
-* The selected runtime engine **MUST** honor:
-  * Single-replica deployment per node for each Tender.
-  * Correct decoding of manifest content (base64 or plain).
-  * Adjusted `replicas=1` semantics.
-
----
-
-## 4.x Summary of Invariants Enforced by the Implementation
-
-The current scheduler implementation enforces the following invariants:
-
-1. **Unique winners for a Tender**
-   * For each `tender_id`, at most one `BidOutcome` per `bidder_id`.
-
-2. **At most one replica per node per Tender**
-   * Even if `replicas > 1`, a node (including the local node) is selected at most once and deploys at most one replica.
-
-3. **Global replica distribution**
-   * For a manifest specifying `replicas: N`:
-     * The scheduler aims to distribute these as `N` **single-replica** deployments across `N` distinct nodes.
-
-4. **Single-replica manifest per node**
-   * Deployed manifests on each node **MUST** have `replicas: 1` (via `modify_manifest_replicas` and `DeploymentConfig::default()`).
-
-5. **Robust manifest decoding**
-   * Manifests **MAY** be base64-encoded or plain text; decoding logic **MUST** handle both.
-
-6. **Timeout and failure events**
-   * If deployment does not finish within `deploy_timeout_ms`:
-     * The node **MUST** emit `Event{Failed}`.
-     * Nodes **MAY** re-claim the Tender after lease expiry.
-
-These invariants align the implementation with the high-level normative spec (ephemeral, duplicate-tolerant scheduling) and make behavior testable and predictable.
+Despite these gaps, the **core replica distribution and per‑node single‑replica invariants are enforced** by the current code (and tested).
 
 ---
