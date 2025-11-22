@@ -38,16 +38,16 @@ pub fn gauge_internal(name: &'static str, value: f64) {
 #[macro_export]
 macro_rules! increment_counter {
     ($name:expr) => {
-        $crate::increment_counter_internal($name, 1.0);
+        $crate::metrics::increment_counter_internal($name, 1.0);
     };
     ($name:expr, $value:expr) => {
-        $crate::increment_counter_internal($name, $value as f64);
+        $crate::metrics::increment_counter_internal($name, $value as f64);
     };
 }
 
 #[macro_export]
 macro_rules! gauge {
     ($name:expr, $value:expr) => {
-        $crate::gauge_internal($name, $value as f64);
+        $crate::metrics::gauge_internal($name, $value as f64);
     };
 }

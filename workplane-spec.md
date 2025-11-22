@@ -291,7 +291,7 @@ Suggested metrics:
 * `workplane_leader_changes_total{service_id}`
 * `workplane_consistency_violations_total{service_id, reason}`
 * `workplane_replica_health_total{service_id, status="healthy|unhealthy|degraded"}`
-* `workplane_self_heal_actions_total{service_id, action="restart|scale_up|scale_down"}`
+* `workplane_selfheal_actions_total{service_id, action="restart|scale_up|scale_down"}`
 
 ### **10.3 Logs**
 

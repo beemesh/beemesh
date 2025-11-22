@@ -7,6 +7,9 @@ pub mod selfheal;
 pub mod streams;
 pub mod workload;
 
+// Internal metrics module
+mod metrics;
+
 pub use config::Config;
 pub use manifest::{WorkloadKind, WorkloadManifest};
 pub use workload::Workload;

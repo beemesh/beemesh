@@ -1,7 +1,0 @@
-[package]
-name = "metrics"
-version = "0.21.0"
-edition = "2021"
-
-[lib]
-path = "src/lib.rs"
