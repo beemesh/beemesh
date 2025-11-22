@@ -219,30 +219,14 @@ fn compute_manifest_id(namespace: &str, name: &str, kind: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn desired_replicas(manifest: &Value) -> usize {
-    manifest
-        .get("spec")
-        .and_then(|spec| spec.get("replicas"))
-        .and_then(|replicas| replicas.as_u64())
-        .unwrap_or(1) as usize
-}
-
 async fn schedule_deployment(
     state: &RestState,
     manifest_id: &str,
     manifest: &Value,
 ) -> Result<Vec<String>, StatusCode> {
-    let replicas = std::cmp::max(1, desired_replicas(manifest));
     let manifest_str =
         serde_json::to_string(manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    publish_tender(
-        state,
-        manifest_id,
-        &manifest_str,
-        DEPLOYMENT_KIND,
-        replicas as u32,
-    )
-    .await?;
+    publish_tender(state, manifest_id, &manifest_str, DEPLOYMENT_KIND).await?;
 
     Ok(Vec::new())
 }
@@ -252,7 +236,6 @@ async fn publish_tender(
     manifest_id: &str,
     manifest_str: &str,
     workload_type: &str,
-    max_parallel_duplicates: u32,
 ) -> Result<(), StatusCode> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -267,7 +250,6 @@ async fn publish_tender(
         0,
         workload_type,
         false,
-        max_parallel_duplicates,
         "",
         false,
         timestamp,
@@ -346,7 +328,7 @@ async fn publish_delete_tender(
     let manifest_str =
         serde_json::to_string(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    publish_tender(state, manifest_id, &manifest_str, "delete", 1).await
+    publish_tender(state, manifest_id, &manifest_str, "delete").await
 }
 
 async fn delete_manifest_from_peers(_state: &RestState, manifest_id: &str, peers: &[String]) {

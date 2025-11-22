@@ -87,7 +87,6 @@ pub struct Tender {
     /// "stateless" | "stateful"
     pub workload_type: String,
     pub duplicate_tolerant: bool,
-    pub max_parallel_duplicates: u32,
     pub placement_token: String,
     pub qos_preemptible: bool,
     pub timestamp: u64,
@@ -363,7 +362,6 @@ impl Default for Tender {
             requirements_memory_mb: 0,
             workload_type: "stateless".to_string(),
             duplicate_tolerant: true,
-            max_parallel_duplicates: 1,
             placement_token: String::new(),
             qos_preemptible: false,
             timestamp: 0,
