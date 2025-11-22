@@ -2,10 +2,6 @@ use std::{str::FromStr, time::Duration};
 
 use libp2p::{Multiaddr, multiaddr::Protocol};
 
-
-
-
-
 #[derive(Clone, Debug)]
 pub struct Config {
     pub peer_id_str: Option<String>,
@@ -68,5 +64,3 @@ impl Config {
         suffix.parse().ok()
     }
 }
-
-

@@ -24,7 +24,8 @@ pub struct RPCResponse {
 
 use futures::future::BoxFuture;
 
-type Handler = Arc<dyn Fn(&ServiceRecord, RPCRequest) -> BoxFuture<'static, RPCResponse> + Send + Sync>;
+type Handler =
+    Arc<dyn Fn(&ServiceRecord, RPCRequest) -> BoxFuture<'static, RPCResponse> + Send + Sync>;
 
 static HANDLER: Lazy<Mutex<Option<Handler>>> = Lazy::new(|| Mutex::new(None));
 

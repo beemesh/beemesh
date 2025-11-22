@@ -95,8 +95,6 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
     // initialize logger but don't panic if already initialized
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
-
-
     runtimes::configure_podman_runtime(cli.podman_socket.clone());
 
     // Load or generate libp2p keypair
