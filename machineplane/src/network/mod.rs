@@ -2,8 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::{AsyncReadExt, AsyncWriteExt, stream::StreamExt};
 use libp2p::{
-    PeerId, Swarm, autonat, gossipsub, identify, kad, multiaddr::Multiaddr, multiaddr::Protocol,
-    relay, request_response, swarm::SwarmEvent,
+    PeerId, Swarm, autonat, gossipsub, identify, identity::Keypair, kad, multiaddr::Multiaddr,
+    multiaddr::Protocol, relay, request_response, swarm::SwarmEvent,
 };
 use log::{debug, info, warn};
 use once_cell::sync::{Lazy, OnceCell};
@@ -359,7 +359,15 @@ pub async fn start_libp2p_node(
 
     // Spawn Scheduler
     let local_node_id = swarm.local_peer_id().to_string();
-    let scheduler = crate::scheduler::Scheduler::new(local_node_id.clone(), sched_output_tx);
+    let scheduler_keypair = get_node_keypair()
+        .and_then(|(_, sk)| Keypair::from_protobuf_encoding(&sk).ok())
+        .unwrap_or_else(|| {
+            warn!("Node keypair unavailable; generating ephemeral scheduler keypair");
+            Keypair::generate_ed25519()
+        });
+
+    let scheduler =
+        crate::scheduler::Scheduler::new(local_node_id.clone(), scheduler_keypair, sched_output_tx);
     let scheduler = std::sync::Arc::new(scheduler);
 
     tokio::spawn(async move {
