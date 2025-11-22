@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Result, anyhow};
 use once_cell::sync::Lazy;
 
 use crate::discovery::ServiceRecord;

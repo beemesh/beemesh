@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, StreamExt};
 use libp2p::identity::Keypair;
 use libp2p::kad;
 use libp2p::request_response;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, SwarmBuilder};
+use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
