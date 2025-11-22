@@ -12,7 +12,7 @@ use crate::manifest::{self, WorkloadKind, WorkloadManifest};
 use crate::network::Network;
 use crate::raft::{LeadershipUpdate, RaftManager, RaftRole};
 use crate::selfheal::SelfHealer;
-use crate::streams::{RPCRequest, RPCResponse, register_stream_handler, send_request};
+use crate::streams::{RPCRequest, RPCResponse, register_stream_handler};
 
 pub struct Workload {
     cfg: Config,
@@ -52,36 +52,43 @@ impl Workload {
         let local_peer_id = handler_network.peer_id();
         let leader_state_for_handler = leader_state.clone();
         register_stream_handler(Arc::new(move |remote: &ServiceRecord, req: RPCRequest| {
-            if req.method.eq_ignore_ascii_case("healthz") {
-                let mut body = Map::new();
-                body.insert("remote".to_string(), Value::String(remote.peer_id.clone()));
-                if let Some(pod) = &remote.pod_name {
-                    body.insert("pod".to_string(), Value::String(pod.clone()));
-                }
-                return RPCResponse {
-                    ok: true,
-                    error: None,
-                    body,
-                };
-            }
+            let leader_state = leader_state_for_handler.clone();
+            let handler_network = handler_network.clone();
+            let local_peer_id = local_peer_id.clone();
+            let remote_peer_id = remote.peer_id.clone();
+            let remote_pod = remote.pod_name.clone();
 
-            let leader = leader_state_for_handler
-                .read()
-                .expect("leader state")
-                .clone();
-            let leader_matches = leader
-                .as_ref()
-                .map(|leader_id| leader_id == &local_peer_id)
-                .unwrap_or(false);
-            if req.leader_only && !leader_matches {
-                if let Some(leader_id) = leader {
-                    if let Some(target) = handler_network
-                        .find_service_peers()
-                        .into_iter()
-                        .find(|record| record.peer_id == leader_id)
-                    {
-                        debug!(target = %target.peer_id, method = %req.method, "proxying follower request to leader");
-                        match send_request(&target, req.clone()) {
+            Box::pin(async move {
+                if req.method.eq_ignore_ascii_case("healthz") {
+                    let mut body = Map::new();
+                    body.insert("remote".to_string(), Value::String(remote_peer_id));
+                    if let Some(pod) = remote_pod {
+                        body.insert("pod".to_string(), Value::String(pod));
+                    }
+                    return RPCResponse {
+                        ok: true,
+                        error: None,
+                        body,
+                    };
+                }
+
+                let leader = leader_state
+                    .read()
+                    .expect("leader state")
+                    .clone();
+                let leader_matches = leader
+                    .as_ref()
+                    .map(|leader_id| leader_id == &local_peer_id)
+                    .unwrap_or(false);
+                
+                if req.leader_only && !leader_matches {
+                    if let Some(leader_id) = leader {
+                        // In the new network model, we don't necessarily have the leader's record in discovery cache immediately
+                        // But send_request only needs the peer_id.
+                        // The original code looked up the record to get the peer_id, but we already have the leader_id.
+                        
+                        debug!(target = %leader_id, method = %req.method, "proxying follower request to leader");
+                        match handler_network.send_request(&leader_id, req.clone()).await {
                             Ok(resp) => return resp,
                             Err(err) => {
                                 warn!(error = %err, method = %req.method, "failed to proxy request to leader");
@@ -93,28 +100,26 @@ impl Workload {
                                 };
                             }
                         }
-                    } else {
-                        warn!(leader = %leader_id, "no WDHT record for leader to proxy request");
                     }
+                    crate::increment_counter!("workplane.raft.follower_rejections");
+                    return RPCResponse {
+                        ok: false,
+                        error: Some("not leader".to_string()),
+                        body: Map::new(),
+                    };
                 }
-                crate::increment_counter!("workplane.raft.follower_rejections");
-                return RPCResponse {
-                    ok: false,
-                    error: Some("not leader".to_string()),
-                    body: Map::new(),
-                };
-            }
 
-            let mut body = Map::new();
-            body.insert(
-                "handled_by".to_string(),
-                Value::String(local_peer_id.clone()),
-            );
-            RPCResponse {
-                ok: true,
-                error: None,
-                body,
-            }
+                let mut body = Map::new();
+                body.insert(
+                    "handled_by".to_string(),
+                    Value::String(local_peer_id),
+                );
+                RPCResponse {
+                    ok: true,
+                    error: None,
+                    body,
+                }
+            })
         }));
 
         let mut raft = None;

@@ -23,7 +23,9 @@ pub struct RPCResponse {
     pub body: serde_json::Map<String, serde_json::Value>,
 }
 
-type Handler = Arc<dyn Fn(&ServiceRecord, RPCRequest) -> RPCResponse + Send + Sync>;
+use futures::future::BoxFuture;
+
+type Handler = Arc<dyn Fn(&ServiceRecord, RPCRequest) -> BoxFuture<'static, RPCResponse> + Send + Sync>;
 
 static HANDLER: Lazy<Mutex<Option<Handler>>> = Lazy::new(|| Mutex::new(None));
 
@@ -31,11 +33,19 @@ pub fn register_stream_handler(handler: Handler) {
     *HANDLER.lock().expect("handler lock") = Some(handler);
 }
 
-pub fn send_request(target: &ServiceRecord, request: RPCRequest) -> Result<RPCResponse> {
-    let handler = HANDLER
-        .lock()
-        .expect("handler lock")
-        .clone()
-        .ok_or_else(|| anyhow!("no stream handler registered"))?;
-    Ok(handler(target, request))
+pub async fn handle_request(peer_id: &str, request: RPCRequest) -> RPCResponse {
+    let handler = HANDLER.lock().expect("handler lock").clone();
+    if let Some(h) = handler {
+        let record = ServiceRecord {
+            peer_id: peer_id.to_string(),
+            ..Default::default()
+        };
+        h(&record, request).await
+    } else {
+        RPCResponse {
+            ok: false,
+            error: Some("no handler registered".to_string()),
+            body: Default::default(),
+        }
+    }
 }

@@ -1,3 +1,8 @@
+//! Common helper functions for "Apply" workflow tests.
+//!
+//! This module provides shared utilities for setting up test environments,
+//! starting fabric nodes, and verifying workload deployments.
+
 use env_logger::Env;
 use futures::future::join_all;
 use std::collections::HashMap as StdHashMap;

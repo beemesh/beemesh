@@ -1,20 +1,119 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use futures::StreamExt;
 use libp2p::identity::Keypair;
-use tokio::sync::watch;
+use libp2p::kad::{
+    self, GetRecordOk, Kademlia, KademliaConfig, KademliaEvent, PutRecordOk, QueryId, QueryResult,
+    Quorum, Record, RecordKey, store::MemoryStore,
+};
+use libp2p::request_response::{
+    self, ProtocolSupport, RequestId, RequestResponse, RequestResponseConfig, RequestResponseEvent,
+    RequestResponseMessage,
+};
+use libp2p::swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent};
+use libp2p::{Multiaddr, PeerId, Swarm, Transport};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::discovery::{self, ServiceRecord};
+use crate::streams::{RPCRequest, RPCResponse};
+
+// --- Network Behaviour ---
+
+#[derive(NetworkBehaviour)]
+struct WorkplaneBehaviour {
+    kademlia: Kademlia<MemoryStore>,
+    request_response: RequestResponse<RPCCodec>,
+}
+
+// --- RPC Codec ---
+
+#[derive(Clone)]
+struct RPCCodec;
+
+#[derive(Debug, Clone)]
+struct RPCProtocol;
+
+impl libp2p::request_response::ProtocolName for RPCProtocol {
+    fn protocol_name(&self) -> &[u8] {
+        b"/workplane/rpc/1.0.0"
+    }
+}
+
+#[async_trait::async_trait]
+impl libp2p::request_response::Codec for RPCCodec {
+    type Protocol = RPCProtocol;
+    type Request = RPCRequest;
+    type Response = RPCResponse;
+
+    async fn read_request<T>(
+        &mut self,
+        _: &RPCProtocol,
+        io: &mut T,
+    ) -> std::io::Result<Self::Request>
+    where
+        T: futures::AsyncRead + Unpin + Send,
+    {
+        let mut vec = Vec::new();
+        futures::AsyncReadExt::read_to_end(io, &mut vec).await?;
+        serde_json::from_slice(&vec).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _: &RPCProtocol,
+        io: &mut T,
+    ) -> std::io::Result<Self::Response>
+    where
+        T: futures::AsyncRead + Unpin + Send,
+    {
+        let mut vec = Vec::new();
+        futures::AsyncReadExt::read_to_end(io, &mut vec).await?;
+        serde_json::from_slice(&vec).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _: &RPCProtocol,
+        io: &mut T,
+        req: Self::Request,
+    ) -> std::io::Result<()>
+    where
+        T: futures::AsyncWrite + Unpin + Send,
+    {
+        let data = serde_json::to_vec(&req)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        futures::AsyncWriteExt::write_all(io, &data).await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _: &RPCProtocol,
+        io: &mut T,
+        res: Self::Response,
+    ) -> std::io::Result<()>
+    where
+        T: futures::AsyncWrite + Unpin + Send,
+    {
+        let data = serde_json::to_vec(&res)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        futures::AsyncWriteExt::write_all(io, &data).await
+    }
+}
+
+// --- Network Implementation ---
 
 #[derive(Clone)]
 pub struct Network {
     inner: Arc<NetworkInner>,
+    cmd_tx: mpsc::Sender<NetworkCommand>,
 }
 
 struct NetworkInner {
@@ -22,6 +121,7 @@ struct NetworkInner {
     local_record: RwLock<ServiceRecord>,
     heartbeat: Mutex<Option<HeartbeatHandle>>,
     policy: PolicyEngine,
+    peer_id: PeerId,
 }
 
 struct HeartbeatHandle {
@@ -36,6 +136,26 @@ struct PolicyEngine {
     denied: HashSet<String>,
 }
 
+enum NetworkCommand {
+    PublishRecord {
+        record: ServiceRecord,
+        ttl: Duration,
+    },
+    SendRequest {
+        target: PeerId,
+        request: RPCRequest,
+        reply_tx: oneshot::Sender<Result<RPCResponse>>,
+    },
+    StartListening {
+        addr: Multiaddr,
+        reply_tx: oneshot::Sender<Result<()>>,
+    },
+    Dial {
+        addr: Multiaddr,
+        reply_tx: oneshot::Sender<Result<()>>,
+    },
+}
+
 impl Network {
     pub fn new(cfg: &Config) -> Result<Self> {
         if cfg.private_key.is_empty() {
@@ -47,7 +167,8 @@ impl Network {
 
         let keypair = Keypair::from_protobuf_encoding(&cfg.private_key)
             .context("decode libp2p private key")?;
-        let peer_id = keypair.public().to_peer_id().to_string();
+        let peer_id = keypair.public().to_peer_id();
+        let peer_id_str = peer_id.to_string();
 
         let mut caps = serde_json::Map::new();
         caps.insert(
@@ -70,7 +191,7 @@ impl Network {
             workload_id: cfg.workload_id(),
             namespace: cfg.namespace.clone(),
             workload_name: cfg.workload_name.clone(),
-            peer_id,
+            peer_id: peer_id_str.clone(),
             pod_name: Some(cfg.pod_name.clone()),
             ordinal: cfg.ordinal(),
             addrs: cfg.listen_addrs.clone(),
@@ -82,17 +203,61 @@ impl Network {
             healthy: false,
         };
 
+        // Initialize Swarm
+        let transport = libp2p::tokio_development_transport(keypair.clone())?;
+        
+        // Kademlia
+        let store = MemoryStore::new(peer_id);
+        let kad_config = KademliaConfig::default();
+        let kademlia = Kademlia::with_config(peer_id, store, kad_config);
+
+        // Request-Response
+        let protocols = std::iter::once((RPCProtocol, ProtocolSupport::Full));
+        let rr_config = RequestResponseConfig::default();
+        let request_response = RequestResponse::new(RPCCodec, protocols, rr_config);
+
+        let behaviour = WorkplaneBehaviour {
+            kademlia,
+            request_response,
+        };
+
+        let swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
+
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+
+        // Spawn the event loop
+        tokio::spawn(network_event_loop(swarm, cmd_rx));
+
         Ok(Self {
             inner: Arc::new(NetworkInner {
                 cfg: cfg.clone(),
                 local_record: RwLock::new(record),
                 heartbeat: Mutex::new(None),
                 policy: PolicyEngine::from_config(cfg),
+                peer_id,
             }),
+            cmd_tx,
         })
     }
 
     pub fn start(&self) {
+        // Start listening
+        for addr_str in &self.inner.cfg.listen_addrs {
+            if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+                let (tx, rx) = oneshot::channel();
+                let _ = self.cmd_tx.try_send(NetworkCommand::StartListening { addr, reply_tx: tx });
+                // We don't block on this, just fire and forget for start()
+            }
+        }
+
+        // Connect to bootstrap peers
+        for peer_str in &self.inner.cfg.bootstrap_peer_strings {
+             if let Ok(addr) = peer_str.parse::<Multiaddr>() {
+                 let (tx, rx) = oneshot::channel();
+                 let _ = self.cmd_tx.try_send(NetworkCommand::Dial { addr, reply_tx: tx });
+             }
+        }
+
         if let Err(err) = self.refresh_heartbeat() {
             warn!(error = %err, "failed to publish initial service record");
         }
@@ -138,7 +303,8 @@ impl Network {
         }
 
         let record = self.local_record();
-        discovery::remove(&record.workload_id, &record.peer_id);
+        // In real DHT, we might want to publish a "tombstone" or rely on TTL expiration.
+        // For now, we just stop refreshing.
     }
 
     pub fn update_local_status(&self, healthy: bool, ready: bool) -> Result<()> {
@@ -206,10 +372,29 @@ impl Network {
         Ok(())
     }
 
+    // This now queries the local DHT view (Kademlia store)
+    // Note: In a real Kademlia, we might need to perform a network query (GetRecord).
+    // For simplicity and performance, we can rely on the fact that we are constantly
+    // refreshing/publishing records, so they should propagate.
+    // However, Kademlia doesn't automatically sync everything to everyone.
+    // We might need to periodically query for our workload ID to find peers.
     pub fn find_service_peers(&self) -> Vec<ServiceRecord> {
+        // TODO: Implement actual DHT query or maintain a local cache of discovered peers.
+        // For now, we'll use the discovery module's static map as a fallback/cache if we were keeping it,
+        // but we are replacing it.
+        //
+        // To make this work properly with Kademlia, we should be periodically querying the DHT
+        // for keys like "namespace/workload".
+        //
+        // Since we are replacing the stub, we need to bridge the gap.
+        // For this iteration, let's assume we are using the discovery module as a "cache"
+        // that gets populated by Kademlia events.
+        
         let namespace = self.inner.cfg.namespace.clone();
         let workload = self.inner.cfg.workload_name.clone();
         let local_id = self.inner.cfg.workload_id();
+        
+        // This calls the discovery module which we will update to be just a cache
         discovery::list(&namespace, &workload)
             .into_iter()
             .filter(|record| {
@@ -219,7 +404,7 @@ impl Network {
     }
 
     pub fn peer_id(&self) -> String {
-        self.local_record().peer_id
+        self.inner.peer_id.to_string()
     }
 
     fn refresh_heartbeat(&self) -> Result<()> {
@@ -234,9 +419,11 @@ impl Network {
 
     fn publish_current_record(&self) -> Result<()> {
         let record = self.local_record();
-        if !discovery::put(record.clone(), self.inner.cfg.dht_ttl) {
-            return Err(anyhow!("rejected WDHT update due to stale clock or order"));
-        }
+        let ttl = self.inner.cfg.dht_ttl;
+        
+        let cmd = NetworkCommand::PublishRecord { record, ttl };
+        let _ = self.cmd_tx.try_send(cmd);
+        
         Ok(())
     }
 
@@ -250,6 +437,100 @@ impl Network {
 
     fn take_heartbeat(&self) -> Option<HeartbeatHandle> {
         self.inner.heartbeat.lock().expect("heartbeat lock").take()
+    }
+    
+    pub async fn send_request(&self, target_peer_id: &str, req: RPCRequest) -> Result<RPCResponse> {
+        let peer_id = target_peer_id.parse::<PeerId>()?;
+        let (tx, rx) = oneshot::channel();
+        
+        self.cmd_tx.send(NetworkCommand::SendRequest {
+            target: peer_id,
+            request: req,
+            reply_tx: tx,
+        }).await?;
+        
+        rx.await?
+    }
+}
+
+async fn network_event_loop(
+    mut swarm: Swarm<WorkplaneBehaviour>,
+    mut cmd_rx: mpsc::Receiver<NetworkCommand>,
+) {
+    let mut pending_requests = HashMap::new();
+
+    loop {
+        tokio::select! {
+            event = swarm.select_next_some() => {
+                match event {
+                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::Kademlia(KademliaEvent::OutboundQueryProgressed { result, .. })) => {
+                        match result {
+                            QueryResult::GetRecord(Ok(GetRecordOk::FoundRecord(Record { key, value, .. }))) => {
+                                if let Ok(record) = serde_json::from_slice::<ServiceRecord>(&value) {
+                                    // Update local cache (discovery module)
+                                    // We'll keep discovery::put as a way to update the in-memory cache
+                                    // even though we removed the networking logic from it.
+                                    discovery::put(record, Duration::from_secs(60));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::RequestResponse(RequestResponseEvent::Message { peer, message })) => {
+                        match message {
+                            RequestResponseMessage::Request { request, channel, .. } => {
+                                // Handle incoming RPC
+                                // We need to call the registered handler
+                                let response = crate::streams::handle_request(&peer.to_string(), request).await;
+                                let _ = swarm.behaviour_mut().request_response.send_response(channel, response);
+                            }
+                            RequestResponseMessage::Response { request_id, response } => {
+                                if let Some(tx) = pending_requests.remove(&request_id) {
+                                    let _ = tx.send(Ok(response));
+                                }
+                            }
+                        }
+                    }
+                    SwarmEvent::Behaviour(WorkplaneBehaviourEvent::RequestResponse(RequestResponseEvent::OutboundFailure { request_id, error, .. })) => {
+                        if let Some(tx) = pending_requests.remove(&request_id) {
+                            let _ = tx.send(Err(anyhow!("RPC failed: {:?}", error)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some(cmd) = cmd_rx.recv() => {
+                match cmd {
+                    NetworkCommand::PublishRecord { record, ttl } => {
+                        let key = RecordKey::new(&record.workload_id);
+                        if let Ok(data) = serde_json::to_vec(&record) {
+                            let record = Record {
+                                key,
+                                value: data,
+                                publisher: None,
+                                expires: None, // TODO: Handle TTL
+                            };
+                            let _ = swarm.behaviour_mut().kademlia.put_record(record, Quorum::One);
+                            
+                            // Also update local cache
+                            discovery::put(record.clone(), ttl);
+                        }
+                    }
+                    NetworkCommand::SendRequest { target, request, reply_tx } => {
+                        let request_id = swarm.behaviour_mut().request_response.send_request(&target, request);
+                        pending_requests.insert(request_id, reply_tx);
+                    }
+                    NetworkCommand::StartListening { addr, reply_tx } => {
+                        let res = swarm.listen_on(addr).map(|_| ()).map_err(|e| anyhow!(e));
+                        let _ = reply_tx.send(res);
+                    }
+                    NetworkCommand::Dial { addr, reply_tx } => {
+                         let res = swarm.dial(addr).map(|_| ()).map_err(|e| anyhow!(e));
+                         let _ = reply_tx.send(res);
+                    }
+                }
+            }
+        }
     }
 }
 

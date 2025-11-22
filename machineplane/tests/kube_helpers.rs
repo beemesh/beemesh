@@ -1,9 +1,15 @@
+//! Helper functions for interacting with the Kubernetes-compatible API.
+//!
+//! This module provides functions to simulate `kubectl apply` and `kubectl delete`
+//! by sending HTTP requests to the machineplane's API endpoints.
+
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 use std::path::Path;
 use tokio::fs;
 
+/// Extracts metadata (namespace, name, kind) from a Kubernetes manifest.
 fn manifest_metadata(manifest: &Value) -> Result<(String, String, String)> {
     let metadata = manifest
         .get("metadata")
@@ -31,6 +37,7 @@ fn manifest_metadata(manifest: &Value) -> Result<(String, String, String)> {
     Ok((namespace, name, kind))
 }
 
+/// Computes a deterministic manifest ID based on namespace, name, and kind.
 fn compute_manifest_id(namespace: &str, name: &str, kind: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -42,6 +49,7 @@ fn compute_manifest_id(namespace: &str, name: &str, kind: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Loads and parses a YAML manifest from a file.
 async fn load_manifest(path: &Path) -> Result<Value> {
     let contents = fs::read_to_string(path)
         .await
@@ -51,6 +59,9 @@ async fn load_manifest(path: &Path) -> Result<Value> {
     Ok(manifest)
 }
 
+/// Simulates `kubectl apply` by sending a POST request to the API.
+///
+/// Returns the `manifest_id` on success.
 pub async fn apply_manifest_via_kube_api(
     client: &Client,
     port: u16,
@@ -96,6 +107,10 @@ pub async fn apply_manifest_via_kube_api(
         .ok_or_else(|| anyhow!("apply response missing manifest_id"))
 }
 
+/// Simulates `kubectl delete` by sending a DELETE request to the API.
+///
+/// If `force` is true, it adds query parameters to force immediate deletion.
+/// Returns the `manifest_id` on success.
 pub async fn delete_manifest_via_kube_api(
     client: &Client,
     port: u16,

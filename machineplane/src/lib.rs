@@ -52,9 +52,6 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub ephemeral_keys: bool,
 
-    #[arg(long, default_value = "/run/beemesh/host.sock")]
-    pub api_socket: Option<String>,
-
     /// Directory to store machineplane keypair (default: /etc/beemesh/machineplane)
     #[arg(long, default_value = "/etc/beemesh/machineplane")]
     pub key_dir: String,
@@ -84,7 +81,6 @@ impl Default for Cli {
             signing_ephemeral: false,
             kem_ephemeral: false,
             ephemeral_keys: false,
-            api_socket: Some("/run/beemesh/host.sock".to_string()),
             key_dir: "/etc/beemesh/machineplane".to_string(),
             bootstrap_peer: Vec::new(),
             libp2p_quic_port: 0,
