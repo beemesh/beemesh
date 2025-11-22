@@ -5,14 +5,14 @@ use libp2p::{
     PeerId, Swarm, autonat, gossipsub, identify, identity::Keypair, kad, multiaddr::Multiaddr,
     multiaddr::Protocol, relay, request_response, swarm::SwarmEvent,
 };
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use once_cell::sync::{Lazy, OnceCell};
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, watch};
 
@@ -45,6 +45,17 @@ impl AsRef<str> for ByteProtocol {
 
 #[derive(Clone, Default)]
 pub struct ByteCodec;
+
+fn ensure_handshake_state<'a>(
+    peer: &PeerId,
+    handshake_states: &'a mut std::collections::HashMap<PeerId, HandshakeState>,
+) -> &'a mut HandshakeState {
+    handshake_states.entry(*peer).or_insert(HandshakeState {
+        attempts: 0,
+        last_attempt: Instant::now() - Duration::from_secs(3),
+        confirmed: false,
+    })
+}
 
 #[async_trait]
 impl request_response::Codec for ByteCodec {
@@ -109,6 +120,13 @@ impl request_response::Codec for ByteCodec {
 pub type ApplyCodec = ByteCodec;
 pub type HandshakeCodec = ByteCodec;
 pub type DeleteCodec = ByteCodec;
+
+#[derive(Debug, Clone)]
+struct HandshakeState {
+    attempts: u32,
+    last_attempt: std::time::Instant,
+    confirmed: bool,
+}
 
 pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
     NODE_KEYPAIR.lock().unwrap().clone()
@@ -334,9 +352,8 @@ pub async fn start_libp2p_node(
     mut control_rx: mpsc::UnboundedReceiver<Libp2pControl>,
 ) -> Result<()> {
     use std::collections::HashMap;
-    use tokio::time::Instant;
 
-    let mut handshake_states: HashMap<PeerId, behaviour::HandshakeState> = HashMap::new();
+    let mut handshake_states: HashMap<PeerId, HandshakeState> = HashMap::new();
     let mut handshake_interval = tokio::time::interval(Duration::from_secs(1));
     let mut renew_interval = tokio::time::interval(Duration::from_millis(500));
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(2));
@@ -430,13 +447,50 @@ pub async fn start_libp2p_node(
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(MyBehaviourEvent::HandshakeRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        behaviour::handshake_message_event(message, peer, &mut swarm, &mut handshake_states);
+                        match message {
+                            request_response::Message::Request { request, channel, .. } => {
+                                let response = match crate::messages::machine::decode_handshake(&request) {
+                                    Ok(_) => {
+                                        ensure_handshake_state(&peer, &mut handshake_states).confirmed = true;
+                                        let timestamp = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis() as u64;
+                                        crate::messages::machine::build_handshake(
+                                            rand::random::<u32>(),
+                                            timestamp,
+                                            "beemesh/1.0",
+                                            &peer.to_string(),
+                                        )
+                                    }
+                                    Err(e) => {
+                                        log::error!("libp2p: failed to parse handshake request: {:?}", e);
+                                        crate::messages::machine::build_handshake(0, 0, "", "")
+                                    }
+                                };
+
+                                let _ = swarm
+                                    .behaviour_mut()
+                                    .handshake_rr
+                                    .send_response(channel, response);
+                            }
+                            request_response::Message::Response { response, .. } => {
+                                match crate::messages::machine::decode_handshake(&response) {
+                                    Ok(_) => {
+                                        ensure_handshake_state(&peer, &mut handshake_states).confirmed = true;
+                                    }
+                                    Err(e) => {
+                                        log::error!("libp2p: failed to parse handshake response: {:?}", e);
+                                    }
+                                }
+                            }
+                        }
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::HandshakeRr(request_response::Event::OutboundFailure { peer, error, .. })) => {
-                        behaviour::handshake_outbound_failure(peer, error);
+                        warn!("handshake outbound failure with peer {}: {:?}", peer, error);
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::HandshakeRr(request_response::Event::InboundFailure { peer, error, .. })) => {
-                        behaviour::handshake_inbound_failure(peer, error);
+                        warn!("handshake inbound failure with peer {}: {:?}", peer, error);
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         let local_peer = *swarm.local_peer_id();
@@ -448,21 +502,98 @@ pub async fn start_libp2p_node(
                         future.await;
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::OutboundFailure { peer, error, .. })) => {
-                        behaviour::apply_outbound_failure(peer, error);
+                        warn!("apply outbound failure with peer {}: {:?}", peer, error);
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::InboundFailure { peer, error, .. })) => {
-                        behaviour::apply_inbound_failure(peer, error);
+                        warn!("apply inbound failure with peer {}: {:?}", peer, error);
                     }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        let local_peer = *swarm.local_peer_id();
-                        behaviour::delete_message(message, peer, &mut swarm, local_peer);
+                        match message {
+                            request_response::Message::Request { request, channel, .. } => {
+                                info!("Received delete request from peer={}", peer);
+                                match crate::messages::machine::decode_delete_request(&request) {
+                                    Ok(delete_req) => {
+                                        info!(
+                                            "Delete request - manifest_id={:?} operation_id={:?} force={}",
+                                            &delete_req.manifest_id, &delete_req.operation_id, delete_req.force
+                                        );
+
+                                        let manifest_id = delete_req.manifest_id.clone();
+                                        let operation_id = delete_req.operation_id.clone();
+                                        let force = delete_req.force;
+                                        let requesting_peer = peer.to_string();
+
+                                        tokio::spawn(async move {
+                                            let (success, message, removed_workloads) =
+                                                process_delete_request(&manifest_id, force, &requesting_peer).await;
+
+                                            let _response = crate::messages::machine::build_delete_response(
+                                                success,
+                                                &operation_id,
+                                                &message,
+                                                &manifest_id,
+                                                &removed_workloads,
+                                            );
+
+                                            info!(
+                                                "Delete request processed: success={} message={} removed_workloads={:?}",
+                                                success, message, removed_workloads
+                                            );
+                                        });
+
+                                        let ack_response = crate::messages::machine::build_delete_response(
+                                            true,
+                                            delete_req.operation_id.as_str(),
+                                            "delete request received and processing",
+                                            delete_req.manifest_id.as_str(),
+                                            &[],
+                                        );
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .delete_rr
+                                            .send_response(channel, ack_response);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to parse delete request: {}", e);
+                                        let error_response = crate::messages::machine::build_delete_response(
+                                            false,
+                                            "unknown",
+                                            "invalid delete request format",
+                                            "unknown",
+                                            &[],
+                                        );
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .delete_rr
+                                            .send_response(channel, error_response);
+                                    }
+                                }
+                            }
+                            request_response::Message::Response { response, .. } => {
+                                info!("Received delete response from peer={}", peer);
+                                match crate::messages::machine::decode_delete_response(&response) {
+                                    Ok(delete_resp) => {
+                                        info!(
+                                            "Delete response - ok={} operation_id={:?} message={:?} removed_workloads={:?}",
+                                            delete_resp.ok,
+                                            &delete_resp.operation_id,
+                                            &delete_resp.message,
+                                            Some(delete_resp.removed_workloads.clone())
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to parse delete response: {:?}", e);
+                                    }
+                                }
+                            }
+                        }
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::OutboundFailure { peer, error, .. })) => {
-                        behaviour::delete_outbound_failure(peer, error);
+                        warn!("delete outbound failure with peer {}: {:?}", peer, error);
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::InboundFailure { peer, error, .. })) => {
-                        behaviour::delete_inbound_failure(peer, error);
+                        warn!("delete inbound failure with peer {}: {:?}", peer, error);
                     }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -510,7 +641,7 @@ pub async fn start_libp2p_node(
                         // Ensure we track handshake state and proactively include the peer in our mesh
                         handshake_states
                             .entry(peer_id)
-                            .or_insert(behaviour::HandshakeState {
+                            .or_insert(HandshakeState {
                                 attempts: 0,
                                 // Make the peer immediately eligible for the next handshake tick
                                 last_attempt: Instant::now() - Duration::from_secs(3),
@@ -617,4 +748,48 @@ pub async fn start_libp2p_node(
     }
 
     Ok(())
+}
+
+async fn process_delete_request(
+    manifest_id: &str,
+    force: bool,
+    _requesting_peer: &str,
+) -> (bool, String, Vec<String>) {
+    if !force {
+        warn!(
+            "Processing delete request for manifest_id={} without explicit ownership validation",
+            manifest_id
+        );
+    }
+
+    match crate::scheduler::remove_workloads_by_manifest_id(manifest_id).await {
+        Ok(removed_workloads) => {
+            if removed_workloads.is_empty() {
+                info!("No workloads found for manifest_id={}", manifest_id);
+                (
+                    true,
+                    "no workloads found for manifest".to_string(),
+                    removed_workloads,
+                )
+            } else {
+                info!(
+                    "Successfully removed {} workloads for manifest_id={}",
+                    removed_workloads.len(),
+                    manifest_id
+                );
+                (
+                    true,
+                    format!("removed {} workloads", removed_workloads.len()),
+                    removed_workloads,
+                )
+            }
+        }
+        Err(e) => {
+            error!(
+                "Failed to remove workloads for manifest_id={}: {}",
+                manifest_id, e
+            );
+            (false, format!("failed to remove workloads: {}", e), vec![])
+        }
+    }
 }
