@@ -61,6 +61,9 @@ pub struct Cli {
     pub libp2p_host: String,
 }
 
+/// Type alias for daemon configuration to decouple test terminology from CLI parsing.
+pub type DaemonConfig = Cli;
+
 impl Default for Cli {
     fn default() -> Self {
         Self {
@@ -82,7 +85,9 @@ impl Default for Cli {
 
 /// Start the machineplane runtime using the provided CLI configuration.
 /// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
-pub async fn start_machineplane(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
+pub async fn start_machineplane(
+    cli: DaemonConfig,
+) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     // initialize logger but don't panic if already initialized
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 

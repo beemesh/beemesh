@@ -15,9 +15,9 @@ use tokio::time::sleep;
 
 #[path = "runtime_helpers.rs"]
 mod runtime_helpers;
-use runtime_helpers::{make_test_cli, shutdown_nodes, start_nodes};
+use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes};
 
-// We will start machines directly in this process by calling `start_machineplane(cli).await`.
+// We will start machines directly in this process by calling `start_machineplane(daemon).await`.
 
 /// Tests the full host application flow.
 ///
@@ -35,15 +35,15 @@ async fn test_run_host_application() {
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     // start a bootstrap node first
-    let cli1 = make_test_cli(3000, vec![], 4001);
-    let mut handles = start_nodes(vec![cli1], Duration::from_secs(1)).await;
+    let daemon1 = make_test_daemon(3000, vec![], 4001);
+    let mut handles = start_nodes(vec![daemon1], Duration::from_secs(1)).await;
 
     // subsequent nodes use the first node as their bootstrap peer
     let bootstrap_peers = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
-    let cli2 = make_test_cli(3100, bootstrap_peers.clone(), 4002);
-    let cli3 = make_test_cli(3200, bootstrap_peers, 0);
+    let daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
+    let daemon3 = make_test_daemon(3200, bootstrap_peers, 0);
 
-    handles.append(&mut start_nodes(vec![cli2, cli3], Duration::from_secs(1)).await);
+    handles.append(&mut start_nodes(vec![daemon2, daemon3], Duration::from_secs(1)).await);
 
     // wait for the mesh to form (poll until peers appear or timeout)
     let verify_peers = wait_for_peers(Duration::from_secs(15)).await;
