@@ -7,7 +7,6 @@ use std::str::FromStr;
 use libp2p::{Multiaddr, multiaddr::Protocol};
 
 pub mod api;
-pub mod capacity;
 pub mod messages;
 pub mod network;
 pub mod runtimes;
