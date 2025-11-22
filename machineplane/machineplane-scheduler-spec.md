@@ -195,7 +195,7 @@ Key steps (as implemented):
 1. **Deserialize Tender**
 
    ```rust
-   let tender = machine::root_as_tender(&message.data)?;
+   let tender = machine::decode_tender(&message.data)?;
    let tender_id = tender.id.clone();
    let manifest_id = tender.id.clone();
    ```
@@ -300,7 +300,7 @@ Key steps (as implemented):
 
 ```rust
 async fn handle_bid(&self, message: &gossipsub::Message) {
-    match machine::root_as_bid(&message.data) {
+    match machine::decode_bid(&message.data) {
         Ok(bid) => {
             let tender_id = bid.tender_id.clone();
             let bidder_id = bid.node_id.clone();
@@ -340,7 +340,7 @@ async fn handle_bid(&self, message: &gossipsub::Message) {
 
 ```rust
 async fn handle_event(&self, message: &gossipsub::Message) {
-    match machine::root_as_scheduler_event(&message.data) {
+    match machine::decode_scheduler_event(&message.data) {
         Ok(event) => {
             let tender_id = event.tender_id.clone();
             info!(

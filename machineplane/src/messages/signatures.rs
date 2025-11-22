@@ -36,24 +36,24 @@ macro_rules! define_sign_verify {
 }
 
 #[derive(Serialize)]
-struct TenderView<'a> {
-    id: &'a str,
-    manifest_ref: &'a str,
-    manifest_json: &'a str,
+struct TenderView {
+    id: String,
+    manifest_ref: String,
+    manifest_json: String,
     requirements_cpu_cores: u32,
     requirements_memory_mb: u32,
-    workload_type: &'a str,
+    workload_type: String,
     duplicate_tolerant: bool,
     max_parallel_duplicates: u32,
-    placement_token: &'a str,
+    placement_token: String,
     qos_preemptible: bool,
     timestamp: u64,
 }
 
 #[derive(Serialize)]
-struct BidView<'a> {
-    tender_id: &'a str,
-    node_id: &'a str,
+struct BidView {
+    tender_id: String,
+    node_id: String,
     score: f64,
     resource_fit_score: f64,
     network_locality_score: f64,
@@ -61,18 +61,18 @@ struct BidView<'a> {
 }
 
 #[derive(Serialize)]
-struct SchedulerEventView<'a> {
-    tender_id: &'a str,
-    node_id: &'a str,
+struct SchedulerEventView {
+    tender_id: String,
+    node_id: String,
     event_type: super::types::EventType,
-    reason: &'a str,
+    reason: String,
     timestamp: u64,
 }
 
 #[derive(Serialize)]
-struct LeaseHintView<'a> {
-    tender_id: &'a str,
-    node_id: &'a str,
+struct LeaseHintView {
+    tender_id: String,
+    node_id: String,
     score: f64,
     ttl_ms: u32,
     renew_nonce: u64,
@@ -80,93 +80,103 @@ struct LeaseHintView<'a> {
 }
 
 #[derive(Serialize)]
-struct ApplyRequestView<'a> {
+struct ApplyRequestView {
     replicas: u32,
-    operation_id: &'a str,
-    manifest_json: &'a str,
-    origin_peer: &'a str,
-    manifest_id: &'a str,
+    operation_id: String,
+    manifest_json: String,
+    origin_peer: String,
+    manifest_id: String,
 }
 
 #[derive(Serialize)]
-struct ApplyResponseView<'a> {
+struct ApplyResponseView {
     ok: bool,
-    operation_id: &'a str,
-    message: &'a str,
+    operation_id: String,
+    message: String,
 }
 
-define_sign_verify!(sign_tender, Tender, TenderView<'_>, |t: &Tender| {
-    TenderView {
-        id: &t.id,
-        manifest_ref: &t.manifest_ref,
-        manifest_json: &t.manifest_json,
-        requirements_cpu_cores: t.requirements_cpu_cores,
-        requirements_memory_mb: t.requirements_memory_mb,
-        workload_type: &t.workload_type,
-        duplicate_tolerant: t.duplicate_tolerant,
-        max_parallel_duplicates: t.max_parallel_duplicates,
-        placement_token: &t.placement_token,
-        qos_preemptible: t.qos_preemptible,
-        timestamp: t.timestamp,
-    }
-});
+define_sign_verify!(
+    sign_tender,
+    Tender,
+    TenderView,
+    (|t: &Tender| {
+        TenderView {
+            id: t.id.clone(),
+            manifest_ref: t.manifest_ref.clone(),
+            manifest_json: t.manifest_json.clone(),
+            requirements_cpu_cores: t.requirements_cpu_cores,
+            requirements_memory_mb: t.requirements_memory_mb,
+            workload_type: t.workload_type.clone(),
+            duplicate_tolerant: t.duplicate_tolerant,
+            max_parallel_duplicates: t.max_parallel_duplicates,
+            placement_token: t.placement_token.clone(),
+            qos_preemptible: t.qos_preemptible,
+            timestamp: t.timestamp,
+        }
+    })
+);
 
-define_sign_verify!(sign_bid, Bid, BidView<'_>, |b: &Bid| BidView {
-    tender_id: &b.tender_id,
-    node_id: &b.node_id,
-    score: b.score,
-    resource_fit_score: b.resource_fit_score,
-    network_locality_score: b.network_locality_score,
-    timestamp: b.timestamp,
-});
+define_sign_verify!(
+    sign_bid,
+    Bid,
+    BidView,
+    (|b: &Bid| BidView {
+        tender_id: b.tender_id.clone(),
+        node_id: b.node_id.clone(),
+        score: b.score,
+        resource_fit_score: b.resource_fit_score,
+        network_locality_score: b.network_locality_score,
+        timestamp: b.timestamp,
+    })
+);
 
 define_sign_verify!(
     sign_scheduler_event,
     SchedulerEvent,
-    SchedulerEventView<'_>,
-    |e: &SchedulerEvent| SchedulerEventView {
-        tender_id: &e.tender_id,
-        node_id: &e.node_id,
+    SchedulerEventView,
+    (|e: &SchedulerEvent| SchedulerEventView {
+        tender_id: e.tender_id.clone(),
+        node_id: e.node_id.clone(),
         event_type: e.event_type,
-        reason: &e.reason,
+        reason: e.reason.clone(),
         timestamp: e.timestamp,
-    }
+    })
 );
 
 define_sign_verify!(
     sign_lease_hint,
     LeaseHint,
-    LeaseHintView<'_>,
-    |l: &LeaseHint| LeaseHintView {
-        tender_id: &l.tender_id,
-        node_id: &l.node_id,
+    LeaseHintView,
+    (|l: &LeaseHint| LeaseHintView {
+        tender_id: l.tender_id.clone(),
+        node_id: l.node_id.clone(),
         score: l.score,
         ttl_ms: l.ttl_ms,
         renew_nonce: l.renew_nonce,
         timestamp: l.timestamp,
-    }
+    })
 );
 
 define_sign_verify!(
     sign_apply_request,
     ApplyRequest,
-    ApplyRequestView<'_>,
-    |r: &ApplyRequest| ApplyRequestView {
+    ApplyRequestView,
+    (|r: &ApplyRequest| ApplyRequestView {
         replicas: r.replicas,
-        operation_id: &r.operation_id,
-        manifest_json: &r.manifest_json,
-        origin_peer: &r.origin_peer,
-        manifest_id: &r.manifest_id,
-    }
+        operation_id: r.operation_id.clone(),
+        manifest_json: r.manifest_json.clone(),
+        origin_peer: r.origin_peer.clone(),
+        manifest_id: r.manifest_id.clone(),
+    })
 );
 
 define_sign_verify!(
     sign_apply_response,
     ApplyResponse,
-    ApplyResponseView<'_>,
-    |r: &ApplyResponse| ApplyResponseView {
+    ApplyResponseView,
+    (|r: &ApplyResponse| ApplyResponseView {
         ok: r.ok,
-        operation_id: &r.operation_id,
-        message: &r.message,
-    }
+        operation_id: r.operation_id.clone(),
+        message: r.message.clone(),
+    })
 );

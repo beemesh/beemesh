@@ -138,7 +138,7 @@ pub fn gossipsub_message(
     }
 
     // Then try CapacityReply
-    if let Ok(cap_req) = crate::messages::machine::root_as_capacity_request(payload.as_slice()) {
+    if let Ok(cap_req) = crate::messages::machine::decode_capacity_request(payload.as_slice()) {
         let orig_request_id = cap_req.request_id.clone();
         let responder_peer = swarm.local_peer_id().to_string();
 
@@ -195,7 +195,7 @@ pub fn gossipsub_message(
         return;
     }
 
-    if let Ok(cap_reply) = crate::messages::machine::root_as_capacity_reply(payload.as_slice()) {
+    if let Ok(cap_reply) = crate::messages::machine::decode_capacity_reply(payload.as_slice()) {
         let request_part = cap_reply.request_id.clone();
         info!(
             "libp2p: received capreply for id={} from peer={}",
@@ -245,7 +245,7 @@ pub fn handshake_request<F>(
     //log::info!("libp2p: received handshake request from peer={}", peer);
 
     // Parse the handshake request
-    match crate::messages::machine::root_as_handshake(&request) {
+    match crate::messages::machine::decode_handshake(&request) {
         Ok(_handshake_req) => {
             // Mark this peer as confirmed
             ensure_handshake_state(&peer, handshake_states).confirmed = true;
@@ -284,7 +284,7 @@ pub fn handshake_response(
     //log::info!("libp2p: received handshake response from peer={}", peer);
 
     // Parse the response
-    match crate::messages::machine::root_as_handshake(&response) {
+    match crate::messages::machine::decode_handshake(&response) {
         Ok(_handshake_resp) => {
             //log::debug!("libp2p: handshake response - signature={:?}", handshake_resp.signature());
 
@@ -377,7 +377,7 @@ pub fn delete_message(
             info!("Received delete request from peer={}", peer);
 
             // Parse the delete request
-            match machine::root_as_delete_request(&request) {
+            match machine::decode_delete_request(&request) {
                 Ok(delete_req) => {
                     info!(
                         "Delete request - manifest_id={:?} operation_id={:?} force={}",
@@ -434,7 +434,7 @@ pub fn delete_message(
             info!("Received delete response from peer={}", peer);
 
             // Parse the response
-            match machine::root_as_delete_response(&response) {
+            match machine::decode_delete_response(&response) {
                 Ok(delete_resp) => {
                     info!(
                         "Delete response - ok={} operation_id={:?} message={:?} removed_workloads={:?}",

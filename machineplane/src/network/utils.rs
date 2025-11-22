@@ -54,6 +54,6 @@ pub fn extract_manifest_id_from_request_id(request_id: &str) -> Option<String> {
 /// Ed25519 peer IDs are encoded as identity multihashes containing the protobuf-encoded
 /// public key, which allows reconstructing the key for signature verification.
 pub fn peer_id_to_public_key(peer_id: &PeerId) -> Option<PublicKey> {
-    let multihash = Multihash::<64>::from_bytes(&peer_id.to_bytes()).ok()?;
+    let multihash = Multihash::from_bytes(&peer_id.to_bytes()).ok()?;
     PublicKey::try_decode_protobuf(multihash.digest()).ok()
 }
