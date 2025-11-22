@@ -4,7 +4,7 @@ use env_logger::Env;
 use std::io::Write;
 use std::str::FromStr;
 
-use libp2p::{multiaddr::Protocol, Multiaddr};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 
 pub mod api;
 pub mod capacity;
@@ -27,18 +27,6 @@ pub struct Cli {
     /// Port for REST API
     #[arg(long, default_value = "3000")]
     pub rest_api_port: u16,
-
-    /// Disable REST API server
-    #[arg(long, default_value_t = false)]
-    pub disable_rest_api: bool,
-
-    /// Disable REST API server
-    #[arg(long, default_value_t = false)]
-    pub disable_machine_api: bool,
-
-    /// Disable participation in scheduling (no capacity replies)
-    #[arg(long, default_value_t = false)]
-    pub disable_scheduling: bool,
 
     /// Custom node name (optional)
     #[arg(long)]
@@ -90,9 +78,6 @@ impl Default for Cli {
             ephemeral: false,
             rest_api_host: "127.0.0.1".to_string(),
             rest_api_port: 3000,
-            disable_rest_api: false,
-            disable_machine_api: false,
-            disable_scheduling: false,
             node_name: None,
             mock_only_runtime: false,
             podman_socket: None,
@@ -155,7 +140,11 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
     if cli.bootstrap_peer.is_empty() {
         let env_peers = parse_env_bootstrap_peers();
         if !env_peers.is_empty() {
-            log::info!("No bootstrap peers provided; using {} peers from {}", env_peers.len(), DEFAULT_BOOTSTRAP_ENV);
+            log::info!(
+                "No bootstrap peers provided; using {} peers from {}",
+                env_peers.len(),
+                DEFAULT_BOOTSTRAP_ENV
+            );
             cli.bootstrap_peer = env_peers;
         } else {
             let mut defaults = Vec::new();
@@ -166,7 +155,9 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
                         if let Err(err) = validate_bootstrap_multiaddr(&peer_addr) {
                             log::warn!(
                                 "Skipping invalid default bootstrap peer {} at {}: {}",
-                                peer_id, addr, err
+                                peer_id,
+                                addr,
+                                err
                             );
                         } else {
                             defaults.push(peer_addr);
@@ -189,18 +180,7 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
         }
     }
 
-    let scheduling_enabled = !cli.disable_scheduling;
-
-    if scheduling_enabled {
-        runtimes::configure_podman_runtime(cli.podman_socket.clone());
-    } else {
-        if cli.mock_only_runtime {
-            log::warn!(
-                "mock-only runtime requested but scheduling is disabled; runtime registry will not be initialized"
-            );
-        }
-        log::info!("scheduling disabled via CLI flag; skipping container runtime configuration");
-    }
+    runtimes::configure_podman_runtime(cli.podman_socket.clone());
 
     // Load or generate libp2p keypair
     let keypair = if cli.ephemeral {
@@ -268,11 +248,8 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
     let public_bytes = keypair.public().to_peer_id().to_bytes();
     network::set_node_keypair(Some((public_bytes.clone(), keypair_bytes.clone())));
 
-    let (mut swarm, topic, peer_rx, peer_tx) = network::setup_libp2p_node(
-        cli.libp2p_quic_port,
-        &cli.libp2p_host,
-        cli.disable_scheduling,
-    )?;
+    let (mut swarm, topic, peer_rx, peer_tx) =
+        network::setup_libp2p_node(cli.libp2p_quic_port, &cli.libp2p_host)?;
 
     // If bootstrap peers are provided, dial them explicitly (for in-process tests)
     for addr in &cli.bootstrap_peer {
@@ -306,12 +283,8 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
 
     // Initialize runtime registry and provider manager for manifest deployment
     log::info!("Initializing runtime registry and provider manager...");
-    if let Err(e) = scheduler::initialize_podman_manager(
-        cli.mock_only_runtime,
-        cli.mock_only_runtime,
-        scheduling_enabled,
-    )
-    .await
+    if let Err(e) =
+        scheduler::initialize_podman_manager(cli.mock_only_runtime, cli.mock_only_runtime).await
     {
         log::warn!(
             "Failed to initialize runtime registry: {}. Will use legacy deployment only.",
@@ -323,73 +296,66 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
 
     let mut handles = Vec::new();
 
-    // rest api server
-    if !cli.disable_rest_api {
-        let app = api::build_router(peer_rx, control_tx.clone(), scheduling_enabled);
+    let app = api::build_router(peer_rx, control_tx.clone());
 
-        // Public TCP server
-        let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);
-        let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-        log::info!("rest api listening on {}", listener.local_addr().unwrap());
-        handles.push(tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app.clone().into_make_service()).await {
-                log::error!("axum server error: {}", e);
-            }
-        }));
-    } else {
-        log::info!("REST API disabled");
-    }
+    // Public TCP server
+    let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    log::info!("rest api listening on {}", listener.local_addr().unwrap());
+    handles.push(tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app.clone().into_make_service()).await {
+            log::error!("axum server error: {}", e);
+        }
+    }));
 
     // host api server - for gateway to host accesss
-    if !cli.disable_machine_api {
-        if let Some(socket_path) = cli.api_socket.clone() {
-            // Ensure parent directory exists for the UDS socket. If we cannot create it,
-            // log and skip starting the host API rather than causing the whole process to exit.
-            let socket = socket_path.clone();
-            let mut start_uds = true;
-            if let Some(parent) = std::path::Path::new(&socket).parent() {
-                if !parent.exists() {
-                    match std::fs::create_dir_all(parent) {
-                        Ok(_) => {
-                            // set permissive dir perms if possible
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                let _ = std::fs::set_permissions(
-                                    parent,
-                                    std::fs::Permissions::from_mode(0o755),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "could not create parent dir for UDS {}: {}. Skipping host API.",
-                                parent.display(),
-                                e
+    if let Some(socket_path) = cli.api_socket.clone() {
+        // Ensure parent directory exists for the UDS socket. If we cannot create it,
+        // log and skip starting the host API rather than causing the whole process to exit.
+        let socket = socket_path.clone();
+        let mut start_uds = true;
+        if let Some(parent) = std::path::Path::new(&socket).parent() {
+            if !parent.exists() {
+                match std::fs::create_dir_all(parent) {
+                    Ok(_) => {
+                        // set permissive dir perms if possible
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                parent,
+                                std::fs::Permissions::from_mode(0o755),
                             );
-                            start_uds = false;
                         }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "could not create parent dir for UDS {}: {}. Skipping host API.",
+                            parent.display(),
+                            e
+                        );
+                        start_uds = false;
                     }
                 }
             }
+        }
 
-            if start_uds {
-                // remove stale socket file if present
-                let _ = std::fs::remove_file(&socket);
-                let app2 = axum::Router::new(); // Empty UDS API (hostapi removed)
-                let socket_clone = socket.clone();
-                handles.push(tokio::spawn(async move {
-                    // bind a unix domain socket and serve the axum app on it
-                    match tokio::net::UnixListener::bind(&socket_clone) {
-                        Ok(listener) => {
-                            if let Err(e) = axum::serve(listener, app2.into_make_service()).await {
-                                log::error!("axum UDS server error: {}", e);
-                            }
+        if start_uds {
+            // remove stale socket file if present
+            let _ = std::fs::remove_file(&socket);
+            let app2 = axum::Router::new(); // Empty UDS API (hostapi removed)
+            let socket_clone = socket.clone();
+            handles.push(tokio::spawn(async move {
+                // bind a unix domain socket and serve the axum app on it
+                match tokio::net::UnixListener::bind(&socket_clone) {
+                    Ok(listener) => {
+                        if let Err(e) = axum::serve(listener, app2.into_make_service()).await {
+                            log::error!("axum UDS server error: {}", e);
                         }
-                        Err(e) => log::error!("failed to bind UDS {}: {}", socket_clone, e),
                     }
-                }));
-            }
+                    Err(e) => log::error!("failed to bind UDS {}: {}", socket_clone, e),
+                }
+            }));
         }
     }
 

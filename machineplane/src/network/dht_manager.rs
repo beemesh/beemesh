@@ -1,8 +1,8 @@
 #![allow(dead_code)]
-use libp2p::{kad, Swarm};
-use log::info;
 use crate::messages::machine::root_as_applied_manifest;
 use crate::messages::types::AppliedManifest;
+use libp2p::{Swarm, kad};
+use log::info;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -157,36 +157,31 @@ impl DhtManager {
                         let _ = reply_tx.send(Err("Unexpected query result".to_string()));
                     }
                 },
-                DhtQueryContext::GetManifest { reply_tx } => {
-                    match result {
-                        kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
-                            peer_record,
-                        ))) => {
-                            match root_as_applied_manifest(&peer_record.record.value) {
-                                Ok(manifest) => {
-                                    let _ = reply_tx.send(Ok(Some(manifest)));
-                                }
-                                Err(e) => {
-                                    let _ = reply_tx
-                                        .send(Err(format!("Failed to parse manifest: {:?}", e)));
-                                }
+                DhtQueryContext::GetManifest { reply_tx } => match result {
+                    kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))) => {
+                        match root_as_applied_manifest(&peer_record.record.value) {
+                            Ok(manifest) => {
+                                let _ = reply_tx.send(Ok(Some(manifest)));
+                            }
+                            Err(e) => {
+                                let _ = reply_tx
+                                    .send(Err(format!("Failed to parse manifest: {:?}", e)));
                             }
                         }
-                        kad::QueryResult::GetRecord(Ok(
-                            kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. },
-                        )) => {
-                            let _ = reply_tx.send(Ok(None));
-                        }
-                        kad::QueryResult::GetRecord(Err(e)) => {
-                            let _ = reply_tx.send(Err(format!("Failed to get manifest: {:?}", e)));
-                        }
-                        _ => {
-                            let _ = reply_tx.send(Err("Unexpected query result".to_string()));
-                        }
                     }
-                }
+                    kad::QueryResult::GetRecord(Ok(
+                        kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. },
+                    )) => {
+                        let _ = reply_tx.send(Ok(None));
+                    }
+                    kad::QueryResult::GetRecord(Err(e)) => {
+                        let _ = reply_tx.send(Err(format!("Failed to get manifest: {:?}", e)));
+                    }
+                    _ => {
+                        let _ = reply_tx.send(Err("Unexpected query result".to_string()));
+                    }
+                },
             }
         }
     }
 }
-

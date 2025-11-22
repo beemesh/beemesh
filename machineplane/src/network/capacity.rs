@@ -20,7 +20,6 @@ where
     reply
 }
 
-
 /// Sign and publish a capacity reply over GossipSub.
 pub fn publish_gossipsub_capacity_reply(
     behaviour: &mut gossipsub::Behaviour,

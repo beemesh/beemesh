@@ -313,7 +313,10 @@ async fn publish_clone_tender(
         spec: ordinal.map(|ord| json!({ "ordinal": ord })),
     };
 
-    let url = format!("{}/v1/publish_tender", cfg.beemesh_api.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/publish_tender",
+        cfg.beemesh_api.trim_end_matches('/')
+    );
     let resp = client
         .post(url)
         .json(&tender)

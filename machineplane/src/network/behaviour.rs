@@ -1,11 +1,11 @@
 use crate::capacity::{CapacityCheckResult, ResourceRequest};
 use crate::messages::constants::{SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
 use crate::messages::machine;
-use crate::network::{capacity, control, utils};
 use crate::network::{ApplyCodec, DeleteCodec, HandshakeCodec};
+use crate::network::{capacity, control, utils};
 use crate::scheduler::{get_global_capacity_verifier, remove_workloads_by_manifest_id};
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{autonat, gossipsub, identify, kad, relay, request_response, PeerId};
+use libp2p::{PeerId, autonat, gossipsub, identify, kad, relay, request_response};
 use log::{debug, error, info, warn};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -64,26 +64,17 @@ pub fn apply_inbound_failure(peer: libp2p::PeerId, error: request_response::Inbo
 }
 
 /// Specialized handler for apply protocol outbound failures
-pub fn apply_outbound_failure(
-    peer: libp2p::PeerId,
-    error: request_response::OutboundFailure,
-) {
+pub fn apply_outbound_failure(peer: libp2p::PeerId, error: request_response::OutboundFailure) {
     handle_failure("apply", FailureDirection::Outbound, peer, error);
 }
 
 /// Specialized handler for handshake protocol inbound failures
-pub fn handshake_inbound_failure(
-    peer: libp2p::PeerId,
-    error: request_response::InboundFailure,
-) {
+pub fn handshake_inbound_failure(peer: libp2p::PeerId, error: request_response::InboundFailure) {
     handle_failure("handshake", FailureDirection::Inbound, peer, error);
 }
 
 /// Specialized handler for handshake protocol outbound failures
-pub fn handshake_outbound_failure(
-    peer: libp2p::PeerId,
-    error: request_response::OutboundFailure,
-) {
+pub fn handshake_outbound_failure(peer: libp2p::PeerId, error: request_response::OutboundFailure) {
     handle_failure("handshake", FailureDirection::Outbound, peer, error);
 }
 
@@ -423,10 +414,7 @@ pub fn handshake_message_event(
 
 fn ensure_handshake_state<'a>(
     peer: &libp2p::PeerId,
-    handshake_states: &'a mut std::collections::HashMap<
-        libp2p::PeerId,
-        HandshakeState,
-    >,
+    handshake_states: &'a mut std::collections::HashMap<libp2p::PeerId, HandshakeState>,
 ) -> &'a mut HandshakeState {
     handshake_states
         .entry(peer.clone())
@@ -682,8 +670,7 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
             } => {
                 debug!(
                     "DHT: Received GetRecord request (closer_peers: {}, local: {})",
-                    num_closer_peers,
-                    present_locally
+                    num_closer_peers, present_locally
                 );
             }
             kad::InboundRequest::PutRecord {

@@ -2,7 +2,7 @@ use crate::messages::constants::SCHEDULER_PROPOSALS;
 use crate::network::behaviour::MyBehaviour;
 use crate::network::{capacity, utils};
 use libp2p::kad::{QueryId, RecordKey};
-use libp2p::{gossipsub, PeerId, Swarm};
+use libp2p::{PeerId, Swarm, gossipsub};
 use log::{debug, info};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -443,35 +443,23 @@ pub async fn handle_query_capacity_with_payload(
 
             // Also notify local pending senders directly so the originator is always considered
             // a potential responder. This ensures single-node operation and makes the
-            // origining host countable when collecting responders.
-            // When scheduling is disabled, skip the local response to honour the configuration.
-            // Include the local KEM public key in the same format as remote responses.
-            if crate::network::is_scheduling_disabled_for(swarm.local_peer_id()) {
-                log::info!(
-                    "libp2p: local scheduling disabled, skipping local capacity response for {}",
-                    request_id
-                );
-            } else {
-                let responder_peer = swarm.local_peer_id().to_string();
-                let reply = capacity::compose_capacity_reply(
-                    "local",
-                    &request_id,
-                    &responder_peer,
-                    |params| {
-                        params.cpu_milli = cap_req.cpu_milli;
-                        params.memory_bytes = cap_req.memory_bytes;
-                        params.storage_bytes = cap_req.storage_bytes;
-                    },
-                );
-                let local_response = format!(
-                    "{}:{}",
-                    swarm.local_peer_id(),
-                    reply.kem_pub_b64.unwrap_or_default()
-                );
-                utils::notify_capacity_observers(pending_queries, &request_id, move || {
-                    local_response.clone()
+            // origining host countable when collecting responders. Include the local KEM
+            // public key in the same format as remote responses.
+            let responder_peer = swarm.local_peer_id().to_string();
+            let reply =
+                capacity::compose_capacity_reply("local", &request_id, &responder_peer, |params| {
+                    params.cpu_milli = cap_req.cpu_milli;
+                    params.memory_bytes = cap_req.memory_bytes;
+                    params.storage_bytes = cap_req.storage_bytes;
                 });
-            }
+            let local_response = format!(
+                "{}:{}",
+                swarm.local_peer_id(),
+                reply.kem_pub_b64.unwrap_or_default()
+            );
+            utils::notify_capacity_observers(pending_queries, &request_id, move || {
+                local_response.clone()
+            });
         }
         Err(e) => {
             log::error!("libp2p: failed to parse provided capacity payload: {:?}", e);

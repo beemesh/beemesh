@@ -11,33 +11,20 @@ use machineplane::Cli;
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 
-fn make_standard_node_clis(disable_flags: &[bool]) -> Vec<Cli> {
-    assert!(disable_flags.len() == TEST_PORTS.len());
-
-    let cli1 = make_test_cli(3000, false, true, None, vec![], 4001, disable_flags[0]);
+fn make_standard_node_clis() -> Vec<Cli> {
+    let cli1 = make_test_cli(3000, None, vec![], 4001);
     let cli2 = make_test_cli(
         3100,
-        false,
-        true,
         None,
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
-        disable_flags[1],
     );
 
     let bootstrap_peers = vec![
         "/ip4/127.0.0.1/udp/4001/quic-v1".to_string(),
         "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
-    let cli3 = make_test_cli(
-        3200,
-        false,
-        true,
-        None,
-        bootstrap_peers,
-        0,
-        disable_flags[2],
-    );
+    let cli3 = make_test_cli(3200, None, bootstrap_peers, 0);
 
     vec![cli1, cli2, cli3]
 }
@@ -51,10 +38,10 @@ pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
     (client, TEST_PORTS.to_vec())
 }
 
-/// Build standard three-node fabric configuration with optional scheduling disable flags.
+/// Build standard three-node fabric configuration.
 /// Returns a guard that shuts down nodes when dropped.
-pub async fn start_fabric_nodes(disable_flags: &[bool]) -> NodeGuard {
-    let clis = make_standard_node_clis(disable_flags);
+pub async fn start_fabric_nodes() -> NodeGuard {
+    let clis = make_standard_node_clis();
     start_nodes(clis, Duration::from_secs(1)).await
 }
 

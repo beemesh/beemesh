@@ -61,7 +61,6 @@ pub struct RestState {
     pub peer_rx: watch::Receiver<Vec<String>>,
     pub control_tx: mpsc::UnboundedSender<crate::network::control::Libp2pControl>,
     tender_store: Arc<RwLock<HashMap<String, TenderRecord>>>,
-    pub scheduling_enabled: bool,
 }
 
 // Global in-memory store of decrypted manifests for debugging / tests.
@@ -116,13 +115,11 @@ pub async fn get_decrypted_manifests_map() -> serde_json::Value {
 pub fn build_router(
     peer_rx: watch::Receiver<Vec<String>>,
     control_tx: mpsc::UnboundedSender<crate::network::control::Libp2pControl>,
-    scheduling_enabled: bool,
 ) -> Router {
     let state = RestState {
         peer_rx,
         control_tx,
         tender_store: Arc::new(RwLock::new(HashMap::new())),
-        scheduling_enabled,
     };
     let kube_routes = Router::new()
         .route("/version", get(kube::version))
@@ -145,7 +142,10 @@ pub fn build_router(
             get(debug_workloads_by_peer),
         )
         .route("/debug/local_peer_id", get(debug_local_peer_id))
-        .route("/tenders/{tender_id}/manifest_id", get(get_tender_manifest_id))
+        .route(
+            "/tenders/{tender_id}/manifest_id",
+            get(get_tender_manifest_id),
+        )
         .route("/tenders", post(create_tender))
         .route("/tenders/{tender_id}", get(get_tender_status))
         .route("/tenders/{tender_id}", delete(delete_tender))
@@ -265,10 +265,8 @@ pub(crate) async fn collect_candidate_pubkeys(
 
     // Fallback: if we didn't hear back from enough peers within the timeout,
     // use the currently known peer list so scheduling can still proceed in
-    // test environments where capacity replies arrive slowly. When scheduling
-    // is disabled on this node, skip the fallback and rely solely on responders
-    // so we don't schedule workloads from a node that is configured to abstain.
-    if candidates.len() < max_candidates && state.scheduling_enabled {
+    // test environments where capacity replies arrive slowly.
+    if candidates.len() < max_candidates {
         let peers = state.peer_rx.borrow().clone();
         for peer_id in peers {
             if candidates.iter().any(|c| c.peer_id == peer_id) {

@@ -1,6 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use libp2p::{multiaddr::Protocol, Multiaddr};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 
 pub const DEFAULT_BOOTSTRAP_PEERS: [(&str, &str); 2] = [
     (
@@ -50,7 +50,10 @@ impl Config {
         if self.bootstrap_peer_strings.is_empty() {
             let env_peers = parse_env_bootstrap_peers();
             if !env_peers.is_empty() {
-                tracing::info!(count = env_peers.len(), "No bootstrap peers provided; using environment defaults");
+                tracing::info!(
+                    count = env_peers.len(),
+                    "No bootstrap peers provided; using environment defaults"
+                );
                 self.bootstrap_peer_strings = env_peers;
             } else {
                 let mut defaults = Vec::new();
@@ -70,7 +73,11 @@ impl Config {
                             }
                         }
                         Err(_) => {
-                            tracing::warn!(peer_id, addr, "Skipping invalid default bootstrap peer id")
+                            tracing::warn!(
+                                peer_id,
+                                addr,
+                                "Skipping invalid default bootstrap peer id"
+                            )
                         }
                     }
                 }

@@ -1,7 +1,5 @@
 use machineplane::messages::machine::{
-    compute_manifest_id,
-    compute_manifest_id_from_content,
-    extract_manifest_name,
+    compute_manifest_id, compute_manifest_id_from_content, extract_manifest_name,
 };
 
 #[test]
@@ -25,7 +23,10 @@ fn compute_manifest_id_hashes_content() {
     assert_eq!(manifest_id, compute_manifest_id_from_content(manifest));
 
     let different_manifest = br#"{"apiVersion":"v1","kind":"Pod","metadata":{"name":"other"}}"#;
-    assert_ne!(manifest_id, compute_manifest_id_from_content(different_manifest));
+    assert_ne!(
+        manifest_id,
+        compute_manifest_id_from_content(different_manifest)
+    );
 }
 
 #[test]
