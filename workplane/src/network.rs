@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
+use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, StreamExt};
 use libp2p::identity::Keypair;
 use libp2p::kad;
 use libp2p::request_response;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, SwarmBuilder};
-use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
@@ -58,7 +58,8 @@ impl request_response::Codec for RPCCodec {
     {
         let mut vec = Vec::new();
         AsyncReadExt::read_to_end(io, &mut vec).await?;
-        serde_json::from_slice(&vec).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        serde_json::from_slice(&vec)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     async fn read_response<T>(
@@ -71,7 +72,8 @@ impl request_response::Codec for RPCCodec {
     {
         let mut vec = Vec::new();
         AsyncReadExt::read_to_end(io, &mut vec).await?;
-        serde_json::from_slice(&vec).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        serde_json::from_slice(&vec)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     async fn write_request<T>(
@@ -201,7 +203,7 @@ impl Network {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_quic()
-            .with_dns()? 
+            .with_dns()?
             .with_behaviour(|key| {
                 let peer_id = key.public().to_peer_id();
                 let store = kad::store::MemoryStore::new(peer_id);
@@ -244,17 +246,21 @@ impl Network {
         for addr_str in &self.inner.cfg.listen_addrs {
             if let Ok(addr) = addr_str.parse::<Multiaddr>() {
                 let (tx, _rx) = oneshot::channel();
-                let _ = self.cmd_tx.try_send(NetworkCommand::StartListening { addr, reply_tx: tx });
+                let _ = self
+                    .cmd_tx
+                    .try_send(NetworkCommand::StartListening { addr, reply_tx: tx });
                 // We don't block on this, just fire and forget for start()
             }
         }
 
         // Connect to bootstrap peers
         for peer_str in &self.inner.cfg.bootstrap_peer_strings {
-             if let Ok(addr) = peer_str.parse::<Multiaddr>() {
-                 let (tx, _rx) = oneshot::channel();
-                 let _ = self.cmd_tx.try_send(NetworkCommand::Dial { addr, reply_tx: tx });
-             }
+            if let Ok(addr) = peer_str.parse::<Multiaddr>() {
+                let (tx, _rx) = oneshot::channel();
+                let _ = self
+                    .cmd_tx
+                    .try_send(NetworkCommand::Dial { addr, reply_tx: tx });
+            }
         }
 
         if let Err(err) = self.refresh_heartbeat() {
@@ -386,11 +392,11 @@ impl Network {
         // Since we are replacing the stub, we need to bridge the gap.
         // For this iteration, let's assume we are using the discovery module as a "cache"
         // that gets populated by Kademlia events.
-        
+
         let namespace = self.inner.cfg.namespace.clone();
         let workload = self.inner.cfg.workload_name.clone();
         let local_id = self.inner.cfg.workload_id();
-        
+
         // This calls the discovery module which we will update to be just a cache
         discovery::list(&namespace, &workload)
             .into_iter()
@@ -417,10 +423,10 @@ impl Network {
     fn publish_current_record(&self) -> Result<()> {
         let record = self.local_record();
         let ttl = self.inner.cfg.dht_ttl;
-        
+
         let cmd = NetworkCommand::PublishRecord { record, ttl };
         let _ = self.cmd_tx.try_send(cmd);
-        
+
         Ok(())
     }
 
@@ -435,17 +441,19 @@ impl Network {
     fn take_heartbeat(&self) -> Option<HeartbeatHandle> {
         self.inner.heartbeat.lock().expect("heartbeat lock").take()
     }
-    
+
     pub async fn send_request(&self, target_peer_id: &str, req: RPCRequest) -> Result<RPCResponse> {
         let peer_id = target_peer_id.parse::<PeerId>()?;
         let (tx, rx) = oneshot::channel();
-        
-        self.cmd_tx.send(NetworkCommand::SendRequest {
-            target: peer_id,
-            request: req,
-            reply_tx: tx,
-        }).await?;
-        
+
+        self.cmd_tx
+            .send(NetworkCommand::SendRequest {
+                target: peer_id,
+                request: req,
+                reply_tx: tx,
+            })
+            .await?;
+
         rx.await?
     }
 }
@@ -454,7 +462,10 @@ async fn network_event_loop(
     mut swarm: Swarm<WorkplaneBehaviour>,
     mut cmd_rx: mpsc::Receiver<NetworkCommand>,
 ) {
-    let mut pending_requests: HashMap<request_response::OutboundRequestId, oneshot::Sender<Result<RPCResponse>>> = HashMap::new();
+    let mut pending_requests: HashMap<
+        request_response::OutboundRequestId,
+        oneshot::Sender<Result<RPCResponse>>,
+    > = HashMap::new();
 
     loop {
         tokio::select! {

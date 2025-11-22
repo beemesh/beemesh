@@ -72,21 +72,18 @@ impl Workload {
                     };
                 }
 
-                let leader = leader_state
-                    .read()
-                    .expect("leader state")
-                    .clone();
+                let leader = leader_state.read().expect("leader state").clone();
                 let leader_matches = leader
                     .as_ref()
                     .map(|leader_id| leader_id == &local_peer_id)
                     .unwrap_or(false);
-                
+
                 if req.leader_only && !leader_matches {
                     if let Some(leader_id) = leader {
                         // In the new network model, we don't necessarily have the leader's record in discovery cache immediately
                         // But send_request only needs the peer_id.
                         // The original code looked up the record to get the peer_id, but we already have the leader_id.
-                        
+
                         debug!(target = %leader_id, method = %req.method, "proxying follower request to leader");
                         match handler_network.send_request(&leader_id, req.clone()).await {
                             Ok(resp) => return resp,
@@ -110,10 +107,7 @@ impl Workload {
                 }
 
                 let mut body = Map::new();
-                body.insert(
-                    "handled_by".to_string(),
-                    Value::String(local_peer_id),
-                );
+                body.insert("handled_by".to_string(), Value::String(local_peer_id));
                 RPCResponse {
                     ok: true,
                     error: None,

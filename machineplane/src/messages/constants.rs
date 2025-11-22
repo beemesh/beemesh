@@ -29,8 +29,6 @@ pub const FREE_CAPACITY_PREFIX: &str = "beemesh-free-capacity";
 /// Prefix used for replies to free-capacity queries.
 pub const FREE_CAPACITY_REPLY_PREFIX: &str = "beemesh-free-capacity-reply";
 
-
-
 /// Prefix used for lease-related operations
 pub const LEASE_PREFIX: &str = "lease/";
 

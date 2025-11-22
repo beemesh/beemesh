@@ -8,7 +8,7 @@ use crate::messages::constants::{
 };
 use crate::messages::machine;
 use libp2p::gossipsub;
-use log::{error, info};
+use log::{debug, error, info};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -374,6 +374,7 @@ mod runtime_integration {
     use crate::messages::types::ApplyRequest;
     use crate::network::behaviour::MyBehaviour;
     use crate::runtimes::{DeploymentConfig, RuntimeRegistry, create_default_registry};
+    use base64::Engine;
     use libp2p::Swarm;
     use libp2p::kad;
     use libp2p::request_response;
@@ -629,8 +630,8 @@ mod runtime_integration {
     ) -> Result<String, Box<dyn std::error::Error>> {
         info!("Processing manifest deployment");
 
-        // Parse the manifest content (always cleartext)
-        let manifest_content = manifest_json.as_bytes().to_vec();
+        // Parse the manifest content; decode from base64 if needed
+        let manifest_content = decode_manifest_content(manifest_json);
 
         // Use the manifest_id from the apply request for placement announcements
         // This ensures consistency between apply and delete operations
@@ -646,7 +647,7 @@ mod runtime_integration {
         );
 
         if owner_pubkey.is_empty() {
-            warn!(
+            debug!(
                 "process_manifest_deployment: missing owner pubkey for manifest_id={}",
                 manifest_id
             );
@@ -771,6 +772,25 @@ mod runtime_integration {
             // If parsing fails, return original content unchanged
             warn!("Failed to parse manifest for replica modification, using original");
             Ok(manifest_content.to_vec())
+        }
+    }
+
+    /// Decode manifest content that may be base64-encoded.
+    /// Falls back to treating the string as plain text if decoding fails or produces non-UTF8.
+    pub(super) fn decode_manifest_content(manifest_json: &str) -> Vec<u8> {
+        match base64::engine::general_purpose::STANDARD.decode(manifest_json) {
+            Ok(decoded) => {
+                if String::from_utf8(decoded.clone()).is_ok() {
+                    debug!("Decoded base64 manifest content ({} bytes)", decoded.len());
+                    decoded
+                } else {
+                    debug!(
+                        "Base64 manifest content was not valid UTF-8; using raw manifest string"
+                    );
+                    manifest_json.as_bytes().to_vec()
+                }
+            }
+            Err(_) => manifest_json.as_bytes().to_vec(),
         }
     }
 
@@ -1146,6 +1166,20 @@ mod runtime_integration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+
+    #[test]
+    fn decode_manifest_content_handles_base64_and_plain() {
+        let manifest = "apiVersion: v1\nkind: Pod";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(manifest);
+
+        let decoded = decode_manifest_content(&encoded);
+        assert_eq!(decoded, manifest.as_bytes());
+
+        let plaintext = decode_manifest_content(manifest);
+        assert_eq!(plaintext, manifest.as_bytes());
+    }
+
     #[test]
     fn selects_unique_winners_for_multiple_replicas() {
         let context = BidContext {
