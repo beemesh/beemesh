@@ -235,7 +235,25 @@ async fn schedule_deployment(
     let replicas = std::cmp::max(1, desired_replicas(manifest));
     let manifest_str =
         serde_json::to_string(manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    publish_tender(
+        state,
+        manifest_id,
+        &manifest_str,
+        DEPLOYMENT_KIND,
+        replicas as u32,
+    )
+    .await?;
 
+    Ok(Vec::new())
+}
+
+async fn publish_tender(
+    state: &RestState,
+    manifest_id: &str,
+    manifest_str: &str,
+    workload_type: &str,
+    max_parallel_duplicates: u32,
+) -> Result<(), StatusCode> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -244,12 +262,12 @@ async fn schedule_deployment(
     let tender_bytes = crate::messages::machine::build_tender(
         manifest_id,
         manifest_id,
-        &manifest_str,
+        manifest_str,
         0,
         0,
-        DEPLOYMENT_KIND,
+        workload_type,
         false,
-        replicas as u32,
+        max_parallel_duplicates,
         "",
         false,
         timestamp,
@@ -271,7 +289,7 @@ async fn schedule_deployment(
         })?;
 
     match timeout(Duration::from_secs(10), reply_rx.recv()).await {
-        Ok(Some(Ok(_))) => Ok(Vec::new()),
+        Ok(Some(Ok(_))) => Ok(()),
         Ok(Some(Err(e))) => {
             warn!("Tender publication failed for {}: {}", manifest_id, e);
             Err(StatusCode::BAD_GATEWAY)
@@ -285,6 +303,50 @@ async fn schedule_deployment(
             Err(StatusCode::GATEWAY_TIMEOUT)
         }
     }
+}
+
+fn build_delete_manifest(record: &KubeResourceRecord) -> Value {
+    let mut annotations = Map::new();
+    annotations.insert(
+        "beemesh.io/operation".into(),
+        Value::String("delete".to_string()),
+    );
+    annotations.insert(
+        "beemesh.io/manifest-id".into(),
+        Value::String(record.uid.clone()),
+    );
+
+    let mut metadata = Map::new();
+    metadata.insert("name".into(), Value::String(record.name.clone()));
+    metadata.insert("namespace".into(), Value::String(record.namespace.clone()));
+    metadata.insert("annotations".into(), Value::Object(annotations));
+
+    let mut spec = Map::new();
+    spec.insert("replicas".into(), Value::Number(0.into()));
+
+    Value::Object({
+        let mut manifest = Map::new();
+        manifest.insert(
+            "apiVersion".into(),
+            Value::String(record.api_version.clone()),
+        );
+        manifest.insert("kind".into(), Value::String(record.kind.clone()));
+        manifest.insert("metadata".into(), Value::Object(metadata));
+        manifest.insert("spec".into(), Value::Object(spec));
+        manifest
+    })
+}
+
+async fn publish_delete_tender(
+    state: &RestState,
+    manifest_id: &str,
+    record: &KubeResourceRecord,
+) -> Result<(), StatusCode> {
+    let manifest = build_delete_manifest(record);
+    let manifest_str =
+        serde_json::to_string(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    publish_tender(state, manifest_id, &manifest_str, "delete", 1).await
 }
 
 async fn delete_manifest_from_peers(_state: &RestState, manifest_id: &str, peers: &[String]) {
@@ -549,7 +611,17 @@ async fn delete_deployment(
 
     if let Some(key) = key_opt {
         let record = store.remove(&key);
+        let kube_record = record.as_ref().and_then(|r| r.kube.clone());
         drop(store);
+
+        if let Some(kube_metadata) = kube_record {
+            publish_delete_tender(&state, &key, &kube_metadata).await?;
+        } else {
+            warn!(
+                "delete_deployment: no Kubernetes metadata stored for manifest {} (skipping tender)",
+                key
+            );
+        }
 
         if let Some(record) = record {
             let assigned = record.assigned_peers.unwrap_or_default();
