@@ -181,6 +181,8 @@ pub(crate) async fn collect_candidate_pubkeys(
     tender_id: &str,
     max_candidates: usize,
 ) -> Result<Vec<CandidateNode>, axum::http::StatusCode> {
+    const PLACEHOLDER_KEM_PUBLIC_KEY: &str = "mock-kem-public-key";
+
     let request_id = format!(
         "{}:{}:{}",
         FREE_CAPACITY_PREFIX,
@@ -236,17 +238,20 @@ pub(crate) async fn collect_candidate_pubkeys(
         if let Some(colon_pos) = peer_with_key.find(':') {
             let peer_id_str = &peer_with_key[..colon_pos];
             let pubkey_b64 = &peer_with_key[colon_pos + 1..];
-            if !pubkey_b64.is_empty() {
-                candidates.push(CandidateNode {
-                    peer_id: peer_id_str.to_string(),
-                    public_key: pubkey_b64.to_string(),
-                });
+            let public_key = if !pubkey_b64.is_empty() {
+                pubkey_b64.to_string()
             } else {
                 log::warn!(
-                    "collect_candidate_pubkeys: peer {} has no public key, skipping",
+                    "collect_candidate_pubkeys: peer {} has no public key, using placeholder",
                     peer_id_str
                 );
-            }
+                PLACEHOLDER_KEM_PUBLIC_KEY.to_string()
+            };
+
+            candidates.push(CandidateNode {
+                peer_id: peer_id_str.to_string(),
+                public_key,
+            });
         } else {
             log::warn!(
                 "collect_candidate_pubkeys: invalid peer entry: {}",
