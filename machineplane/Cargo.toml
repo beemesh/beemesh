@@ -1,17 +1,8 @@
 [package]
-name = "beemesh-machineplane"
+name = "machineplane"
 version = "0.1.0"
 edition = "2024"
-# build script removed – no FlatBuffers generation needed
 description = "Beemesh machineplane daemon"
-
-[lib]
-name = "machineplane"
-path = "src/lib.rs"
-
-[[bin]]
-name = "machineplane"
-path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"
