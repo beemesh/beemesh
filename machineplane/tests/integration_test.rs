@@ -17,7 +17,7 @@ use tokio::time::sleep;
 mod test_utils;
 use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
 
-// We will start machines directly in this process by calling `start_machine(cli).await`.
+// We will start machines directly in this process by calling `start_machineplane(cli).await`.
 
 /// Tests the full host application flow.
 ///

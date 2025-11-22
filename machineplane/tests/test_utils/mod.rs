@@ -1,4 +1,4 @@
-use machineplane::{Cli, start_machine};
+use machineplane::{Cli, start_machineplane};
 use std::sync::Once;
 use std::time::Duration;
 use tokio::process::{Child, Command};
@@ -198,7 +198,7 @@ pub async fn start_nodes(clis: Vec<Cli>, startup_delay: Duration) -> NodeGuard {
         cleaned_up: false,
     };
     for cli in clis {
-        match start_machine(cli).await {
+        match start_machineplane(cli).await {
             Ok(mut handles) => {
                 guard.handles.append(&mut handles);
             }
