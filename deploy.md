@@ -19,8 +19,6 @@ spec:
       args:
         - "--libp2p-quic-port"
         - "4001"
-        - "--disable-scheduling"
-        - "--disable-machine-api"
       ports:
         - containerPort: 4001
           hostPort: 4001
@@ -40,8 +38,6 @@ spec:
       - name: RUST_LOG
         value: "debug"
       args:
-        - "--disable-rest-api"
-        - "--disable-machine-api"
         - "--bootstrap-peer"
         - "/ip4/127.0.0.1/udp/4001/quic-v1"
         - "--podman-socket"
