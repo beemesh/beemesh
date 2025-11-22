@@ -91,7 +91,17 @@ pub async fn start_machineplane(
     // initialize logger but don't panic if already initialized
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
-    runtimes::configure_podman_runtime(cli.podman_socket.clone());
+    let podman_socket = cli
+        .podman_socket
+        .filter(|value| !value.trim().is_empty())
+        .or_else(runtimes::podman::PodmanEngine::detect_podman_socket)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Podman socket is required. Provide --podman-socket or set PODMAN_HOST/CONTAINER_HOST"
+            )
+        })?;
+
+    runtimes::configure_podman_runtime(Some(podman_socket.clone()));
 
     // Load or generate libp2p keypair
     let keypair = if cli.ephemeral {

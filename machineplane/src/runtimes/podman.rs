@@ -175,7 +175,7 @@ impl PodmanEngine {
             .expect("podman force remote rwlock poisoned")
     }
 
-    fn normalize_socket(value: &str) -> String {
+    pub fn normalize_socket(value: &str) -> String {
         if value.contains("://") {
             value.to_string()
         } else {
@@ -184,7 +184,7 @@ impl PodmanEngine {
     }
 
     /// Detect a podman socket URL from configuration, environment, or common locations
-    fn detect_podman_socket() -> Option<String> {
+    pub fn detect_podman_socket() -> Option<String> {
         if let Some(socket) = Self::socket_override() {
             return Some(socket);
         }
@@ -1238,6 +1238,9 @@ spec:
     #[tokio::test]
     async fn detects_podman_socket_from_xdg_runtime_dir() {
         PodmanEngine::configure_runtime(None, false);
+
+        let _podman_env_guard = EnvGuard::set("PODMAN_HOST", "");
+        let _container_env_guard = EnvGuard::set("CONTAINER_HOST", "");
 
         let unique_dir =
             std::env::temp_dir().join(format!("beemesh-podman-test-{}", std::process::id()));
