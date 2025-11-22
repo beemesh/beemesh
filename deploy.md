@@ -1,3 +1,5 @@
+podman build -t beemesh-machineplane -f machineplane/Dockerfile .
+
 Machineplane manifest
 ```
 apiVersion: v1
