@@ -83,16 +83,8 @@ impl Default for Cli {
     }
 }
 
-/// Start the machineplane runtime using the provided CLI configuration.
-/// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
-pub async fn start_machineplane(
-    cli: DaemonConfig,
-) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
-    // initialize logger but don't panic if already initialized
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
-
-    let podman_socket = cli
-        .podman_socket
+fn resolve_and_configure_podman_socket(cli_socket: Option<String>) -> anyhow::Result<String> {
+    let podman_socket = cli_socket
         .filter(|value| !value.trim().is_empty())
         .or_else(runtimes::podman::PodmanEngine::detect_podman_socket)
         .ok_or_else(|| {
@@ -101,7 +93,29 @@ pub async fn start_machineplane(
             )
         })?;
 
-    runtimes::configure_podman_runtime(Some(podman_socket.clone()));
+    let normalized = runtimes::podman::PodmanEngine::normalize_socket(&podman_socket);
+    // SAFETY: Setting process environment variables at startup is required so all runtime
+    // consumers (including child processes) consistently use the configured Podman socket.
+    unsafe {
+        std::env::set_var("PODMAN_HOST", &normalized);
+        std::env::set_var("CONTAINER_HOST", &normalized);
+    }
+
+    runtimes::configure_podman_runtime(Some(normalized.clone()));
+
+    Ok(normalized)
+}
+
+/// Start the machineplane runtime using the provided CLI configuration.
+/// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
+pub async fn start_machineplane(
+    cli: DaemonConfig,
+) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
+    // initialize logger but don't panic if already initialized
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+
+    let podman_socket = resolve_and_configure_podman_socket(cli.podman_socket.clone())?;
+    log::info!("Using Podman socket: {}", podman_socket);
 
     // Load or generate libp2p keypair
     let keypair = if cli.ephemeral {
@@ -231,4 +245,45 @@ pub async fn start_machineplane(
     let mut all = vec![libp2p_handle];
     all.extend(handles);
     Ok(all)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_and_configure_podman_socket;
+    use serial_test::serial;
+
+    fn restore_env_var(key: &str, value: Option<String>) {
+        // SAFETY: Tests reset the environment for isolation within a single-threaded context.
+        unsafe {
+            if let Some(original) = value {
+                std::env::set_var(key, original);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn configure_socket_normalizes_and_exports_env() {
+        let original_podman = std::env::var("PODMAN_HOST").ok();
+        let original_container = std::env::var("CONTAINER_HOST").ok();
+
+        let normalized =
+            resolve_and_configure_podman_socket(Some("/tmp/test-podman.sock".to_string())).unwrap();
+
+        assert_eq!(normalized, "unix:///tmp/test-podman.sock");
+        assert_eq!(
+            std::env::var("PODMAN_HOST").unwrap(),
+            "unix:///tmp/test-podman.sock"
+        );
+        assert_eq!(
+            std::env::var("CONTAINER_HOST").unwrap(),
+            "unix:///tmp/test-podman.sock"
+        );
+
+        crate::runtimes::configure_podman_runtime(None);
+        restore_env_var("PODMAN_HOST", original_podman);
+        restore_env_var("CONTAINER_HOST", original_container);
+    }
 }
