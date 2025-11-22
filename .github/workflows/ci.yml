@@ -30,7 +30,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Cargo build
-        run: cargo build --workspace --all-targets --verbose
+        run: cargo build --workspace --all-targets
 
       - name: Install dependencies
         run: |
@@ -48,4 +48,4 @@ jobs:
       - name: Cargo test
         env:
           PODMAN_HOST: ${{ env.PODMAN_HOST }}
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace
