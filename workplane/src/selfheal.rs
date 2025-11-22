@@ -18,7 +18,7 @@ use crate::discovery::ServiceRecord;
 use crate::manifest::WorkloadManifest;
 use crate::network::Network;
 use crate::streams::{RPCRequest, send_request};
-use crate::task::Task;
+use crate::tender::Tender;
 
 pub struct SelfHealer {
     network: Network,
