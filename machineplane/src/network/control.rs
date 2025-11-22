@@ -1,4 +1,4 @@
-use crate::messages::constants::SCHEDULER_PROPOSALS;
+use crate::messages::constants::{SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
 use crate::network::behaviour::MyBehaviour;
 use crate::network::{capacity, utils};
 use libp2p::kad::{QueryId, RecordKey};
@@ -20,6 +20,10 @@ pub enum Libp2pControl {
         request_id: String,
         reply_tx: mpsc::UnboundedSender<String>,
         payload: Vec<u8>,
+    },
+    PublishTender {
+        payload: Vec<u8>,
+        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
     SendApplyRequest {
         peer_id: PeerId,
@@ -100,6 +104,17 @@ pub async fn handle_control_message(
             reply_tx,
         } => {
             handle_send_delete_request(peer_id, delete_request, reply_tx, swarm).await;
+        }
+        Libp2pControl::PublishTender { payload, reply_tx } => {
+            let topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
+            match swarm.behaviour_mut().gossipsub.publish(topic, payload) {
+                Ok(_) => {
+                    let _ = reply_tx.send(Ok(()));
+                }
+                Err(e) => {
+                    let _ = reply_tx.send(Err(format!("Failed to publish tender: {}", e)));
+                }
+            }
         }
 
         Libp2pControl::FindManifestHolders {
