@@ -1142,7 +1142,7 @@ mod tests {
     #[test]
     fn selects_unique_winners_for_multiple_replicas() {
         let context = BidContext {
-            task_id: "task-a".to_string(),
+            tender_id: "task-a".to_string(),
             manifest_id: "task-a".to_string(),
             replicas: 2,
             bids: vec![
@@ -1170,7 +1170,7 @@ mod tests {
     #[test]
     fn local_node_only_selected_once_even_with_multiple_replicas() {
         let context = BidContext {
-            task_id: "task-b".to_string(),
+            tender_id: "task-b".to_string(),
             manifest_id: "task-b".to_string(),
             replicas: 3,
             bids: vec![
