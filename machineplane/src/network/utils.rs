@@ -37,5 +37,12 @@ pub fn extract_manifest_id_from_request_id(request_id: &str) -> Option<String> {
         }
     }
 
+    // Fallback: treat the entire request id as the manifest identifier when no prefix is present.
+    // Some callers send the manifest ID directly as the request id, so avoid dropping those
+    // capacity requests.
+    if !request_id.is_empty() {
+        return Some(request_id.to_string());
+    }
+
     None
 }
