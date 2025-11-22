@@ -77,7 +77,6 @@ impl Drop for NodeGuard {
 #[allow(dead_code)]
 pub fn make_test_cli(
     rest_api_port: u16,
-    api_socket: Option<String>,
     bootstrap_peers: Vec<String>,
     libp2p_quic_port: u16,
 ) -> Cli {
@@ -91,7 +90,6 @@ pub fn make_test_cli(
         rest_api_host: "127.0.0.1".to_string(),
         rest_api_port,
         node_name: None,
-        api_socket,
         key_dir: String::from("/tmp/.beemesh_test_unused"),
         bootstrap_peer: bootstrap_peers,
         libp2p_quic_port,

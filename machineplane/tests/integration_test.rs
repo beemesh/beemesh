@@ -37,10 +37,9 @@ async fn test_run_host_application() {
 
     // start three nodes using the reusable helper. node_3000 gets fixed libp2p port 4001,
     // node_3100 gets port 4002, both serve as bootstrap peers
-    let cli1 = make_test_cli(3000, None, vec![], 4001);
+    let cli1 = make_test_cli(3000, vec![], 4001);
     let cli2 = make_test_cli(
         3100,
-        None,
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
     );
@@ -49,7 +48,7 @@ async fn test_run_host_application() {
         "/ip4/127.0.0.1/udp/4001/quic-v1".to_string(),
         "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
-    let cli3 = make_test_cli(3200, None, bootstrap_peers, 0);
+    let cli3 = make_test_cli(3200, bootstrap_peers, 0);
 
     let mut guard = start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await;
 

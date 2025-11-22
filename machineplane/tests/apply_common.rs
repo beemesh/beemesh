@@ -17,10 +17,9 @@ use machineplane::Cli;
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 
 fn make_standard_node_clis() -> Vec<Cli> {
-    let cli1 = make_test_cli(3000, None, vec![], 4001);
+    let cli1 = make_test_cli(3000, vec![], 4001);
     let cli2 = make_test_cli(
         3100,
-        None,
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
     );
@@ -29,7 +28,7 @@ fn make_standard_node_clis() -> Vec<Cli> {
         "/ip4/127.0.0.1/udp/4001/quic-v1".to_string(),
         "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
-    let cli3 = make_test_cli(3200, None, bootstrap_peers, 0);
+    let cli3 = make_test_cli(3200, bootstrap_peers, 0);
 
     vec![cli1, cli2, cli3]
 }

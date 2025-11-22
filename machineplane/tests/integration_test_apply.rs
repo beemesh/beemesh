@@ -256,7 +256,7 @@ async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
 }
 
 async fn start_test_nodes_for_podman() -> NodeGuard {
-    let mut cli1 = make_test_cli(3000, None, vec![], 4001);
+    let mut cli1 = make_test_cli(3000, vec![], 4001);
     cli1.mock_only_runtime = false;
     cli1.signing_ephemeral = false;
     cli1.kem_ephemeral = false;
@@ -264,7 +264,6 @@ async fn start_test_nodes_for_podman() -> NodeGuard {
 
     let mut cli2 = make_test_cli(
         3100,
-        None,
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
     );
@@ -278,7 +277,7 @@ async fn start_test_nodes_for_podman() -> NodeGuard {
         "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
 
-    let mut cli3 = make_test_cli(3200, None, bootstrap_peers.clone(), 0);
+    let mut cli3 = make_test_cli(3200, bootstrap_peers.clone(), 0);
     cli3.mock_only_runtime = false;
     cli3.signing_ephemeral = false;
     cli3.kem_ephemeral = false;

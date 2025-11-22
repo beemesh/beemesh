@@ -304,57 +304,6 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
         }
     }));
 
-    // host api server - for gateway to host accesss
-    if let Some(socket_path) = cli.api_socket.clone() {
-        // Ensure parent directory exists for the UDS socket. If we cannot create it,
-        // log and skip starting the host API rather than causing the whole process to exit.
-        let socket = socket_path.clone();
-        let mut start_uds = true;
-        if let Some(parent) = std::path::Path::new(&socket).parent() {
-            if !parent.exists() {
-                match std::fs::create_dir_all(parent) {
-                    Ok(_) => {
-                        // set permissive dir perms if possible
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(
-                                parent,
-                                std::fs::Permissions::from_mode(0o755),
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "could not create parent dir for UDS {}: {}. Skipping host API.",
-                            parent.display(),
-                            e
-                        );
-                        start_uds = false;
-                    }
-                }
-            }
-        }
-
-        if start_uds {
-            // remove stale socket file if present
-            let _ = std::fs::remove_file(&socket);
-            let app2 = axum::Router::new(); // Empty UDS API (hostapi removed)
-            let socket_clone = socket.clone();
-            handles.push(tokio::spawn(async move {
-                // bind a unix domain socket and serve the axum app on it
-                match tokio::net::UnixListener::bind(&socket_clone) {
-                    Ok(listener) => {
-                        if let Err(e) = axum::serve(listener, app2.into_make_service()).await {
-                            log::error!("axum UDS server error: {}", e);
-                        }
-                    }
-                    Err(e) => log::error!("failed to bind UDS {}: {}", socket_clone, e),
-                }
-            }));
-        }
-    }
-
     // Prepend libp2p handle so caller can decide how to await
     let mut all = vec![libp2p_handle];
     all.extend(handles);
