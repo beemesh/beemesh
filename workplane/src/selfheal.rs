@@ -112,13 +112,13 @@ impl SelfHealer {
                             .await
                             {
                                 Ok(()) => {
-                                    metrics::gauge!("workplane.reconciliation.failures", 0.0);
+                                    crate::gauge!("workplane.reconciliation.failures", 0.0);
                                 }
                                 Err(err) => {
-                                    metrics::increment_counter!(
+                                    crate::increment_counter!(
                                         "workplane.reconciliation.failures"
                                     );
-                                    metrics::gauge!("workplane.reconciliation.failures", 1.0);
+                                    crate::gauge!("workplane.reconciliation.failures", 1.0);
                                     warn!(error = %err, "replica reconciliation failed");
                                 }
                             }
@@ -167,19 +167,19 @@ async fn reconcile_replicas(
     manifest: &Arc<Vec<u8>>,
     manifest_spec: &Arc<WorkloadManifest>,
 ) -> Result<()> {
-    metrics::gauge!("workplane.reconciliation.scale_up", 0.0);
-    metrics::gauge!("workplane.reconciliation.scale_down", 0.0);
+    crate::gauge!("workplane.reconciliation.scale_up", 0.0);
+    crate::gauge!("workplane.reconciliation.scale_down", 0.0);
     if !policy_allows_workload(cfg, &cfg.namespace, &cfg.workload_name) {
         debug!(
             namespace = %cfg.namespace,
             workload = %cfg.workload_name,
             "skipping reconciliation due to workload policy",
         );
-        metrics::gauge!("workplane.reconciliation.skipped_due_to_policy", 1.0);
-        metrics::increment_counter!("workplane.reconciliation.skipped_due_to_policy");
+        crate::gauge!("workplane.reconciliation.skipped_due_to_policy", 1.0);
+        crate::increment_counter!("workplane.reconciliation.skipped_due_to_policy");
         return Ok(());
     }
-    metrics::gauge!("workplane.reconciliation.skipped_due_to_policy", 0.0);
+    crate::gauge!("workplane.reconciliation.skipped_due_to_policy", 0.0);
     let desired_replicas = desired_replica_count(cfg, manifest_spec);
     let relevant_records = current_workload_records(network, cfg);
     let evaluated_records = relevant_records
@@ -208,8 +208,8 @@ async fn reconcile_replicas(
         workload = %cfg.workload_name,
         "replica health evaluated"
     );
-    metrics::gauge!("workplane.replicas.healthy", healthy.len() as f64);
-    metrics::gauge!("workplane.replicas.unhealthy", unhealthy.len() as f64);
+    crate::gauge!("workplane.replicas.healthy", healthy.len() as f64);
+    crate::gauge!("workplane.replicas.unhealthy", unhealthy.len() as f64);
 
     // For stateful workloads, ensure we only keep one healthy replica per ordinal.
     let mut duplicates = Vec::new();
@@ -231,8 +231,8 @@ async fn reconcile_replicas(
     // Determine deficit by only counting healthy replicas.
     if healthy.len() < desired_replicas {
         let deficit = desired_replicas - healthy.len();
-        metrics::gauge!("workplane.reconciliation.scale_up", deficit as f64);
-        metrics::increment_counter!("workplane.reconciliation.scale_up", deficit);
+        crate::gauge!("workplane.reconciliation.scale_up", deficit as f64);
+        crate::increment_counter!("workplane.reconciliation.scale_up", deficit);
         if manifest_spec.kind.is_stateful() {
             let missing_ordinals = missing_stateful_ordinals(desired_replicas, &healthy);
             for ordinal in missing_ordinals.into_iter().take(deficit) {
@@ -265,9 +265,9 @@ async fn reconcile_replicas(
     }
 
     let removal_total = removal_candidates.len();
-    metrics::gauge!("workplane.reconciliation.scale_down", removal_total as f64);
+    crate::gauge!("workplane.reconciliation.scale_down", removal_total as f64);
     if removal_total > 0 {
-        metrics::increment_counter!("workplane.reconciliation.scale_down", removal_total);
+        crate::increment_counter!("workplane.reconciliation.scale_down", removal_total);
     }
 
     for record in removal_candidates {

@@ -85,7 +85,7 @@ impl Workload {
                             Ok(resp) => return resp,
                             Err(err) => {
                                 warn!(error = %err, method = %req.method, "failed to proxy request to leader");
-                                metrics::increment_counter!("workplane.raft.follower_rejections");
+                                crate::increment_counter!("workplane.raft.follower_rejections");
                                 return RPCResponse {
                                     ok: false,
                                     error: Some("leader unreachable".to_string()),
@@ -97,7 +97,7 @@ impl Workload {
                         warn!(leader = %leader_id, "no WDHT record for leader to proxy request");
                     }
                 }
-                metrics::increment_counter!("workplane.raft.follower_rejections");
+                crate::increment_counter!("workplane.raft.follower_rejections");
                 return RPCResponse {
                     ok: false,
                     error: Some("not leader".to_string()),

@@ -57,7 +57,7 @@ impl RaftManager {
             self.read_only = false;
             self.epoch = self.epoch.saturating_add(1);
             info!(leader = %self_id, epoch = self.epoch, "initializing single-node raft");
-            metrics::increment_counter!("workplane.raft.leader_elections");
+            crate::increment_counter!("workplane.raft.leader_elections");
             return LeadershipUpdate {
                 leader_id: self.leader_id.clone(),
                 epoch: self.epoch,
@@ -79,7 +79,7 @@ impl RaftManager {
             epoch = self.epoch,
             "bootstrapped raft group"
         );
-        metrics::increment_counter!("workplane.raft.leader_elections");
+        crate::increment_counter!("workplane.raft.leader_elections");
         LeadershipUpdate {
             leader_id: self.leader_id.clone(),
             epoch: self.epoch,
@@ -109,9 +109,9 @@ impl RaftManager {
             self.epoch = self.epoch.saturating_add(1);
             if let Some(ref new_leader) = self.leader_id {
                 info!(leader = %new_leader, epoch = self.epoch, "leader changed");
-                metrics::increment_counter!("workplane.raft.leader_changes");
+                crate::increment_counter!("workplane.raft.leader_changes");
                 if self.self_id.as_deref() == Some(new_leader.as_str()) {
-                    metrics::increment_counter!("workplane.raft.leader_elections");
+                    crate::increment_counter!("workplane.raft.leader_elections");
                 }
             } else {
                 warn!(epoch = self.epoch, "leader became None");

@@ -118,14 +118,6 @@ pub type ApplyCodec = ByteCodec;
 pub type HandshakeCodec = ByteCodec;
 pub type DeleteCodec = ByteCodec;
 
-// Handshake state used by the handshake behaviour handlers
-#[derive(Debug)]
-pub struct HandshakeState {
-    pub attempts: u8,
-    pub last_attempt: tokio::time::Instant,
-    pub confirmed: bool,
-}
-
 pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
     NODE_KEYPAIR.lock().unwrap().clone()
 }
@@ -372,7 +364,7 @@ pub async fn start_libp2p_node(
     let mut pending_queries: StdHashMap<String, Vec<mpsc::UnboundedSender<String>>> =
         StdHashMap::new();
 
-    let mut handshake_states: HashMap<PeerId, HandshakeState> = HashMap::new();
+    let mut handshake_states: HashMap<PeerId, behaviour::HandshakeState> = HashMap::new();
     let mut handshake_interval = tokio::time::interval(Duration::from_secs(1));
     let mut renew_interval = tokio::time::interval(Duration::from_millis(500));
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(2));
@@ -388,7 +380,7 @@ pub async fn start_libp2p_node(
 
     // Spawn Scheduler
     let local_node_id = swarm.local_peer_id().to_string();
-    let scheduler = crate::scheduler::Scheduler::new(local_node_id, sched_output_tx);
+    let scheduler = crate::scheduler::Scheduler::new(local_node_id.clone(), sched_output_tx);
     let scheduler = std::sync::Arc::new(scheduler);
 
     tokio::spawn(async move {
@@ -535,12 +527,14 @@ pub async fn start_libp2p_node(
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
 
                         // Ensure we track handshake state and proactively include the peer in our mesh
-                        handshake_states.entry(peer_id).or_insert(HandshakeState {
-                            attempts: 0,
-                            // Make the peer immediately eligible for the next handshake tick
-                            last_attempt: Instant::now() - Duration::from_secs(3),
-                            confirmed: false,
-                        });
+                        handshake_states
+                            .entry(peer_id)
+                            .or_insert(behaviour::HandshakeState {
+                                attempts: 0,
+                                // Make the peer immediately eligible for the next handshake tick
+                                last_attempt: Instant::now() - Duration::from_secs(3),
+                                confirmed: false,
+                            });
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
 
                         // Bootstrap DHT after establishing connections to improve local test reliability

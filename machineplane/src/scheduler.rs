@@ -8,7 +8,7 @@ use crate::messages::constants::{
 };
 use crate::messages::machine;
 use libp2p::gossipsub;
-use log::{debug, error, info, warn};
+use log::{error, info};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -160,7 +160,7 @@ impl Scheduler {
                 tokio::spawn(async move {
                     sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
 
-                    let winners = {
+                    let (winners, manifest_id_opt) = {
                         let mut bids = active_bids.lock().unwrap();
                         if let Some(ctx) = bids.remove(&tender_id_clone) {
                             let winners = select_winners(&ctx, &local_id);
@@ -180,9 +180,9 @@ impl Scheduler {
                                     ctx.tender_id, ctx.manifest_id
                                 );
                             }
-                            winners
+                            (winners, Some(ctx.manifest_id.clone()))
                         } else {
-                            Vec::new()
+                            (Vec::new(), None)
                         }
                     };
 
@@ -214,8 +214,10 @@ impl Scheduler {
                         }
 
                         // 2. Trigger Workload Deployment
+                        let manifest_id = manifest_id_opt.unwrap_or_else(|| tender_id_clone.clone());
+
                         if let Err(e) = outbound_tx.send(SchedulerCommand::DeployWorkload {
-                            manifest_id: ctx.manifest_id.clone(),
+                            manifest_id,
                             manifest_json: manifest_json.clone(),
                             replicas: 1,
                         }) {
@@ -614,7 +616,7 @@ mod runtime_integration {
     }
 
     /// Process manifest deployment using the workload manager
-    async fn process_manifest_deployment(
+    pub async fn process_manifest_deployment(
         swarm: &mut Swarm<MyBehaviour>,
         apply_req: &ApplyRequest,
         manifest_json: &str,
