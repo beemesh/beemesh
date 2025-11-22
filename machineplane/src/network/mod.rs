@@ -612,6 +612,46 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(event)) => {
                         behaviour::kademlia_event(event, None);
                     }
+                    SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
+                        match message {
+                            request_response::Message::Request { request, channel, .. } => {
+                                warn!(
+                                    "Received manifest fetch request from peer={} ({} bytes)",
+                                    peer,
+                                    request.len()
+                                );
+                                let response = b"manifest fetch not implemented".to_vec();
+                                let _ = swarm
+                                    .behaviour_mut()
+                                    .manifest_fetch_rr
+                                    .send_response(channel, response);
+                            }
+                            request_response::Message::Response { request_id, response } => {
+                                let reply_sender = {
+                                    let mut pending_requests = crate::network::control::get_pending_manifest_requests()
+                                        .lock()
+                                        .unwrap();
+                                    pending_requests
+                                        .remove(&request_id)
+                                        .map(|(sender, _)| sender)
+                                };
+
+                                if let Some(reply_tx) = reply_sender {
+                                    if response.is_empty() {
+                                        let _ = reply_tx.send(Err("Empty manifest response".to_string()));
+                                    } else {
+                                        let _ = reply_tx.send(Ok(()));
+                                    }
+                                } else {
+                                    debug!(
+                                        "Received manifest fetch response without pending request: {:?} from {}",
+                                        request_id,
+                                        peer
+                                    );
+                                }
+                            }
+                        }
+                    }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::OutboundFailure { peer, request_id, error, connection_id: _ })) => {
                         warn!("libp2p: manifest fetch outbound failure for peer {}: {:?}", peer, error);
