@@ -29,13 +29,30 @@ pub const FREE_CAPACITY_PREFIX: &str = "beemesh-free-capacity";
 /// Prefix used for replies to free-capacity queries.
 pub const FREE_CAPACITY_REPLY_PREFIX: &str = "beemesh-free-capacity-reply";
 
+/// Default bootstrap peers exposed for public fabrics (peer_id, multiaddress).
+/// Multiaddrs are combined with the peer ID at runtime when dialing.
+pub const DEFAULT_BOOTSTRAP_PEERS: [(&str, &str); 2] = [
+    (
+        "12D3KooWAbcDefGhijkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoP",
+        "/ip4/203.0.113.10/tcp/4001",
+    ),
+    (
+        "12D3KooWZyxWvuTsRqPoNmLkJiHgFeDcBaZyXwVuTsRqPoNmLk",
+        "/ip4/203.0.113.11/tcp/4001",
+    ),
+];
+
 /// Prefix used for lease-related operations
 pub const LEASE_PREFIX: &str = "lease/";
 
 // === TIMEOUTS AND TIMING ===
 
 /// Timeout, in milliseconds, to wait for free-capacity responses from peers.
-pub const FREE_CAPACITY_TIMEOUT_MS: u64 = 500;
+///
+/// A longer window gives slower nodes time to answer capacity queries so
+/// replica scheduling (e.g., replicas=3) can gather enough candidates instead
+/// of failing with HTTP 503 due to under-counted peers.
+pub const FREE_CAPACITY_TIMEOUT_MS: u64 = 2000;
 
 /// Timeout, in seconds, to wait for request-response RPCs (ApplyRequest/ApplyResponse)
 pub const REQUEST_RESPONSE_TIMEOUT_SECS: u64 = 3;

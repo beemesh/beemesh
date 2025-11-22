@@ -2,6 +2,7 @@
 use clap::Parser;
 use env_logger::Env;
 use std::io::Write;
+use std::str::FromStr;
 
 pub mod api;
 pub mod capacity;
@@ -107,9 +108,30 @@ impl Default for Cli {
 
 /// Start the machineplane runtime using the provided CLI configuration.
 /// Returns a Vec of JoinHandles for spawned background tasks (libp2p, servers, etc.).
-pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
+pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     // initialize logger but don't panic if already initialized
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+
+    if cli.bootstrap_peer.is_empty() {
+        let mut defaults = Vec::new();
+        for (peer_id, addr) in messages::constants::DEFAULT_BOOTSTRAP_PEERS {
+            match libp2p::PeerId::from_str(peer_id) {
+                Ok(pid) => defaults.push(format!("{}/p2p/{}", addr, pid)),
+                Err(_) => log::warn!(
+                    "Skipping invalid default bootstrap peer id {} at {}",
+                    peer_id,
+                    addr
+                ),
+            }
+        }
+
+        if defaults.is_empty() {
+            log::info!("No bootstrap peers provided and no valid defaults available");
+        } else {
+            log::info!("No bootstrap peers provided; using built-in defaults");
+            cli.bootstrap_peer = defaults;
+        }
+    }
 
     let scheduling_enabled = !cli.disable_scheduling;
 
@@ -247,7 +269,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // rest api server
     if !cli.disable_rest_api {
-        let app = api::build_router(peer_rx, control_tx.clone());
+        let app = api::build_router(peer_rx, control_tx.clone(), scheduling_enabled);
 
         // Public TCP server
         let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);

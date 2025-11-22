@@ -1,4 +1,15 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
+
+pub const DEFAULT_BOOTSTRAP_PEERS: [(&str, &str); 2] = [
+    (
+        "12D3KooWAbcDefGhijkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoP",
+        "/ip4/203.0.113.10/tcp/4001",
+    ),
+    (
+        "12D3KooWZyxWvuTsRqPoNmLkJiHgFeDcBaZyXwVuTsRqPoNmLk",
+        "/ip4/203.0.113.11/tcp/4001",
+    ),
+];
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -31,6 +42,19 @@ impl Config {
         }
         if self.beemesh_api.is_empty() {
             self.beemesh_api = "http://localhost:8080".to_string();
+        }
+        if self.bootstrap_peer_strings.is_empty() {
+            let mut defaults = Vec::new();
+            for (peer_id, addr) in DEFAULT_BOOTSTRAP_PEERS {
+                match libp2p::PeerId::from_str(peer_id) {
+                    Ok(pid) => defaults.push(format!("{}/p2p/{}", addr, pid)),
+                    Err(_) => {
+                        tracing::warn!(peer_id, addr, "Skipping invalid default bootstrap peer id")
+                    }
+                }
+            }
+
+            self.bootstrap_peer_strings = defaults;
         }
         if self.replica_check_interval == Duration::from_secs(0) {
             self.replica_check_interval = Duration::from_secs(30);
