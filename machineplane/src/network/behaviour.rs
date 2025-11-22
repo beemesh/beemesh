@@ -1,7 +1,7 @@
 use crate::messages::constants::{SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
 use crate::messages::machine;
+use crate::network::control;
 use crate::network::{ApplyCodec, DeleteCodec, HandshakeCodec};
-use crate::network::{capacity, control, utils};
 use crate::scheduler::remove_workloads_by_manifest_id;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{PeerId, autonat, gossipsub, identify, kad, relay, request_response};
@@ -106,11 +106,6 @@ pub fn gossipsub_message(
     peer_id: libp2p::PeerId,
     message: gossipsub::Message,
     topic: gossipsub::TopicHash,
-    swarm: &mut libp2p::Swarm<MyBehaviour>,
-    pending_queries: &mut std::collections::HashMap<
-        String,
-        Vec<tokio::sync::mpsc::UnboundedSender<String>>,
-    >,
 ) {
     debug!("received message from {}", peer_id);
     let payload = &message.data;
@@ -134,77 +129,6 @@ pub fn gossipsub_message(
         } else {
             warn!("Scheduler input channel not initialized, dropping message");
         }
-        return;
-    }
-
-    // Then try CapacityReply
-    if let Ok(cap_req) = crate::messages::machine::decode_capacity_request(payload.as_slice()) {
-        let orig_request_id = cap_req.request_id.clone();
-        let responder_peer = swarm.local_peer_id().to_string();
-
-        let manifest_id = match utils::extract_manifest_id_from_request_id(&orig_request_id) {
-            Some(id) => id,
-            None => {
-                warn!(
-                    "libp2p: capreq id={} missing manifest id, ignoring",
-                    orig_request_id
-                );
-                return;
-            }
-        };
-
-        info!(
-            "libp2p: received capreq id={} manifest_id={} from peer={} payload_bytes={}",
-            orig_request_id,
-            manifest_id,
-            peer_id,
-            message.data.len()
-        );
-
-        let reply = capacity::compose_capacity_reply(
-            "gossipsub",
-            &orig_request_id,
-            &responder_peer,
-            |params| {
-                params.ok = true;
-                params.cpu_milli = cap_req.cpu_milli;
-                params.memory_bytes = cap_req.memory_bytes;
-                params.storage_bytes = cap_req.storage_bytes;
-            },
-        );
-        let payload_len = reply.payload.len();
-
-        match capacity::publish_gossipsub_capacity_reply(
-            &mut swarm.behaviour_mut().gossipsub,
-            &topic,
-            &reply,
-        ) {
-            Ok(_) => {
-                info!(
-                    "libp2p: published capreply for id={} manifest_id={} ({} bytes)",
-                    orig_request_id, manifest_id, payload_len
-                );
-            }
-            Err(e) => {
-                error!(
-                    "libp2p: failed to publish signed capacity reply id={} to {}: {:?}",
-                    orig_request_id, peer_id, e
-                );
-            }
-        }
-        return;
-    }
-
-    if let Ok(cap_reply) = crate::messages::machine::decode_capacity_reply(payload.as_slice()) {
-        let request_part = cap_reply.request_id.clone();
-        info!(
-            "libp2p: received capreply for id={} from peer={}",
-            request_part, peer_id
-        );
-        // KEM pubkey caching has been removed; keys are expected directly in capacity replies
-        utils::notify_capacity_observers(pending_queries, &request_part, move || {
-            peer_id.to_string()
-        });
         return;
     }
 

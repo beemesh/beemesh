@@ -144,34 +144,16 @@ pub struct PortMapping {
 pub struct DeploymentConfig {
     /// Number of replicas to deploy
     pub replicas: u32,
-    /// Resource limits
-    pub resources: ResourceLimits,
     /// Environment variables
     pub env: HashMap<String, String>,
     /// Additional runtime-specific options
     pub runtime_options: HashMap<String, String>,
 }
 
-/// Resource limits for a workload
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceLimits {
-    /// CPU limit (in cores, e.g., 1.5)
-    pub cpu: Option<f64>,
-    /// Memory limit (in bytes)
-    pub memory: Option<u64>,
-    /// Storage limit (in bytes)
-    pub storage: Option<u64>,
-}
-
 impl Default for DeploymentConfig {
     fn default() -> Self {
         Self {
             replicas: 1,
-            resources: ResourceLimits {
-                cpu: None,
-                memory: None,
-                storage: None,
-            },
             env: HashMap::new(),
             runtime_options: HashMap::new(),
         }
@@ -429,7 +411,6 @@ mod tests {
     async fn test_default_deployment_config() {
         let config = DeploymentConfig::default();
         assert_eq!(config.replicas, 1);
-        assert!(config.resources.cpu.is_none());
         assert!(config.env.is_empty());
     }
 }

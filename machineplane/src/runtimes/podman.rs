@@ -563,19 +563,6 @@ impl RuntimeEngine for PodmanEngine {
             args.extend(&["--replicas", &replicas_str]);
         }
 
-        // Add resource limits if specified
-        let memory_str;
-        if let Some(memory) = config.resources.memory {
-            memory_str = format!("{}b", memory);
-            args.extend(&["--memory", &memory_str]);
-        }
-
-        let cpu_str;
-        if let Some(cpu) = config.resources.cpu {
-            cpu_str = format!("{}", cpu);
-            args.extend(&["--cpus", &cpu_str]);
-        }
-
         // Add environment variables
         let mut env_strings = Vec::new();
         for (key, value) in &config.env {

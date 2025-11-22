@@ -82,8 +82,6 @@ pub struct Tender {
     pub manifest_ref: String,
     /// Inline manifest (optional)
     pub manifest_json: String,
-    pub requirements_cpu_cores: u32,
-    pub requirements_memory_mb: u32,
     /// "stateless" | "stateful"
     pub workload_type: String,
     pub duplicate_tolerant: bool,
@@ -137,35 +135,6 @@ pub struct LeaseHint {
     pub renew_nonce: u64,
     pub timestamp: u64,
     pub signature: Vec<u8>,
-}
-
-// ============================================================================
-// Capacity Messages
-// ============================================================================
-
-/// Request for node capacity information
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CapacityRequest {
-    pub request_id: String,
-    pub cpu_milli: u32,
-    pub memory_bytes: u64,
-    pub storage_bytes: u64,
-    pub replicas: u32,
-}
-
-/// Response with node capacity information
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CapacityReply {
-    pub request_id: String,
-    pub ok: bool,
-    pub node_id: String,
-    pub region: String,
-    /// Optional base64-encoded KEM public key for node
-    pub kem_pubkey: String,
-    pub capabilities: Vec<String>,
-    pub cpu_available_milli: u32,
-    pub memory_available_bytes: u64,
-    pub storage_available_bytes: u64,
 }
 
 // ============================================================================
@@ -340,26 +309,12 @@ impl Default for DeleteRequest {
     }
 }
 
-impl Default for CapacityRequest {
-    fn default() -> Self {
-        Self {
-            request_id: String::new(),
-            cpu_milli: 0,
-            memory_bytes: 0,
-            storage_bytes: 0,
-            replicas: 1,
-        }
-    }
-}
-
 impl Default for Tender {
     fn default() -> Self {
         Self {
             id: String::new(),
             manifest_ref: String::new(),
             manifest_json: String::new(),
-            requirements_cpu_cores: 0,
-            requirements_memory_mb: 0,
             workload_type: "stateless".to_string(),
             duplicate_tolerant: true,
             placement_token: String::new(),

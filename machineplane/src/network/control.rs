@@ -1,12 +1,10 @@
-use crate::messages::constants::{SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
+use crate::messages::constants::SCHEDULER_TENDERS;
 use crate::network::behaviour::{MyBehaviour, SCHEDULER_INPUT_TX};
-use crate::network::{capacity, utils};
 use libp2p::kad::{QueryId, RecordKey};
 use libp2p::{PeerId, Swarm, gossipsub};
 use log::{debug, info};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::collections::HashMap as StdHashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -16,11 +14,6 @@ type ManifestRequestSender = mpsc::UnboundedSender<Result<(), String>>;
 /// Control messages sent from the rest API or other parts of the host to the libp2p task.
 #[derive(Debug)]
 pub enum Libp2pControl {
-    QueryCapacityWithPayload {
-        request_id: String,
-        reply_tx: mpsc::UnboundedSender<String>,
-        payload: Vec<u8>,
-    },
     PublishTender {
         payload: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
@@ -69,28 +62,8 @@ pub enum Libp2pControl {
 }
 
 /// Handle incoming control messages from other parts of the host (REST handlers)
-pub async fn handle_control_message(
-    msg: Libp2pControl,
-    swarm: &mut Swarm<MyBehaviour>,
-    topic: &gossipsub::IdentTopic,
-    pending_queries: &mut StdHashMap<String, Vec<mpsc::UnboundedSender<String>>>,
-) {
+pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBehaviour>) {
     match msg {
-        Libp2pControl::QueryCapacityWithPayload {
-            request_id,
-            reply_tx,
-            payload,
-        } => {
-            handle_query_capacity_with_payload(
-                request_id,
-                reply_tx,
-                payload,
-                swarm,
-                topic,
-                pending_queries,
-            )
-            .await;
-        }
         Libp2pControl::SendApplyRequest {
             peer_id,
             manifest,
@@ -363,11 +336,7 @@ pub fn enqueue_control(msg: Libp2pControl) {
 }
 
 /// Drain and handle enqueued controls. Should be called from the libp2p task (async context).
-pub async fn drain_enqueued_controls(
-    swarm: &mut Swarm<MyBehaviour>,
-    topic: &gossipsub::IdentTopic,
-    pending_queries: &mut StdHashMap<String, Vec<mpsc::UnboundedSender<String>>>,
-) {
+pub async fn drain_enqueued_controls(swarm: &mut Swarm<MyBehaviour>) {
     // Move queued items into a local vector to minimize lock time
     let mut items = Vec::new();
     {
@@ -378,7 +347,7 @@ pub async fn drain_enqueued_controls(
     }
 
     for msg in items {
-        handle_control_message(msg, swarm, topic, pending_queries).await;
+        handle_control_message(msg, swarm).await;
     }
 }
 
@@ -422,82 +391,6 @@ pub fn list_active_announces() -> Vec<String> {
 // ============================================================================
 
 /// Handle QueryCapacityWithPayload control message
-pub async fn handle_query_capacity_with_payload(
-    request_id: String,
-    reply_tx: mpsc::UnboundedSender<String>,
-    payload: Vec<u8>,
-    swarm: &mut Swarm<MyBehaviour>,
-    _topic: &gossipsub::IdentTopic,
-    pending_queries: &mut StdHashMap<String, Vec<mpsc::UnboundedSender<String>>>,
-) {
-    // register the reply channel so incoming reply messages can be forwarded
-    log::debug!(
-        "libp2p: control QueryCapacityWithPayload received request_id={} payload_len={}",
-        request_id,
-        payload.len()
-    );
-    pending_queries
-        .entry(request_id.clone())
-        .or_insert_with(Vec::new)
-        .push(reply_tx);
-
-    // Parse the provided payload and rebuild it into a TopicMessage wrapper
-    match crate::messages::machine::decode_capacity_request(&payload) {
-        Ok(cap_req) => {
-            let finished = crate::messages::machine::build_capacity_request_with_id(
-                &request_id,
-                cap_req.cpu_milli,
-                cap_req.memory_bytes,
-                cap_req.storage_bytes,
-                cap_req.replicas,
-            );
-            let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
-            match swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(proposals_topic, finished)
-            {
-                Ok(_) => {
-                    log::info!(
-                        "libp2p: published capreq request_id={} to scheduler-proposals",
-                        request_id
-                    );
-                }
-                Err(err) => {
-                    log::error!(
-                        "libp2p: failed to publish capreq request_id={} to scheduler-proposals: {:?}",
-                        request_id,
-                        err
-                    );
-                }
-            }
-
-            // Also notify local pending senders directly so the originator is always considered
-            // a potential responder. This ensures single-node operation and makes the
-            // origining host countable when collecting responders. Include the local KEM
-            // public key in the same format as remote responses.
-            let responder_peer = swarm.local_peer_id().to_string();
-            let reply =
-                capacity::compose_capacity_reply("local", &request_id, &responder_peer, |params| {
-                    params.cpu_milli = cap_req.cpu_milli;
-                    params.memory_bytes = cap_req.memory_bytes;
-                    params.storage_bytes = cap_req.storage_bytes;
-                });
-            let local_response = format!(
-                "{}:{}",
-                swarm.local_peer_id(),
-                reply.kem_pub_b64.unwrap_or_default()
-            );
-            utils::notify_capacity_observers(pending_queries, &request_id, move || {
-                local_response.clone()
-            });
-        }
-        Err(e) => {
-            log::error!("libp2p: failed to parse provided capacity payload: {:?}", e);
-        }
-    }
-}
-
 /// Handle SendApplyRequest control message
 pub async fn handle_send_apply_request(
     peer_id: PeerId,

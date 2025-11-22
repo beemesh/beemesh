@@ -7,7 +7,6 @@ use libp2p::{
 };
 use log::{debug, info, warn};
 use once_cell::sync::{Lazy, OnceCell};
-use std::collections::HashMap as StdHashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::{
@@ -24,10 +23,8 @@ use crate::scheduler::SchedulerCommand;
 
 // Flattened modules
 pub mod behaviour;
-pub mod capacity;
 pub mod control;
 pub mod dht_manager;
-pub mod reply;
 pub mod utils;
 
 use behaviour::{MyBehaviour, MyBehaviourEvent};
@@ -339,10 +336,6 @@ pub async fn start_libp2p_node(
     use std::collections::HashMap;
     use tokio::time::Instant;
 
-    // pending queries: map request_id -> vec of reply_senders
-    let mut pending_queries: StdHashMap<String, Vec<mpsc::UnboundedSender<String>>> =
-        StdHashMap::new();
-
     let mut handshake_states: HashMap<PeerId, behaviour::HandshakeState> = HashMap::new();
     let mut handshake_interval = tokio::time::interval(Duration::from_secs(1));
     let mut renew_interval = tokio::time::interval(Duration::from_millis(500));
@@ -426,7 +419,7 @@ pub async fn start_libp2p_node(
             // control messages from other parts of the host (REST handlers)
             maybe_msg = control_rx.recv() => {
                 if let Some(msg) = maybe_msg {
-                    control::handle_control_message(msg, &mut swarm, &topic, &mut pending_queries).await;
+                    control::handle_control_message(msg, &mut swarm).await;
                 } else {
                     // sender was dropped, withdraw provider announces and exit loop
                     info!("control channel closed; withdrawing provider announcements");
@@ -477,7 +470,7 @@ pub async fn start_libp2p_node(
                         message_id: _id,
                         message,
                     })) => {
-                        behaviour::gossipsub_message(peer_id, message, topic.hash().clone(), &mut swarm, &mut pending_queries);
+                        behaviour::gossipsub_message(peer_id, message, topic.hash().clone());
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
                         behaviour::gossipsub_subscribed(peer_id, topic);
@@ -606,7 +599,7 @@ pub async fn start_libp2p_node(
             }
             _ = renew_interval.tick() => {
                 // Drain any enqueued control messages produced by behaviours (e.g. AnnounceProvider)
-                control::drain_enqueued_controls(&mut swarm, &topic, &mut pending_queries).await;
+                control::drain_enqueued_controls(&mut swarm).await;
                 // renew any due provider announcements
                 control::renew_due_providers(&mut swarm);
             }
