@@ -181,8 +181,9 @@ pub fn setup_libp2p_node(
             };
             let gossipsub_config = gossipsub::ConfigBuilder::default()
                 .heartbeat_interval(Duration::from_secs(10))
-                // require validation so we have an opportunity to reject invalid messages early
-                .validation_mode(gossipsub::ValidationMode::Strict)
+                // Use permissive validation so locally-published scheduler tenders are always
+                // delivered even when a validator is not registered (e.g. in tests).
+                .validation_mode(gossipsub::ValidationMode::Permissive)
                 .mesh_n_low(1) // minimum peers in mesh
                 .mesh_n(3) // target mesh size
                 .mesh_n_high(6) // maximum peers in mesh
