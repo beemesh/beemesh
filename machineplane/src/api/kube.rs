@@ -246,8 +246,6 @@ async fn publish_tender(
         manifest_id,
         manifest_id,
         manifest_str,
-        0,
-        0,
         workload_type,
         false,
         "",

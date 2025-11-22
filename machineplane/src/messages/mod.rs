@@ -26,14 +26,6 @@ pub mod machine {
     use sha2::{Digest, Sha256};
 
     // ------------------------------ Decoders -------------------------------
-    pub fn decode_capacity_request(buf: &[u8]) -> bincode::Result<CapacityRequest> {
-        deserialize(buf)
-    }
-
-    pub fn decode_capacity_reply(buf: &[u8]) -> bincode::Result<CapacityReply> {
-        deserialize(buf)
-    }
-
     pub fn decode_health(buf: &[u8]) -> bincode::Result<Health> {
         deserialize(buf)
     }
@@ -99,55 +91,6 @@ pub mod machine {
         serialize(&Health {
             ok,
             status: status.to_string(),
-        })
-    }
-
-    pub fn build_capacity_request_with_id(
-        request_id: &str,
-        cpu_milli: u32,
-        memory_bytes: u64,
-        storage_bytes: u64,
-        replicas: u32,
-    ) -> Vec<u8> {
-        serialize(&CapacityRequest {
-            request_id: request_id.to_string(),
-            cpu_milli,
-            memory_bytes,
-            storage_bytes,
-            replicas,
-        })
-    }
-
-    pub fn build_capacity_request(
-        cpu_milli: u32,
-        memory_bytes: u64,
-        storage_bytes: u64,
-        replicas: u32,
-    ) -> Vec<u8> {
-        build_capacity_request_with_id("", cpu_milli, memory_bytes, storage_bytes, replicas)
-    }
-
-    pub fn build_capacity_reply(
-        ok: bool,
-        cpu_available_milli: u32,
-        memory_available_bytes: u64,
-        storage_available_bytes: u64,
-        request_id: &str,
-        node_id: &str,
-        region: &str,
-        kem_pubkey: Option<&str>,
-        capabilities: &[&str],
-    ) -> Vec<u8> {
-        serialize(&CapacityReply {
-            request_id: request_id.to_string(),
-            ok,
-            node_id: node_id.to_string(),
-            region: region.to_string(),
-            kem_pubkey: kem_pubkey.unwrap_or_default().to_string(),
-            capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
-            cpu_available_milli,
-            memory_available_bytes,
-            storage_available_bytes,
         })
     }
 
@@ -269,8 +212,6 @@ pub mod machine {
         id: &str,
         manifest_ref: &str,
         manifest_json: &str,
-        requirements_cpu_cores: u32,
-        requirements_memory_mb: u32,
         workload_type: &str,
         duplicate_tolerant: bool,
         placement_token: &str,
@@ -281,8 +222,6 @@ pub mod machine {
             id: id.to_string(),
             manifest_ref: manifest_ref.to_string(),
             manifest_json: manifest_json.to_string(),
-            requirements_cpu_cores,
-            requirements_memory_mb,
             workload_type: workload_type.to_string(),
             duplicate_tolerant,
             placement_token: placement_token.to_string(),

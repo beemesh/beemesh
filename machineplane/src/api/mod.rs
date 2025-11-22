@@ -1,4 +1,4 @@
-use crate::messages::constants::{FREE_CAPACITY_PREFIX, FREE_CAPACITY_TIMEOUT_MS};
+use crate::messages::constants::{DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_PROPOSALS};
 use crate::messages::types::CandidateNode;
 #[cfg(debug_assertions)]
 use axum::{
@@ -185,107 +185,30 @@ pub(crate) async fn collect_candidate_pubkeys(
 ) -> Result<Vec<CandidateNode>, axum::http::StatusCode> {
     const PLACEHOLDER_KEM_PUBLIC_KEY: &str = "mock-kem-public-key";
 
-    let request_id = format!(
-        "{}:{}:{}",
-        FREE_CAPACITY_PREFIX,
-        tender_id,
-        uuid::Uuid::new_v4()
-    );
-    let capacity_request = crate::messages::machine::build_capacity_request(
-        500u32,
-        512u64 * 1024 * 1024,
-        10u64 * 1024 * 1024 * 1024,
-        1u32,
-    );
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
-    let _ = state.control_tx.send(
-        crate::network::control::Libp2pControl::QueryCapacityWithPayload {
-            request_id: request_id.clone(),
-            reply_tx: reply_tx.clone(),
-            payload: capacity_request,
-        },
-    );
-
-    let mut responders: Vec<String> = Vec::new();
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_millis(FREE_CAPACITY_TIMEOUT_MS);
     log::info!(
-        "collect_candidate_pubkeys: waiting for responses, timeout={}ms",
-        FREE_CAPACITY_TIMEOUT_MS
+        "collect_candidate_pubkeys: using peer inventory for tender {} (limit {})",
+        tender_id,
+        max_candidates
     );
 
-    while start.elapsed() < timeout {
-        let remaining = timeout.saturating_sub(start.elapsed());
-        match tokio::time::timeout(remaining, reply_rx.recv()).await {
-            Ok(Some(peer)) => {
-                if !responders.contains(&peer) {
-                    responders.push(peer);
-                    if responders.len() >= max_candidates {
-                        break;
-                    }
-                }
-            }
-            Ok(None) => {
-                log::warn!("collect_candidate_pubkeys: channel closed");
-                break;
-            }
-            Err(_) => {
-                break;
-            }
-        }
-    }
-
+    let peers = state.peer_rx.borrow().clone();
     let mut candidates: Vec<CandidateNode> = Vec::new();
-    for peer_with_key in responders {
-        if let Some(colon_pos) = peer_with_key.find(':') {
-            let peer_id_str = &peer_with_key[..colon_pos];
-            let pubkey_b64 = &peer_with_key[colon_pos + 1..];
-            let public_key = if !pubkey_b64.is_empty() {
-                pubkey_b64.to_string()
-            } else {
-                log::warn!(
-                    "collect_candidate_pubkeys: peer {} has no public key, using placeholder",
-                    peer_id_str
-                );
-                PLACEHOLDER_KEM_PUBLIC_KEY.to_string()
-            };
 
-            candidates.push(CandidateNode {
-                peer_id: peer_id_str.to_string(),
-                public_key,
-            });
-        } else {
-            log::warn!(
-                "collect_candidate_pubkeys: invalid peer entry: {}",
-                peer_with_key
-            );
+    for peer_id in peers {
+        if candidates.len() >= max_candidates {
+            break;
         }
+
+        candidates.push(CandidateNode {
+            peer_id: peer_id.clone(),
+            public_key: PLACEHOLDER_KEM_PUBLIC_KEY.to_string(),
+        });
     }
 
-    // Fallback: if we didn't hear back from enough peers within the timeout,
-    // use the currently known peer list so scheduling can still proceed in
-    // test environments where capacity replies arrive slowly.
-    if candidates.len() < max_candidates {
-        let peers = state.peer_rx.borrow().clone();
-        for peer_id in peers {
-            if candidates.iter().any(|c| c.peer_id == peer_id) {
-                continue;
-            }
-
-            candidates.push(CandidateNode {
-                peer_id: peer_id.clone(),
-                public_key: PLACEHOLDER_KEM_PUBLIC_KEY.to_string(),
-            });
-
-            if candidates.len() >= max_candidates {
-                break;
-            }
-        }
-
-        log::info!(
-            "collect_candidate_pubkeys: using {} fallback peers to reach {} candidates",
-            candidates.len(),
-            max_candidates
+    if candidates.is_empty() {
+        log::warn!(
+            "collect_candidate_pubkeys: no peers available on topic {}; returning empty candidate list",
+            SCHEDULER_PROPOSALS
         );
     }
 
@@ -443,7 +366,7 @@ pub async fn create_tender(
         true,
         &tender_id,
         &manifest_id,
-        FREE_CAPACITY_TIMEOUT_MS,
+        DEFAULT_SELECTION_WINDOW_MS,
         "",
     );
 
