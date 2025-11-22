@@ -58,12 +58,6 @@ pub async fn start_fabric_nodes(disable_flags: &[bool]) -> NodeGuard {
     start_nodes(clis, Duration::from_secs(1)).await
 }
 
-/// Start the standard set of nodes with the given scheduling disable flags.
-pub async fn start_cluster_nodes(disable_flags: &[bool]) -> NodeGuard {
-    let clis = make_standard_node_clis(disable_flags);
-    start_nodes(clis, Duration::from_secs(1)).await
-}
-
 /// Fetch peer ids for provided REST API ports.
 pub async fn get_peer_ids(client: &reqwest::Client, ports: &[u16]) -> StdHashMap<u16, String> {
     let peer_id_tasks = ports.iter().copied().map(|port| {

@@ -247,7 +247,7 @@ pub async fn start_machine(cli: Cli) -> anyhow::Result<Vec<tokio::task::JoinHand
 
     // rest api server
     if !cli.disable_rest_api {
-        let app = api::build_router(peer_rx, control_tx.clone());
+        let app = api::build_router(peer_rx, control_tx.clone(), scheduling_enabled);
 
         // Public TCP server
         let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);
