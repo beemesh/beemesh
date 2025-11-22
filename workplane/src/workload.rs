@@ -11,14 +11,14 @@ use crate::discovery::ServiceRecord;
 use crate::manifest::{self, WorkloadKind, WorkloadManifest};
 use crate::network::Network;
 use crate::raft::{LeadershipUpdate, RaftManager, RaftRole};
-use crate::self_heal::SelfHealer;
+use crate::selfheal::SelfHealer;
 use crate::streams::{RPCRequest, RPCResponse, register_stream_handler, send_request};
 
 pub struct Workload {
     cfg: Config,
     pub network: Network,
     pub raft: Option<Arc<RwLock<RaftManager>>>,
-    self_healer: Option<SelfHealer>,
+    selfhealer: Option<SelfHealer>,
     manifest: Arc<Vec<u8>>,
     manifest_spec: Arc<WorkloadManifest>,
     leader_state: Arc<RwLock<Option<String>>>,
@@ -132,7 +132,7 @@ impl Workload {
             *leader_state.write().expect("leader state") = Some(network.peer_id());
         }
 
-        let self_healer = Some(SelfHealer::new(
+        let selfhealer = Some(SelfHealer::new(
             network.clone(),
             cfg.clone(),
             manifest.clone(),
@@ -143,7 +143,7 @@ impl Workload {
             cfg,
             network,
             raft,
-            self_healer,
+            selfhealer,
             manifest,
             manifest_spec,
             leader_state,
@@ -153,7 +153,7 @@ impl Workload {
 
     pub fn start(&mut self) {
         self.network.start();
-        if let Some(sh) = self.self_healer.as_mut() {
+        if let Some(sh) = self.selfhealer.as_mut() {
             sh.start();
         }
         if self.is_stateful() {
@@ -165,7 +165,7 @@ impl Workload {
         if let Some(monitor) = self.leader_monitor.take() {
             monitor.stop().await;
         }
-        if let Some(sh) = self.self_healer.as_mut() {
+        if let Some(sh) = self.selfhealer.as_mut() {
             sh.stop().await;
         }
         self.network.shutdown().await;
