@@ -109,8 +109,7 @@ struct BidOutcome {
 
 - `BidContext` is **per Tender** (`tender_id`).
 - `manifest_id` is currently derived as `tender.id` (1:1 mapping).
-- `replicas` is the *target number of distinct winners* for this Tender.
-  - Computed as: `replicas = max(1, tender.max_parallel_duplicates)`.
+- `replicas` is the *target number of distinct winners* for this Tender (currently fixed to `1`).
 - `bids` collects the best known bid per node (after normalization, see `select_winners`).
 
 The scheduler stores these contexts in:
@@ -202,16 +201,7 @@ Key steps (as implemented):
 
    - On parse failure, log an error and stop.
 
-2. **Derive replica target**
-
-   ```rust
-   let replicas = std::cmp::max(1, tender.max_parallel_duplicates);
-   ```
-
-   - This enforces a **minimum of 1**.
-   - `max_parallel_duplicates` is interpreted as **requested global replicas**.
-
-3. **Evaluate capacity & compute score (stub)**
+2. **Evaluate capacity & compute score (stub)**
 
    ```rust
    let capacity_score = 1.0; // placeholder, assume perfect fit
@@ -224,7 +214,7 @@ Key steps (as implemented):
      - reliability, etc.
    - The score is a deterministic function of `capacity_score` for now.
 
-4. **Create `BidContext`**
+3. **Create `BidContext`**
 
    The scheduler writes a fresh context for this Tender:
 
@@ -509,7 +499,7 @@ outbound_tx.send(SchedulerCommand::DeployWorkload {
 - The scheduler **always** requests `replicas: 1` for the local deployment request, regardless of the global replicas requested by the Tender.
 - Combined with the winner selection invariant, this ensures:
   - At most one replica per node.
-  - Up to `replicas` distinct nodes (where `replicas = max(1, max_parallel_duplicates)`).
+  - Up to `replicas` distinct nodes (currently fixed to `1`).
 
 ---
 

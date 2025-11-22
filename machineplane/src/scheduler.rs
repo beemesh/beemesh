@@ -8,8 +8,8 @@ use crate::messages::constants::{
 };
 use crate::messages::machine;
 use libp2p::gossipsub;
-use log::{debug, error, info};
-use std::collections::{HashMap, HashSet};
+use log::{error, info};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -28,7 +28,6 @@ pub struct Scheduler {
 struct BidContext {
     tender_id: String,
     manifest_id: String,
-    replicas: u32,
     bids: Vec<BidEntry>,
 }
 
@@ -96,8 +95,6 @@ impl Scheduler {
 
                 let manifest_id = tender.id.clone();
 
-                let replicas = std::cmp::max(1, tender.max_parallel_duplicates);
-
                 // 1. Evaluate Fit
                 let capacity_score = 1.0; // Placeholder: assume perfect fit for now
 
@@ -119,7 +116,6 @@ impl Scheduler {
                         BidContext {
                             tender_id: tender_id.to_string(),
                             manifest_id: manifest_id.clone(),
-                            replicas,
                             bids: vec![BidEntry {
                                 bidder_id: self.local_node_id.clone(),
                                 score: my_score,
@@ -165,7 +161,7 @@ impl Scheduler {
                     let (winners, manifest_id_opt) = {
                         let mut bids = active_bids.lock().unwrap();
                         if let Some(ctx) = bids.remove(&tender_id_clone) {
-                            let winners = select_winners(&ctx, &local_id);
+                            let winners = select_winners(&ctx);
                             if !winners.is_empty() {
                                 let summary = winners
                                     .iter()
@@ -310,7 +306,7 @@ struct BidOutcome {
     score: f64,
 }
 
-fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> {
+fn select_winners(context: &BidContext) -> Vec<BidOutcome> {
     let mut best_by_node: HashMap<String, BidEntry> = HashMap::new();
 
     for bid in &context.bids {
@@ -330,25 +326,13 @@ fn select_winners(context: &BidContext, local_node_id: &str) -> Vec<BidOutcome> 
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let mut selected_nodes = HashSet::new();
     let mut outcomes = Vec::new();
 
-    for bid in bids.into_iter() {
-        if outcomes.len() as u32 >= context.replicas {
-            break;
-        }
-
-        // Enforce that the local node can never be selected for more than one replica
-        if bid.bidder_id == local_node_id && selected_nodes.contains(local_node_id) {
-            continue;
-        }
-
-        if selected_nodes.insert(bid.bidder_id.clone()) {
-            outcomes.push(BidOutcome {
-                bidder_id: bid.bidder_id,
-                score: bid.score,
-            });
-        }
+    if let Some(top_bid) = bids.into_iter().next() {
+        outcomes.push(BidOutcome {
+            bidder_id: top_bid.bidder_id,
+            score: top_bid.score,
+        });
     }
 
     outcomes
@@ -1143,11 +1127,10 @@ mod tests {
     }
 
     #[test]
-    fn selects_unique_winners_for_multiple_replicas() {
+    fn selects_top_unique_winner() {
         let context = BidContext {
             tender_id: "tender-a".to_string(),
             manifest_id: "tender-a".to_string(),
-            replicas: 2,
             bids: vec![
                 BidEntry {
                     bidder_id: "node1".to_string(),
@@ -1164,18 +1147,16 @@ mod tests {
             ],
         };
 
-        let winners = select_winners(&context, "node1");
-        assert_eq!(winners.len(), 2);
-        assert!(winners.iter().any(|w| w.bidder_id == "node1"));
-        assert!(winners.iter().any(|w| w.bidder_id == "node2"));
+        let winners = select_winners(&context);
+        assert_eq!(winners.len(), 1);
+        assert_eq!(winners[0].bidder_id, "node2");
     }
 
     #[test]
-    fn local_node_only_selected_once_even_with_multiple_replicas() {
+    fn selects_single_local_winner_when_highest() {
         let context = BidContext {
             tender_id: "tender-b".to_string(),
             manifest_id: "tender-b".to_string(),
-            replicas: 3,
             bids: vec![
                 BidEntry {
                     bidder_id: "local".to_string(),
@@ -1192,8 +1173,8 @@ mod tests {
             ],
         };
 
-        let winners = select_winners(&context, "local");
-        assert_eq!(winners.len(), 2);
-        assert_eq!(winners.iter().filter(|w| w.bidder_id == "local").count(), 1);
+        let winners = select_winners(&context);
+        assert_eq!(winners.len(), 1);
+        assert_eq!(winners[0].bidder_id, "local");
     }
 }

@@ -146,8 +146,8 @@ is required because libp2p sessions are already mutually authenticated and encry
 
 * `workload_type`: `"stateless" | "stateful"`
 * `duplicate_tolerant`: `bool` (default `true`)
-* `max_parallel_duplicates`: `u32` (hint; default `1`)
 * `placement_token`: ULID (monotonic per `(workload_id, attempt)`; hint for Workplane fencing)
+* **Replica count is not disclosed in the Tender**; the publisher decides how many bids to accept.
 
 **LeaseHint** (MDHT value)
 
@@ -267,7 +267,6 @@ machineplane:
   deploy_timeout_ms: 10000
   clock_skew_ms: 30000
   duplicate_tolerant_default: true
-  max_parallel_duplicates: 2    # hint; not a hard guarantee
   policies:
     overcommit:
       cpu: 1.2
