@@ -6,13 +6,12 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
-use base64::Engine;
 use log::{error, warn};
 use serde_json::{Map, Value, json};
 use serde_yaml;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -228,59 +227,6 @@ fn desired_replicas(manifest: &Value) -> usize {
         .unwrap_or(1) as usize
 }
 
-async fn send_apply_to_peer(
-    state: &RestState,
-    peer_id: &str,
-    _peer_pubkey_b64: &str,
-    manifest_json: &str,
-    manifest_id: &str,
-) -> Result<(), StatusCode> {
-    let operation_id = Uuid::new_v4().to_string();
-    let manifest_json_b64 =
-        base64::engine::general_purpose::STANDARD.encode(manifest_json.as_bytes());
-    let apply_request_bytes = crate::messages::machine::build_apply_request(
-        1,
-        &operation_id,
-        &manifest_json_b64,
-        "",
-        manifest_id,
-    );
-
-    let target_peer_id: libp2p::PeerId = peer_id.parse().map_err(|e| {
-        warn!("Invalid peer id {}: {}", peer_id, e);
-        StatusCode::BAD_REQUEST
-    })?;
-
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
-    state
-        .control_tx
-        .send(crate::network::control::Libp2pControl::SendApplyRequest {
-            peer_id: target_peer_id,
-            manifest: apply_request_bytes,
-            reply_tx,
-        })
-        .map_err(|e| {
-            error!("Failed to dispatch apply to {}: {}", peer_id, e);
-            StatusCode::BAD_GATEWAY
-        })?;
-
-    match timeout(Duration::from_secs(15), reply_rx.recv()).await {
-        Ok(Some(Ok(_))) => Ok(()),
-        Ok(Some(Err(e))) => {
-            warn!("Apply request failed for {}: {}", peer_id, e);
-            Err(StatusCode::BAD_GATEWAY)
-        }
-        Ok(None) => {
-            warn!("Apply channel closed for {}", peer_id);
-            Err(StatusCode::BAD_GATEWAY)
-        }
-        Err(_) => {
-            warn!("Timed out sending apply to {}", peer_id);
-            Err(StatusCode::GATEWAY_TIMEOUT)
-        }
-    }
-}
-
 async fn schedule_deployment(
     state: &RestState,
     manifest_id: &str,
@@ -290,31 +236,55 @@ async fn schedule_deployment(
     let manifest_str =
         serde_json::to_string(manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let max_candidates = std::cmp::max(replicas * 2, 5);
-    let candidates = super::collect_candidate_pubkeys(state, manifest_id, max_candidates).await?;
-    if candidates.len() < replicas {
-        warn!(
-            "schedule_deployment: insufficient candidates (need {}, got {})",
-            replicas,
-            candidates.len()
-        );
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    }
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .as_secs();
 
-    let mut assigned = Vec::new();
-    for candidate in candidates.iter().take(replicas) {
-        send_apply_to_peer(
-            state,
-            &candidate.peer_id,
-            &candidate.public_key,
-            &manifest_str,
-            manifest_id,
-        )
-        .await?;
-        assigned.push(candidate.peer_id.clone());
-    }
+    let tender_bytes = crate::messages::machine::build_tender(
+        manifest_id,
+        manifest_id,
+        &manifest_str,
+        0,
+        0,
+        DEPLOYMENT_KIND,
+        false,
+        replicas as u32,
+        "",
+        false,
+        timestamp,
+    );
 
-    Ok(assigned)
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<(), String>>();
+    state
+        .control_tx
+        .send(crate::network::control::Libp2pControl::PublishTender {
+            payload: tender_bytes,
+            reply_tx,
+        })
+        .map_err(|e| {
+            error!(
+                "Failed to dispatch tender publication for {}: {}",
+                manifest_id, e
+            );
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    match timeout(Duration::from_secs(10), reply_rx.recv()).await {
+        Ok(Some(Ok(_))) => Ok(Vec::new()),
+        Ok(Some(Err(e))) => {
+            warn!("Tender publication failed for {}: {}", manifest_id, e);
+            Err(StatusCode::BAD_GATEWAY)
+        }
+        Ok(None) => {
+            warn!("Tender publication channel closed for {}", manifest_id);
+            Err(StatusCode::BAD_GATEWAY)
+        }
+        Err(_) => {
+            warn!("Timed out publishing tender for {}", manifest_id);
+            Err(StatusCode::GATEWAY_TIMEOUT)
+        }
+    }
 }
 
 async fn delete_manifest_from_peers(_state: &RestState, manifest_id: &str, peers: &[String]) {
