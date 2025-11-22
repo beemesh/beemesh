@@ -28,7 +28,7 @@ use apply_common::{
     wait_for_mesh_formation,
 };
 use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
-use runtime_helpers::{make_test_cli, shutdown_nodes, start_nodes};
+use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes};
 use tokio::task::JoinHandle;
 
 /// Construct a Podman command that respects the PODMAN_HOST (and compatible) environment
@@ -364,32 +364,32 @@ async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
 }
 
 async fn start_test_nodes_for_podman() -> Vec<JoinHandle<()>> {
-    let mut cli1 = make_test_cli(3000, vec![], 4001);
-    cli1.signing_ephemeral = false;
-    cli1.kem_ephemeral = false;
-    cli1.ephemeral_keys = false;
+    let mut daemon1 = make_test_daemon(3000, vec![], 4001);
+    daemon1.signing_ephemeral = false;
+    daemon1.kem_ephemeral = false;
+    daemon1.ephemeral_keys = false;
 
-    let mut cli2 = make_test_cli(
+    let mut daemon2 = make_test_daemon(
         3100,
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         4002,
     );
-    cli2.signing_ephemeral = false;
-    cli2.kem_ephemeral = false;
-    cli2.ephemeral_keys = false;
+    daemon2.signing_ephemeral = false;
+    daemon2.kem_ephemeral = false;
+    daemon2.ephemeral_keys = false;
 
     let bootstrap_peers = vec![
         "/ip4/127.0.0.1/udp/4001/quic-v1".to_string(),
         "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
 
-    let mut cli3 = make_test_cli(3200, bootstrap_peers.clone(), 0);
-    cli3.signing_ephemeral = false;
-    cli3.kem_ephemeral = false;
-    cli3.ephemeral_keys = false;
+    let mut daemon3 = make_test_daemon(3200, bootstrap_peers.clone(), 0);
+    daemon3.signing_ephemeral = false;
+    daemon3.kem_ephemeral = false;
+    daemon3.ephemeral_keys = false;
 
     // Start nodes in-process for better control
-    start_nodes(vec![cli1, cli2, cli3], Duration::from_secs(1)).await
+    start_nodes(vec![daemon1, daemon2, daemon3], Duration::from_secs(1)).await
 }
 
 async fn is_podman_available() -> bool {

@@ -1,21 +1,21 @@
 #![allow(dead_code)]
 
-use machineplane::{Cli, start_machineplane};
+use machineplane::{DaemonConfig, start_machineplane};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 
-/// Build a CLI configuration suitable for integration tests.
-pub fn make_test_cli(
+/// Build a daemon configuration suitable for integration tests.
+pub fn make_test_daemon(
     rest_api_port: u16,
     bootstrap_peers: Vec<String>,
     libp2p_quic_port: u16,
-) -> Cli {
+) -> DaemonConfig {
     let podman_socket = std::env::var("PODMAN_HOST")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "/run/podman/podman.sock".to_string());
 
-    Cli {
+    DaemonConfig {
         ephemeral: true,
         rest_api_host: "127.0.0.1".to_string(),
         rest_api_port,
@@ -31,11 +31,14 @@ pub fn make_test_cli(
     }
 }
 
-/// Start a list of nodes given their CLIs. Returns JoinHandles for spawned background tasks.
-pub async fn start_nodes(clis: Vec<Cli>, startup_delay: Duration) -> Vec<JoinHandle<()>> {
+/// Start a list of nodes given their configurations. Returns JoinHandles for spawned background tasks.
+pub async fn start_nodes(
+    daemons: Vec<DaemonConfig>,
+    startup_delay: Duration,
+) -> Vec<JoinHandle<()>> {
     let mut all_handles = Vec::new();
-    for cli in clis {
-        match start_machineplane(cli).await {
+    for daemon in daemons {
+        match start_machineplane(daemon).await {
             Ok(mut handles) => {
                 all_handles.append(&mut handles);
             }
