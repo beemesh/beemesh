@@ -72,9 +72,9 @@ pub struct Health {
 // Scheduler Messages
 // ============================================================================
 
-/// Task definition for scheduling
+/// Tender definition for scheduling
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Task {
+pub struct Tender {
     pub id: String,
     /// URL or Content Hash
     pub manifest_ref: String,
@@ -94,7 +94,7 @@ pub struct Task {
 /// Bidding message for task assignment
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Bid {
-    pub task_id: String,
+    pub tender_id: String,
     pub node_id: String,
     pub score: f64,
     pub resource_fit_score: f64,
@@ -117,7 +117,7 @@ pub enum EventType {
 /// Scheduler event notification
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SchedulerEvent {
-    pub task_id: String,
+    pub tender_id: String,
     pub node_id: String,
     pub event_type: EventType,
     pub reason: String,
@@ -127,7 +127,7 @@ pub struct SchedulerEvent {
 /// Lease hint for task assignment
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LeaseHint {
-    pub task_id: String,
+    pub tender_id: String,
     pub node_id: String,
     pub score: f64,
     pub ttl_ms: u32,
@@ -169,20 +169,20 @@ pub struct CapacityReply {
 // Task Response Messages
 // ============================================================================
 
-/// Response to task creation request
+/// Response to tender creation request
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TaskCreateResponse {
+pub struct TenderCreateResponse {
     pub ok: bool,
-    pub task_id: String,
+    pub tender_id: String,
     pub manifest_ref: String,
     pub selection_window_ms: u64,
     pub message: String,
 }
 
-/// Response to task status query
+/// Response to tender status query
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TaskStatusResponse {
-    pub task_id: String,
+pub struct TenderStatusResponse {
+    pub tender_id: String,
     pub state: String,
     pub assigned_peers: Vec<String>,
     pub manifest_cid: String,
@@ -218,17 +218,17 @@ pub struct NodesResponse {
 // Assignment Messages
 // ============================================================================
 
-/// Request to assign a task (schema not in .fbs files, inferred from generated code)
+/// Request to assign a tender (schema not in .fbs files, inferred from generated code)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssignRequest {
-    pub task_id: String,
+    pub tender_id: String,
 }
 
 /// Response to assignment request
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssignResponse {
     pub ok: bool,
-    pub task_id: String,
+    pub tender_id: String,
     pub assigned_peers: Vec<String>,
     pub per_peer_results_json: String,
 }
@@ -348,7 +348,7 @@ impl Default for CapacityRequest {
     }
 }
 
-impl Default for Task {
+impl Default for Tender {
     fn default() -> Self {
         Self {
             id: String::new(),

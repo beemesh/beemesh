@@ -1,4 +1,4 @@
-use super::{KubeResourceRecord, RestState, TaskRecord};
+use super::{KubeResourceRecord, RestState, TenderRecord};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -167,7 +167,7 @@ fn format_timestamp(ts: SystemTime) -> Option<String> {
     datetime.format(&Rfc3339).ok()
 }
 
-fn build_deployment_response(task_id: &str, record: &TaskRecord) -> Value {
+fn build_deployment_response(tender_id: &str, record: &TenderRecord) -> Value {
     if let Some(kube) = &record.kube {
         let mut metadata = kube
             .manifest
@@ -205,7 +205,7 @@ fn build_deployment_response(task_id: &str, record: &TaskRecord) -> Value {
                     "conditions": []
                 }),
             );
-            map.insert("manifest_id".into(), Value::String(task_id.to_string()));
+            map.insert("manifest_id".into(), Value::String(tender_id.to_string()));
             map
         });
     }
@@ -360,7 +360,7 @@ async fn upsert_deployment(
     manifest: Value,
 ) -> Result<Value, StatusCode> {
     let existing_snapshot = {
-        let store = state.task_store.read().await;
+        let store = state.tender_store.read().await;
         find_deployment(&store, namespace, name).map(|(id, rec)| (id.clone(), rec.clone()))
     };
 
@@ -399,7 +399,7 @@ async fn upsert_deployment(
         serde_json::to_vec(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let response_value = {
-        let mut store = state.task_store.write().await;
+        let mut store = state.tender_store.write().await;
         if let Some(record) = store.get_mut(&record_key) {
             record.manifest_bytes = manifest_bytes.clone();
             record.created_at = created_at;
@@ -434,7 +434,7 @@ async fn upsert_deployment(
                 manifest: manifest.clone(),
                 creation_timestamp,
             };
-            let task_record = TaskRecord {
+            let tender_record = TenderRecord {
                 manifest_bytes: manifest_bytes.clone(),
                 created_at,
                 manifests_distributed: HashMap::new(),
@@ -447,7 +447,7 @@ async fn upsert_deployment(
                     .unwrap_or_default(),
                 kube: Some(kube_record),
             };
-            store.insert(record_key.clone(), task_record);
+            store.insert(record_key.clone(), tender_record);
             let record = store.get(&record_key).unwrap();
             build_deployment_response(&record_key, record)
         }
@@ -458,10 +458,10 @@ async fn upsert_deployment(
 }
 
 fn find_deployment<'a>(
-    store: &'a HashMap<String, TaskRecord>,
+    store: &'a HashMap<String, TenderRecord>,
     namespace: &str,
     name: &str,
-) -> Option<(&'a String, &'a TaskRecord)> {
+) -> Option<(&'a String, &'a TenderRecord)> {
     store.iter().find(|(_, rec)| {
         rec.kube
             .as_ref()
@@ -474,7 +474,7 @@ async fn list_deployments(
     Path(namespace): Path<String>,
     State(state): State<RestState>,
 ) -> Json<Value> {
-    let store = state.task_store.read().await;
+    let store = state.tender_store.read().await;
     let items: Vec<Value> = store
         .iter()
         .filter_map(|(id, rec)| {
@@ -502,7 +502,7 @@ async fn get_deployment(
     Path((namespace, name)): Path<(String, String)>,
     State(state): State<RestState>,
 ) -> Result<Json<Value>, StatusCode> {
-    let store = state.task_store.read().await;
+    let store = state.tender_store.read().await;
     if let Some((id, record)) = find_deployment(&store, &namespace, &name) {
         return Ok(Json(build_deployment_response(id, record)));
     }
@@ -520,7 +520,7 @@ async fn create_deployment(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let store = state.task_store.read().await;
+    let store = state.tender_store.read().await;
     let already_exists = find_deployment(&store, &ns, &name).is_some();
     drop(store);
     if already_exists {
@@ -566,7 +566,7 @@ async fn delete_deployment(
     Path((namespace, name)): Path<(String, String)>,
     State(state): State<RestState>,
 ) -> Result<Json<Value>, StatusCode> {
-    let mut store = state.task_store.write().await;
+    let mut store = state.tender_store.write().await;
     let key_opt = store
         .iter()
         .find(|(_, rec)| {

@@ -60,7 +60,7 @@ async fn get_public_key(State(_state): State<RestState>) -> String {
 pub struct RestState {
     pub peer_rx: watch::Receiver<Vec<String>>,
     pub control_tx: mpsc::UnboundedSender<crate::network::control::Libp2pControl>,
-    task_store: Arc<RwLock<HashMap<String, TaskRecord>>>,
+    tender_store: Arc<RwLock<HashMap<String, TenderRecord>>>,
 }
 
 // Global in-memory store of decrypted manifests for debugging / tests.
@@ -119,7 +119,7 @@ pub fn build_router(
     let state = RestState {
         peer_rx,
         control_tx,
-        task_store: Arc::new(RwLock::new(HashMap::new())),
+        tender_store: Arc::new(RwLock::new(HashMap::new())),
     };
     let kube_routes = Router::new()
         .route("/version", get(kube::version))
@@ -136,17 +136,17 @@ pub fn build_router(
         .route("/debug/dht/active_announces", get(debug_active_announces))
         .route("/debug/dht/peers", get(debug_dht_peers))
         .route("/debug/peers", get(debug_peers))
-        .route("/debug/tasks", get(debug_all_tasks))
+        .route("/debug/tenders", get(debug_all_tenders))
         .route(
             "/debug/workloads_by_peer/{peer_id}",
             get(debug_workloads_by_peer),
         )
         .route("/debug/local_peer_id", get(debug_local_peer_id))
-        .route("/tasks/{task_id}/manifest_id", get(get_task_manifest_id))
-        .route("/tasks", post(create_task))
-        .route("/tasks/{task_id}", get(get_task_status))
-        .route("/tasks/{task_id}", delete(delete_task))
-        .route("/tasks/{task_id}/candidates", post(get_candidates))
+        .route("/tenders/{tender_id}/manifest_id", get(get_tender_manifest_id))
+        .route("/tenders", post(create_tender))
+        .route("/tenders/{tender_id}", get(get_tender_status))
+        .route("/tenders/{tender_id}", delete(delete_tender))
+        .route("/tenders/{tender_id}/candidates", post(get_candidates))
         .route("/apply_direct/{peer_id}", post(apply_direct))
         .route("/nodes", get(get_nodes))
         .merge(kube_routes)
@@ -154,17 +154,17 @@ pub fn build_router(
 }
 
 pub async fn get_candidates(
-    Path(task_id): Path<String>,
+    Path(tender_id): Path<String>,
     State(state): State<RestState>,
     _headers: HeaderMap,
     _body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     log::info!(
-        "get_candidates: called for task_id={} (direct delivery mode)",
-        task_id
+        "get_candidates: called for tender_id={} (direct delivery mode)",
+        tender_id
     );
 
-    let candidates = collect_candidate_pubkeys(&state, &task_id, 5).await?;
+    let candidates = collect_candidate_pubkeys(&state, &tender_id, 5).await?;
     let response_data =
         crate::messages::machine::build_candidates_response_with_keys(true, &candidates);
 
@@ -178,13 +178,13 @@ pub async fn get_candidates(
 
 pub(crate) async fn collect_candidate_pubkeys(
     state: &RestState,
-    task_id: &str,
+    tender_id: &str,
     max_candidates: usize,
 ) -> Result<Vec<CandidateNode>, axum::http::StatusCode> {
     let request_id = format!(
         "{}:{}:{}",
         FREE_CAPACITY_PREFIX,
-        task_id,
+        tender_id,
         uuid::Uuid::new_v4()
     );
     let capacity_fb = crate::messages::machine::build_capacity_request(
@@ -271,7 +271,7 @@ pub struct KubeResourceRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct TaskRecord {
+pub struct TenderRecord {
     pub manifest_bytes: Vec<u8>,
     pub created_at: std::time::SystemTime,
     // map of peer_id -> manifest payload for manifest distribution
@@ -284,19 +284,19 @@ pub struct TaskRecord {
     pub kube: Option<KubeResourceRecord>,
 }
 
-pub async fn create_task(
+pub async fn create_tender(
     State(state): State<RestState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     _headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    debug!("create_task: parsing payload");
+    debug!("create_tender: parsing payload");
 
     // Payload is received directly over the mutually authenticated transport.
     let payload_bytes_for_parsing = body.to_vec();
 
     log::info!(
-        "create_task: received payload len={}, first_20_bytes={:02x?}",
+        "create_tender: received payload len={}, first_20_bytes={:02x?}",
         payload_bytes_for_parsing.len(),
         &payload_bytes_for_parsing[..std::cmp::min(20, payload_bytes_for_parsing.len())]
     );
@@ -348,12 +348,12 @@ pub async fn create_task(
         (manifest_id, operation_id)
     };
 
-    // Use manifest_id as the task_id (since manifest_id is the central identifier)
-    let task_id = manifest_id.clone();
+    // Use manifest_id as the tender_id (since manifest_id is the central identifier)
+    let tender_id = manifest_id.clone();
     log::info!(
-        "create_task: using manifest_id='{}' as task_id='{}'",
+        "create_tender: using manifest_id='{}' as tender_id='{}'",
         manifest_id,
-        task_id
+        tender_id
     );
 
     // Store the operation_id -> manifest_id mapping for later self-apply lookups
@@ -364,7 +364,7 @@ pub async fn create_task(
     // Store manifest bytes as-is
     let manifest_bytes_to_store = payload_bytes_for_parsing;
 
-    let rec = TaskRecord {
+    let rec = TenderRecord {
         manifest_bytes: manifest_bytes_to_store,
         created_at: std::time::SystemTime::now(),
         manifests_distributed: HashMap::new(),
@@ -375,24 +375,24 @@ pub async fn create_task(
         kube: None,
     };
     {
-        let mut store = state.task_store.write().await;
+        let mut store = state.tender_store.write().await;
         log::info!(
-            "create_task: storing task with task_id='{}' in task_store",
-            task_id
+            "create_tender: storing tender with tender_id='{}' in tender_store",
+            tender_id
         );
         log::info!(
-            "create_task: task_store had {} tasks before insert",
+            "create_tender: tender_store had {} tenders before insert",
             store.len()
         );
-        store.insert(task_id.clone(), rec);
+        store.insert(tender_id.clone(), rec);
         log::info!(
-            "create_task: task_store now has {} tasks after insert",
+            "create_tender: tender_store now has {} tenders after insert",
             store.len()
         );
         log::info!(
-            "create_task: verifying task_id '{}' exists in store: {}",
-            task_id,
-            store.contains_key(&task_id)
+            "create_tender: verifying tender_id '{}' exists in store: {}",
+            tender_id,
+            store.contains_key(&tender_id)
         );
     }
 
@@ -400,14 +400,14 @@ pub async fn create_task(
         crate::scheduler::record_manifest_owner(&manifest_id, &owner_pubkey).await;
     } else {
         log::warn!(
-            "create_task: missing owner pubkey when recording manifest_id={}",
+            "create_tender: missing owner pubkey when recording manifest_id={}",
             manifest_id
         );
     }
 
-    let response_data = crate::messages::machine::build_task_create_response(
+    let response_data = crate::messages::machine::build_tender_create_response(
         true,
-        &task_id,
+        &tender_id,
         &manifest_id,
         FREE_CAPACITY_TIMEOUT_MS,
         "",
@@ -596,13 +596,13 @@ async fn debug_peers(State(state): State<RestState>) -> axum::Json<serde_json::V
     }))
 }
 
-// Debug: list all tasks with their manifest CIDs
-async fn debug_all_tasks(State(state): State<RestState>) -> axum::Json<serde_json::Value> {
-    let store = state.task_store.read().await;
-    let mut tasks = serde_json::Map::new();
+// Debug: list all tenders with their manifest CIDs
+async fn debug_all_tenders(State(state): State<RestState>) -> axum::Json<serde_json::Value> {
+    let store = state.tender_store.read().await;
+    let mut tenders = serde_json::Map::new();
 
-    for (task_id, record) in store.iter() {
-        tasks.insert(task_id.clone(), serde_json::json!({
+    for (tender_id, record) in store.iter() {
+        tenders.insert(tender_id.clone(), serde_json::json!({
             "manifest_cid": record.manifest_cid,
             "created_at": record.created_at.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
             "assigned_peers": record.assigned_peers,
@@ -612,30 +612,30 @@ async fn debug_all_tasks(State(state): State<RestState>) -> axum::Json<serde_jso
 
     axum::Json(serde_json::json!({
         "ok": true,
-        "tasks": serde_json::Value::Object(tasks)
+        "tenders": serde_json::Value::Object(tenders)
     }))
 }
 
-async fn get_task_manifest_id(
-    Path(task_id): Path<String>,
+async fn get_tender_manifest_id(
+    Path(tender_id): Path<String>,
     State(state): State<RestState>,
     _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    let maybe = { state.task_store.read().await.get(&task_id).cloned() };
-    let task = match maybe {
+    let maybe = { state.tender_store.read().await.get(&tender_id).cloned() };
+    let tender = match maybe {
         Some(t) => t,
         None => {
             let error_response =
-                crate::messages::machine::build_task_status_response("", "Error", &[], None);
+                crate::messages::machine::build_tender_status_response("", "Error", &[], None);
             return create_response_with_fallback(&error_response).await;
         }
     };
 
-    let operation_id = match task.last_operation_id {
+    let operation_id = match tender.last_operation_id {
         Some(o) => o,
         None => {
             let error_response =
-                crate::messages::machine::build_task_status_response("", "Error", &[], None);
+                crate::messages::machine::build_tender_status_response("", "Error", &[], None);
             return create_response_with_fallback(&error_response).await;
         }
     };
@@ -644,28 +644,28 @@ async fn get_task_manifest_id(
     let manifest_id = match get_manifest_cid_for_operation(&operation_id).await {
         Some(cid) => {
             log::info!(
-                "get_task_manifest_id: returning stored manifest_cid={} for operation_id={}",
+                "get_tender_manifest_id: returning stored manifest_cid={} for operation_id={}",
                 cid,
                 operation_id
             );
             cid
         }
         None => {
-            // Fallback to task record manifest_cid if available
-            if let Some(cid) = &task.manifest_cid {
+            // Fallback to tender record manifest_cid if available
+            if let Some(cid) = &tender.manifest_cid {
                 log::warn!(
-                    "get_task_manifest_id: using task.manifest_cid={} for operation_id={}",
+                    "get_tender_manifest_id: using tender.manifest_cid={} for operation_id={}",
                     cid,
                     operation_id
                 );
                 cid.clone()
             } else {
                 log::error!(
-                    "get_task_manifest_id: no manifest_cid found for operation_id={}",
+                    "get_tender_manifest_id: no manifest_cid found for operation_id={}",
                     operation_id
                 );
                 let error_response =
-                    crate::messages::machine::build_task_status_response("", "Error", &[], None);
+                    crate::messages::machine::build_tender_status_response("", "Error", &[], None);
                 return create_response_with_fallback(&error_response).await;
             }
         }
@@ -677,17 +677,17 @@ async fn get_task_manifest_id(
     create_response_with_fallback(response_str.as_bytes()).await
 }
 
-pub async fn get_task_status(
-    Path(task_id): Path<String>,
+pub async fn get_tender_status(
+    Path(tender_id): Path<String>,
     State(state): State<RestState>,
     _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    let maybe = { state.task_store.read().await.get(&task_id).cloned() };
+    let maybe = { state.tender_store.read().await.get(&tender_id).cloned() };
     if let Some(r) = maybe {
         let assigned = r.assigned_peers.unwrap_or_default();
 
-        let response_data = crate::messages::machine::build_task_status_response(
-            &task_id,
+        let response_data = crate::messages::machine::build_tender_status_response(
+            &tender_id,
             "Pending",
             &assigned,
             r.manifest_cid.as_deref(),
@@ -695,25 +695,25 @@ pub async fn get_task_status(
         return create_response_with_fallback(&response_data).await;
     }
     let error_response =
-        crate::messages::machine::build_task_status_response("", "Error", &[], None);
+        crate::messages::machine::build_tender_status_response("", "Error", &[], None);
     create_response_with_fallback(&error_response).await
 }
 
-/// Delete a task by task ID - discovers providers and sends delete requests
-pub async fn delete_task(
-    Path(task_id): Path<String>,
+/// Delete a tender by tender ID - discovers providers and sends delete requests
+pub async fn delete_tender(
+    Path(tender_id): Path<String>,
     State(_state): State<RestState>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    info!("delete_task: task_id={}", task_id);
+    info!("delete_tender: tender_id={}", tender_id);
 
     // Generate operation ID for this delete request
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let operation_id = format!("delete-{}-{}", task_id, timestamp);
+    let operation_id = format!("delete-{}-{}", tender_id, timestamp);
 
     // Parse query parameters for force flag
     let force = String::from_utf8_lossy(&body).contains("force=true");
@@ -726,7 +726,7 @@ pub async fn delete_task(
     let success;
     let message;
 
-    match handle_local_delete(&task_id, force).await {
+    match handle_local_delete(&tender_id, force).await {
         Ok(local_removed) => {
             if local_removed.is_empty() {
                 success = false;
@@ -750,7 +750,7 @@ pub async fn delete_task(
         success,
         &operation_id,
         &message,
-        &task_id,
+        &tender_id,
         &removed_workloads,
     );
 

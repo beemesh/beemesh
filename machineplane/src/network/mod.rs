@@ -404,14 +404,46 @@ pub async fn start_libp2p_node(
         tokio::select! {
             // Handle scheduler output (bids/leases to publish)
             Some(command) = sched_output_rx.recv() => {
-                 match command {
-                     SchedulerCommand::Publish { topic, payload } => {
-                         let topic = gossipsub::IdentTopic::new(topic);
-                         if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, payload) {
-                             log::error!("Failed to publish scheduler message: {}", e);
+                     match command {
+                         SchedulerCommand::Publish { topic, payload } => {
+                             let topic = gossipsub::IdentTopic::new(topic);
+                             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, payload) {
+                                 log::error!("Failed to publish scheduler message: {}", e);
+                             }
+                         }
+                         SchedulerCommand::PutDHT { key, value } => {
+                             let record = kad::Record {
+                                 key: kad::RecordKey::new(&key),
+                                 value,
+                                 publisher: None,
+                                 expires: None,
+                             };
+                             if let Err(e) = swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+                                 log::error!("Failed to put DHT record: {:?}", e);
+                             }
+                         }
+                         SchedulerCommand::DeployWorkload { manifest_id, manifest_json, replicas } => {
+                             let apply_req = crate::messages::types::ApplyRequest {
+                                 replicas,
+                                 operation_id: format!("sched-deploy-{}", uuid::Uuid::new_v4()),
+                                 manifest_json: manifest_json.clone(),
+                                 origin_peer: local_node_id.clone(),
+                                 manifest_id: manifest_id.clone(),
+                             };
+                             // We use an empty owner_pubkey for now as we trust the scheduler's decision
+                             // In a real scenario, we should pass the owner_pubkey from the Tender/Manifest
+                             let owner_pubkey = Vec::new(); 
+                             
+                             if let Err(e) = crate::scheduler::process_manifest_deployment(
+                                 &mut swarm,
+                                 &apply_req,
+                                 &manifest_json,
+                                 &owner_pubkey,
+                             ).await {
+                                 log::error!("Failed to deploy workload from scheduler: {}", e);
+                             }
                          }
                      }
-                 }
             }
             // control messages from other parts of the host (REST handlers)
             maybe_msg = control_rx.recv() => {

@@ -1,6 +1,6 @@
 //! Scheduler module for Decentralized Bidding
 //!
-//! This module implements the "Pull" model where nodes listen for Tasks,
+//! This module implements the "Pull" model where nodes listen for Tenders,
 //! evaluate their fit, submit Bids, and if they win, acquire a Lease.
 
 use crate::messages::constants::{
@@ -19,14 +19,14 @@ use tokio::time::sleep;
 pub struct Scheduler {
     /// Local node ID (PeerId string)
     local_node_id: String,
-    /// Active bids we are tracking: TaskID -> BidContext
+    /// Active bids we are tracking: TenderID -> BidContext
     active_bids: Arc<Mutex<HashMap<String, BidContext>>>,
     /// Channel to send messages back to the network loop
     outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
 }
 
 struct BidContext {
-    task_id: String,
+    tender_id: String,
     manifest_id: String,
     replicas: u32,
     bids: Vec<BidEntry>,
@@ -41,7 +41,19 @@ struct BidEntry {
 /// Commands emitted by the scheduler for the libp2p network loop to process
 #[derive(Debug, Clone)]
 pub enum SchedulerCommand {
-    Publish { topic: String, payload: Vec<u8> },
+    Publish {
+        topic: String,
+        payload: Vec<u8>,
+    },
+    PutDHT {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    DeployWorkload {
+        manifest_id: String,
+        manifest_json: String,
+        replicas: u32,
+    },
 }
 
 impl Scheduler {
@@ -67,7 +79,7 @@ impl Scheduler {
         let events = gossipsub::IdentTopic::new(SCHEDULER_EVENTS).hash();
 
         if *topic_hash == tenders {
-            self.handle_task(message).await;
+            self.handle_tender(message).await;
         } else if *topic_hash == proposals {
             self.handle_bid(message).await;
         } else if *topic_hash == events {
@@ -75,16 +87,16 @@ impl Scheduler {
         }
     }
 
-    /// Process a Task message: Evaluate -> Bid
-    async fn handle_task(&self, message: &gossipsub::Message) {
-        match machine::root_as_task(&message.data) {
-            Ok(task) => {
-                let task_id = task.id.clone();
-                info!("Received Task: {}", task_id);
+    /// Process a Tender message: Evaluate -> Bid
+    async fn handle_tender(&self, message: &gossipsub::Message) {
+        match machine::root_as_tender(&message.data) {
+            Ok(tender) => {
+                let tender_id = tender.id.clone();
+                info!("Received Tender: {}", tender_id);
 
-                let manifest_id = task.id.clone();
+                let manifest_id = tender.id.clone();
 
-                let replicas = std::cmp::max(1, task.max_parallel_duplicates);
+                let replicas = std::cmp::max(1, tender.max_parallel_duplicates);
 
                 // 1. Evaluate Fit (Capacity Check)
                 // TODO: Connect to CapacityVerifier
@@ -104,9 +116,9 @@ impl Scheduler {
                 {
                     let mut bids = self.active_bids.lock().unwrap();
                     bids.insert(
-                        task_id.to_string(),
+                        tender_id.to_string(),
                         BidContext {
-                            task_id: task_id.to_string(),
+                            tender_id: tender_id.to_string(),
                             manifest_id: manifest_id.clone(),
                             replicas,
                             bids: vec![BidEntry {
@@ -119,7 +131,7 @@ impl Scheduler {
 
                 // 4. Publish Bid
                 let bid_bytes = machine::build_bid(
-                    &task_id,
+                    &tender_id,
                     &self.local_node_id,
                     my_score,
                     capacity_score,
@@ -132,22 +144,25 @@ impl Scheduler {
                     topic: SCHEDULER_PROPOSALS.to_string(),
                     payload: bid_bytes,
                 }) {
-                    error!("Failed to queue bid for task {}: {}", task_id, e);
+                    error!("Failed to queue bid for tender {}: {}", tender_id, e);
                 } else {
-                    info!("Queued Bid for task {} with score {:.2}", task_id, my_score);
+                    info!("Queued Bid for tender {} with score {:.2}", tender_id, my_score);
                 }
 
                 // 5. Spawn Selection Window Waiter
                 let active_bids = self.active_bids.clone();
-                let task_id_clone = task_id.to_string();
+                let tender_id_clone = tender_id.to_string();
+                let manifest_json = tender.manifest_json.clone();
                 let local_id = self.local_node_id.clone();
+                let outbound_tx = self.outbound_tx.clone();
+                
                 // We need a way to trigger deployment, for now just log
                 tokio::spawn(async move {
                     sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
 
                     let winners = {
                         let mut bids = active_bids.lock().unwrap();
-                        if let Some(ctx) = bids.remove(&task_id_clone) {
+                        if let Some(ctx) = bids.remove(&tender_id_clone) {
                             let winners = select_winners(&ctx, &local_id);
                             if !winners.is_empty() {
                                 let summary = winners
@@ -156,13 +171,13 @@ impl Scheduler {
                                     .collect::<Vec<_>>()
                                     .join(", ");
                                 info!(
-                                    "Selected winners for task {} (manifest {}): {}",
-                                    ctx.task_id, ctx.manifest_id, summary
+                                    "Selected winners for tender {} (manifest {}): {}",
+                                    ctx.tender_id, ctx.manifest_id, summary
                                 );
                             } else {
                                 info!(
-                                    "No qualifying bids for task {} (manifest {})",
-                                    ctx.task_id, ctx.manifest_id
+                                    "No qualifying bids for tender {} (manifest {})",
+                                    ctx.tender_id, ctx.manifest_id
                                 );
                             }
                             winners
@@ -173,18 +188,47 @@ impl Scheduler {
 
                     if winners.iter().any(|bid| bid.bidder_id == local_id) {
                         info!(
-                            "WON BID for task {}! Proceeding to deployment...",
-                            task_id_clone
+                            "WON BID for tender {}! Proceeding to deployment...",
+                            tender_id_clone
                         );
-                        info!("Deploying workload for task {}", task_id_clone);
+                        info!("Deploying workload for tender {}", tender_id_clone);
 
-                        // TODO: Trigger workload deployment via runtime integration
+                        // 1. Publish LeaseHint to DHT
+                        let lease_hint = machine::build_lease_hint(
+                            &tender_id_clone,
+                            &local_id,
+                            1.0, // score
+                            30000, // ttl_ms
+                            0, // nonce
+                            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+                            &[], // signature
+                        );
+
+                        if let Err(e) = outbound_tx.send(SchedulerCommand::PutDHT {
+                            key: format!("lease:{}", tender_id_clone).into_bytes(),
+                            value: lease_hint,
+                        }) {
+                            error!("Failed to publish LeaseHint for tender {}: {}", tender_id_clone, e);
+                        } else {
+                            info!("Published LeaseHint for tender {}", tender_id_clone);
+                        }
+
+                        // 2. Trigger Workload Deployment
+                        if let Err(e) = outbound_tx.send(SchedulerCommand::DeployWorkload {
+                            manifest_id: ctx.manifest_id.clone(),
+                            manifest_json: manifest_json.clone(),
+                            replicas: 1,
+                        }) {
+                            error!("Failed to trigger deployment for tender {}: {}", tender_id_clone, e);
+                        } else {
+                            info!("Triggered deployment for tender {}", tender_id_clone);
+                        }
                     } else {
-                        info!("Lost bid for task {}.", task_id_clone);
+                        info!("Lost bid for tender {}.", tender_id_clone);
                     }
                 });
             }
-            Err(e) => error!("Failed to parse Task message: {}", e),
+            Err(e) => error!("Failed to parse Tender message: {}", e),
         }
     }
 
@@ -192,7 +236,7 @@ impl Scheduler {
     async fn handle_bid(&self, message: &gossipsub::Message) {
         match machine::root_as_bid(&message.data) {
             Ok(bid) => {
-                let task_id = bid.task_id.clone();
+                let tender_id = bid.tender_id.clone();
                 let bidder_id = bid.node_id.clone();
                 let score = bid.score;
 
@@ -202,10 +246,10 @@ impl Scheduler {
                 }
 
                 let mut bids = self.active_bids.lock().unwrap();
-                if let Some(ctx) = bids.get_mut(&task_id) {
+                if let Some(ctx) = bids.get_mut(&tender_id) {
                     info!(
-                        "Recorded bid for task {}: {:.2} from {}",
-                        task_id, score, bidder_id
+                        "Recorded bid for tender {}: {:.2} from {}",
+                        tender_id, score, bidder_id
                     );
                     ctx.bids.push(BidEntry {
                         bidder_id: bidder_id.to_string(),
@@ -221,10 +265,10 @@ impl Scheduler {
     async fn handle_event(&self, message: &gossipsub::Message) {
         match machine::root_as_scheduler_event(&message.data) {
             Ok(event) => {
-                let task_id = event.task_id.clone();
+                let tender_id = event.tender_id.clone();
                 info!(
-                    "Received Scheduler Event for task {}: {:?}",
-                    task_id, event.event_type
+                    "Received Scheduler Event for tender {}: {:?}",
+                    tender_id, event.event_type
                 );
 
                 if event.node_id == self.local_node_id {
@@ -235,8 +279,8 @@ impl Scheduler {
                         EventType::Cancelled | EventType::Preempted | EventType::Failed
                     ) {
                         info!(
-                            "Received termination event for locally deployed task {}",
-                            task_id
+                            "Received termination event for locally deployed tender {}",
+                            tender_id
                         );
                     }
                 }

@@ -63,7 +63,7 @@ pub mod machine {
         deserialize(buf)
     }
 
-    pub fn root_as_task(buf: &[u8]) -> bincode::Result<Task> {
+    pub fn root_as_tender(buf: &[u8]) -> bincode::Result<Tender> {
         deserialize(buf)
     }
 
@@ -87,11 +87,11 @@ pub mod machine {
         deserialize(buf)
     }
 
-    pub fn root_as_task_create_response(buf: &[u8]) -> bincode::Result<TaskCreateResponse> {
+    pub fn root_as_tender_create_response(buf: &[u8]) -> bincode::Result<TenderCreateResponse> {
         deserialize(buf)
     }
 
-    pub fn root_as_task_status_response(buf: &[u8]) -> bincode::Result<TaskStatusResponse> {
+    pub fn root_as_tender_status_response(buf: &[u8]) -> bincode::Result<TenderStatusResponse> {
         deserialize(buf)
     }
 
@@ -264,7 +264,7 @@ pub mod machine {
         })
     }
 
-    pub fn build_task(
+    pub fn build_tender(
         id: &str,
         manifest_ref: &str,
         manifest_json: &str,
@@ -277,7 +277,7 @@ pub mod machine {
         qos_preemptible: bool,
         timestamp: u64,
     ) -> Vec<u8> {
-        serialize(&Task {
+        serialize(&Tender {
             id: id.to_string(),
             manifest_ref: manifest_ref.to_string(),
             manifest_json: manifest_json.to_string(),
@@ -293,7 +293,7 @@ pub mod machine {
     }
 
     pub fn build_bid(
-        task_id: &str,
+        tender_id: &str,
         node_id: &str,
         score: f64,
         resource_fit_score: f64,
@@ -302,7 +302,7 @@ pub mod machine {
         signature: &[u8],
     ) -> Vec<u8> {
         serialize(&Bid {
-            task_id: task_id.to_string(),
+            tender_id: tender_id.to_string(),
             node_id: node_id.to_string(),
             score,
             resource_fit_score,
@@ -313,7 +313,7 @@ pub mod machine {
     }
 
     pub fn build_lease_hint(
-        task_id: &str,
+        tender_id: &str,
         node_id: &str,
         score: f64,
         ttl_ms: u32,
@@ -322,7 +322,7 @@ pub mod machine {
         signature: &[u8],
     ) -> Vec<u8> {
         serialize(&LeaseHint {
-            task_id: task_id.to_string(),
+            tender_id: tender_id.to_string(),
             node_id: node_id.to_string(),
             score,
             ttl_ms,
@@ -350,30 +350,30 @@ pub mod machine {
         build_candidates_response_with_keys(ok, &candidate_nodes)
     }
 
-    pub fn build_task_create_response(
+    pub fn build_tender_create_response(
         ok: bool,
-        task_id: &str,
+        tender_id: &str,
         manifest_ref: &str,
         selection_window_ms: u64,
         message: &str,
     ) -> Vec<u8> {
-        serialize(&TaskCreateResponse {
+        serialize(&TenderCreateResponse {
             ok,
-            task_id: task_id.to_string(),
+            tender_id: tender_id.to_string(),
             manifest_ref: manifest_ref.to_string(),
             selection_window_ms,
             message: message.to_string(),
         })
     }
 
-    pub fn build_task_status_response(
-        task_id: &str,
+    pub fn build_tender_status_response(
+        tender_id: &str,
         state: &str,
         assigned_peers: &[String],
         manifest_cid: Option<&str>,
     ) -> Vec<u8> {
-        serialize(&TaskStatusResponse {
-            task_id: task_id.to_string(),
+        serialize(&TenderStatusResponse {
+            tender_id: tender_id.to_string(),
             state: state.to_string(),
             assigned_peers: assigned_peers.to_vec(),
             manifest_cid: manifest_cid.unwrap_or_default().to_string(),

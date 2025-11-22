@@ -43,7 +43,9 @@ pub fn baseline_capacity_params<'a>(
 
 /// Build the bincode payload for a capacity reply and capture the associated KEM public key.
 pub fn build_capacity_reply(params: CapacityReplyParams<'_>) -> CapacityReply {
-    let kem_pub_b64: Option<String> = None;
+    use base64::Engine;
+    let kem_pub_b64: Option<String> = crate::network::get_node_keypair()
+        .map(|(pk, _)| base64::engine::general_purpose::STANDARD.encode(pk));
 
     let payload = crate::messages::machine::build_capacity_reply(
         params.ok,
