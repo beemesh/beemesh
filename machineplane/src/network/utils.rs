@@ -2,6 +2,8 @@ use std::collections::HashMap as StdHashMap;
 use tokio::sync::mpsc;
 
 use crate::messages::constants::FREE_CAPACITY_PREFIX;
+use libp2p::{PeerId, identity::PublicKey};
+use multihash::Multihash;
 
 /// Notify all pending capacity observers for the given request id with a lazily constructed payload.
 pub fn notify_capacity_observers<F>(
@@ -45,4 +47,13 @@ pub fn extract_manifest_id_from_request_id(request_id: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Attempt to derive a libp2p [`PublicKey`] from the given [`PeerId`].
+///
+/// Ed25519 peer IDs are encoded as identity multihashes containing the protobuf-encoded
+/// public key, which allows reconstructing the key for signature verification.
+pub fn peer_id_to_public_key(peer_id: &PeerId) -> Option<PublicKey> {
+    let multihash = Multihash::<64>::from_bytes(&peer_id.to_bytes()).ok()?;
+    PublicKey::try_decode_protobuf(multihash.digest()).ok()
 }

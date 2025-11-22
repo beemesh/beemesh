@@ -17,6 +17,7 @@ pub struct ApplyRequest {
     pub manifest_json: String,
     pub origin_peer: String,
     pub manifest_id: String,
+    pub signature: Vec<u8>,
 }
 
 /// Response to an apply request
@@ -25,6 +26,7 @@ pub struct ApplyResponse {
     pub ok: bool,
     pub operation_id: String,
     pub message: String,
+    pub signature: Vec<u8>,
 }
 
 /// Request to delete a deployed manifest
@@ -89,6 +91,7 @@ pub struct Tender {
     pub placement_token: String,
     pub qos_preemptible: bool,
     pub timestamp: u64,
+    pub signature: Vec<u8>,
 }
 
 /// Bidding message for tender assignment
@@ -122,6 +125,7 @@ pub struct SchedulerEvent {
     pub event_type: EventType,
     pub reason: String,
     pub timestamp: u64,
+    pub signature: Vec<u8>,
 }
 
 /// Lease hint for tender assignment
@@ -321,6 +325,7 @@ impl Default for ApplyRequest {
             manifest_json: String::new(),
             origin_peer: String::new(),
             manifest_id: String::new(),
+            signature: Vec::new(),
         }
     }
 }
@@ -362,6 +367,7 @@ impl Default for Tender {
             placement_token: String::new(),
             qos_preemptible: false,
             timestamp: 0,
+            signature: Vec::new(),
         }
     }
 }

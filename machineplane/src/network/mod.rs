@@ -392,13 +392,14 @@ pub async fn start_libp2p_node(
                              }
                          }
                          SchedulerCommand::DeployWorkload { manifest_id, manifest_json, replicas } => {
-                             let apply_req = crate::messages::types::ApplyRequest {
-                                 replicas,
-                                 operation_id: format!("sched-deploy-{}", uuid::Uuid::new_v4()),
-                                 manifest_json: manifest_json.clone(),
-                                 origin_peer: local_node_id.clone(),
-                                 manifest_id: manifest_id.clone(),
-                             };
+                            let apply_req = crate::messages::types::ApplyRequest {
+                                replicas,
+                                operation_id: format!("sched-deploy-{}", uuid::Uuid::new_v4()),
+                                manifest_json: manifest_json.clone(),
+                                origin_peer: local_node_id.clone(),
+                                manifest_id: manifest_id.clone(),
+                                signature: Vec::new(),
+                            };
                              // We use an empty owner_pubkey for now as we trust the scheduler's decision
                              // In a real scenario, we should pass the owner_pubkey from the Tender/Manifest
                              let owner_pubkey = Vec::new();
