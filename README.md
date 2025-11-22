@@ -303,8 +303,8 @@ Beemesh represents a **paradigm shift** in orchestration:
 
 For full normative details, see:
 
-* **Machineplane Spec**: [`machineplane-spec.md`](./machineplane-spec.md)
+* **Machineplane Spec**: [`machineplane-spec.md`](./machineplane/machineplane-spec.md)
   Node discovery, ephemeral scheduling, deployment, security, failure handling, and observability.
 
-* **Workplane Spec**: [`workplane-spec.md`](./workplane-spec.md)
+* **Workplane Spec**: [`workplane-spec.md`](./workplane/workplane-spec.md)
   Per-workload service discovery, workload identity, secure workload-to-workload connectivity, self-healing, and consistency gating.
