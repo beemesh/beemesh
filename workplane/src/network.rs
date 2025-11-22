@@ -196,10 +196,10 @@ impl Network {
         if should_publish {
             if active {
                 info!(epoch, "advertising leader endpoint");
-                metrics::increment_counter!("workplane.network.leader_advertisements");
+                crate::increment_counter!("workplane.network.leader_advertisements");
             } else {
                 info!(epoch, "withdrawing leader endpoint");
-                metrics::increment_counter!("workplane.network.leader_withdrawals");
+                crate::increment_counter!("workplane.network.leader_withdrawals");
             }
             self.publish_current_record()?;
         }
