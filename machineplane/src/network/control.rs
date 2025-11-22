@@ -1,5 +1,5 @@
 use crate::messages::constants::{SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
-use crate::network::behaviour::MyBehaviour;
+use crate::network::behaviour::{MyBehaviour, SCHEDULER_INPUT_TX};
 use crate::network::{capacity, utils};
 use libp2p::kad::{QueryId, RecordKey};
 use libp2p::{PeerId, Swarm, gossipsub};
@@ -107,8 +107,24 @@ pub async fn handle_control_message(
         }
         Libp2pControl::PublishTender { payload, reply_tx } => {
             let topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
-            match swarm.behaviour_mut().gossipsub.publish(topic, payload) {
+            match swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(topic.clone(), payload.clone())
+            {
                 Ok(_) => {
+                    if let Some(tx) = SCHEDULER_INPUT_TX.get() {
+                        let _ = tx.send((
+                            topic.hash(),
+                            gossipsub::Message {
+                                source: Some(*swarm.local_peer_id()),
+                                data: payload,
+                                sequence_number: None,
+                                topic: topic.hash(),
+                            },
+                        ));
+                    }
+
                     let _ = reply_tx.send(Ok(()));
                 }
                 Err(e) => {
