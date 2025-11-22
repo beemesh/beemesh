@@ -13,6 +13,7 @@ use serial_test::serial;
 
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::process::Command;
 use tokio::time::sleep;
 
 #[path = "apply_common.rs"]
@@ -28,6 +29,23 @@ use apply_common::{
 };
 use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
+
+/// Construct a Podman command that respects the PODMAN_HOST (and compatible) environment
+/// variables so the tests work with both local Podman daemons and remote Podman sockets.
+fn podman_command(args: &[&str]) -> Command {
+    let mut cmd =
+        Command::new(std::env::var("PODMAN_CMD").unwrap_or_else(|_| "podman".to_string()));
+    cmd.args(args);
+
+    if let Ok(host) = std::env::var("PODMAN_HOST") {
+        if !host.trim().is_empty() {
+            cmd.env("CONTAINER_HOST", &host);
+            cmd.env("PODMAN_HOST", host);
+        }
+    }
+
+    cmd
+}
 
 /// Tests the basic apply functionality with the Podman runtime.
 ///
@@ -373,8 +391,7 @@ async fn start_test_nodes_for_podman() -> NodeGuard {
 }
 
 async fn is_podman_available() -> bool {
-    match tokio::process::Command::new("podman")
-        .args(&["--version"])
+    match podman_command(&["--version"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -391,8 +408,7 @@ async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> b
     let expected_pod_name = format!("beemesh-{}-pod", tender_id);
 
     // Check if the pod was created by Podman
-    let output = tokio::process::Command::new("podman")
-        .args(&["pod", "ls", "--format", "json"])
+    let output = podman_command(&["pod", "ls", "--format", "json"])
         .output()
         .await;
 
@@ -416,8 +432,7 @@ async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> b
             }
 
             // Also try to list containers if pod listing didn't work
-            let container_output = tokio::process::Command::new("podman")
-                .args(&["ps", "-a", "--format", "json"])
+            let container_output = podman_command(&["ps", "-a", "--format", "json"])
                 .output()
                 .await;
 
@@ -465,16 +480,14 @@ async fn cleanup_podman_resources(tender_id: &str) {
 
     // Try to remove the specific pod by the expected name (with -pod suffix)
     let expected_pod_name = format!("beemesh-{}-pod", tender_id);
-    let _ = tokio::process::Command::new("podman")
-        .args(&["pod", "rm", "-f", &expected_pod_name])
+    let _ = podman_command(&["pod", "rm", "-f", &expected_pod_name])
         .output()
         .await;
     log::info!("Attempted to clean up Podman pod: {}", expected_pod_name);
 
     // Also try the name without -pod suffix (fallback)
     let expected_pod_name_alt = format!("beemesh-{}", tender_id);
-    let _ = tokio::process::Command::new("podman")
-        .args(&["pod", "rm", "-f", &expected_pod_name_alt])
+    let _ = podman_command(&["pod", "rm", "-f", &expected_pod_name_alt])
         .output()
         .await;
     log::info!(
@@ -483,8 +496,7 @@ async fn cleanup_podman_resources(tender_id: &str) {
     );
 
     // Also try to remove pods by name pattern (fallback)
-    let output = tokio::process::Command::new("podman")
-        .args(&["pod", "ls", "-q", "--filter", &format!("name=beemesh")])
+    let output = podman_command(&["pod", "ls", "-q", "--filter", &format!("name=beemesh")])
         .output()
         .await;
 
@@ -494,10 +506,7 @@ async fn cleanup_podman_resources(tender_id: &str) {
             for line in stdout.lines() {
                 let pod_id = line.trim();
                 if !pod_id.is_empty() {
-                    let _ = tokio::process::Command::new("podman")
-                        .args(&["pod", "rm", "-f", pod_id])
-                        .output()
-                        .await;
+                    let _ = podman_command(&["pod", "rm", "-f", pod_id]).output().await;
                     log::info!("Cleaned up Podman pod: {}", pod_id);
                 }
             }
@@ -505,8 +514,7 @@ async fn cleanup_podman_resources(tender_id: &str) {
     }
 
     // Also clean up any containers that might be running
-    let container_output = tokio::process::Command::new("podman")
-        .args(&["ps", "-aq", "--filter", "name=beemesh"])
+    let container_output = podman_command(&["ps", "-aq", "--filter", "name=beemesh"])
         .output()
         .await;
 
@@ -516,10 +524,7 @@ async fn cleanup_podman_resources(tender_id: &str) {
             for line in stdout.lines() {
                 let container_id = line.trim();
                 if !container_id.is_empty() {
-                    let _ = tokio::process::Command::new("podman")
-                        .args(&["rm", "-f", container_id])
-                        .output()
-                        .await;
+                    let _ = podman_command(&["rm", "-f", container_id]).output().await;
                     log::info!("Cleaned up Podman container: {}", container_id);
                 }
             }
