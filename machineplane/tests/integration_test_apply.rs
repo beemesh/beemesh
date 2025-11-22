@@ -1,3 +1,13 @@
+//! Integration tests for the "Apply" workflow.
+//!
+//! This module tests the end-to-end flow of applying a manifest via the Kubernetes-compatible API.
+//! It covers:
+//! - Applying a manifest using `kubectl` (simulated).
+//! - Verifying the workload is scheduled and deployed.
+//! - Verifying the content of the deployed manifest.
+//! - Testing with both mock runtimes and real Podman (if available).
+//! - Testing replica distribution.
+
 use env_logger::Env;
 use serial_test::serial;
 
@@ -19,6 +29,13 @@ use apply_common::{
 use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 use test_utils::{NodeGuard, make_test_cli, setup_cleanup_hook, start_nodes};
 
+/// Tests the basic apply functionality with a mock runtime.
+///
+/// This test:
+/// 1. Sets up a test environment with 3 nodes.
+/// 2. Applies an nginx manifest via the API.
+/// 3. Verifies that the workload is deployed to exactly one node.
+/// 4. Verifies that the deployed manifest content matches the original.
 #[serial]
 #[tokio::test]
 async fn test_apply_functionality() {
@@ -80,6 +97,12 @@ async fn test_apply_functionality() {
     guard.cleanup().await;
 }
 
+/// Tests the apply functionality using the real Podman runtime.
+///
+/// This test is skipped if `podman` is not available on the system.
+/// It verifies:
+/// 1. Deployment of a workload creates actual Podman pods/containers.
+/// 2. Deletion of the manifest removes the Podman resources.
 #[serial]
 #[tokio::test]
 async fn test_apply_with_real_podman() {
@@ -136,6 +159,11 @@ async fn test_apply_with_real_podman() {
     guard.cleanup().await;
 }
 
+/// Tests the apply functionality with multiple replicas.
+///
+/// This test verifies that:
+/// 1. A manifest specifying `replicas: 3` is distributed to 3 different nodes.
+/// 2. The deployed manifests on each node have `replicas: 1` (since the scheduler distributes single replicas).
 #[serial]
 #[tokio::test]
 async fn test_apply_nginx_with_replicas() {

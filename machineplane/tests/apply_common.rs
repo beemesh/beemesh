@@ -1,3 +1,8 @@
+//! Common helper functions for "Apply" workflow tests.
+//!
+//! This module provides shared utilities for setting up test environments,
+//! starting fabric nodes, and verifying workload deployments.
+
 use env_logger::Env;
 use futures::future::join_all;
 use std::collections::HashMap as StdHashMap;
@@ -11,6 +16,13 @@ use machineplane::Cli;
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
 
+/// Creates a standard configuration of 3 nodes for testing.
+///
+/// - Node 1 (3000): Primary node.
+/// - Node 2 (3100): Secondary node, bootstraps from Node 1.
+/// - Node 3 (3200): Tertiary node, bootstraps from Node 1 & 2.
+///
+/// `disable_flags` controls the `scheduling_enabled` flag for each node.
 fn make_standard_node_clis(disable_flags: &[bool]) -> Vec<Cli> {
     assert!(disable_flags.len() == TEST_PORTS.len());
 

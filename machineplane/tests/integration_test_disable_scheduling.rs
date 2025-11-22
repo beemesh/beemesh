@@ -1,3 +1,11 @@
+//! Integration tests for scheduling controls.
+//!
+//! This module verifies that the `scheduling_enabled` flag correctly controls
+//! whether a node can accept new workloads.
+//! It covers:
+//! - Verifying that nodes with scheduling disabled do not receive workloads.
+//! - Verifying that scheduling fails if all nodes are disabled.
+
 use serial_test::serial;
 
 use std::path::PathBuf;
@@ -15,6 +23,12 @@ use apply_common::{
 };
 use kube_helpers::apply_manifest_via_kube_api;
 
+/// Tests that nodes with scheduling disabled are skipped during placement.
+///
+/// This test:
+/// 1. Starts 3 nodes: Node 1 (disabled), Node 2 (enabled), Node 3 (disabled).
+/// 2. Applies a manifest.
+/// 3. Verifies that the workload is placed ONLY on Node 2.
 #[serial]
 #[tokio::test]
 async fn test_disabled_nodes_do_not_schedule_workloads() {

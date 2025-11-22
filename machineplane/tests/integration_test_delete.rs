@@ -1,3 +1,11 @@
+//! Integration tests for the "Delete" workflow.
+//!
+//! This module tests the deletion of tenders (workloads) via the API.
+//! It covers:
+//! - Deleting an existing tender.
+//! - Deleting with the `force` flag.
+//! - Handling deletion of non-existent tenders.
+
 use env_logger::Env;
 use serial_test::serial;
 
@@ -37,7 +45,13 @@ async fn start_test_nodes() -> test_utils::NodeGuard {
     start_nodes(vec![cli1, cli2], Duration::from_secs(1)).await
 }
 
-/// Test basic delete endpoint functionality using CLI
+/// Tests the basic delete endpoint functionality.
+///
+/// This test:
+/// 1. Sets up a test environment.
+/// 2. Applies a manifest to create a tender.
+/// 3. Deletes the tender via the API.
+/// 4. Verifies the deletion command succeeds.
 #[tokio::test]
 #[serial]
 async fn test_delete_tender_endpoint() {

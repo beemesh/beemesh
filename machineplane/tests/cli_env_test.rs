@@ -1,6 +1,12 @@
+//! Tests for CLI environment variable parsing.
+//!
+//! This module verifies that the CLI correctly picks up configuration from environment variables,
+//! specifically `PODMAN_HOST`.
+
 use clap::Parser;
 use machineplane::Cli;
 
+/// A RAII guard for setting and restoring environment variables.
 struct EnvGuard {
     key: &'static str,
     previous: Option<String>,
@@ -30,6 +36,7 @@ impl Drop for EnvGuard {
     }
 }
 
+/// Verifies that `PODMAN_HOST` env var sets the `podman_socket` CLI arg.
 #[test]
 fn cli_pulls_podman_socket_from_env() {
     let _guard = EnvGuard::set("PODMAN_HOST", "unix:///tmp/env-podman.sock");

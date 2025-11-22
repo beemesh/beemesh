@@ -1,3 +1,12 @@
+//! Integration tests for the Machineplane.
+//!
+//! This module contains the basic integration test suite for the Machineplane.
+//! It verifies the core functionality of the system, including:
+//! - Node startup and mesh formation.
+//! - Health check endpoints.
+//! - Public key retrieval.
+//! - Basic peer discovery.
+
 use env_logger::Env;
 use log::info;
 
@@ -10,6 +19,16 @@ use test_utils::{make_test_cli, setup_cleanup_hook, start_nodes};
 
 // We will start machines directly in this process by calling `start_machine(cli).await`.
 
+/// Tests the full host application flow.
+///
+/// This test starts three nodes:
+/// 1. A primary node (port 3000) with REST API and machineplane enabled.
+/// 2. Two secondary nodes (ports 3100, 3200) to form a mesh.
+///
+/// It verifies:
+/// - The mesh forms correctly (at least 2 peers discovered).
+/// - The health endpoint returns "ok".
+/// - The public key endpoints return valid keys.
 #[tokio::test]
 async fn test_run_host_application() {
     // Setup cleanup hook and initialize logger
