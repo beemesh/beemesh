@@ -308,3 +308,76 @@ For full normative details, see:
 
 * **Workplane Spec**: [`workplane-spec.md`](./workplane/workplane-spec.md)
   Per-workload service discovery, workload identity, secure workload-to-workload connectivity, self-healing, and consistency gating.
+
+## 11. Research Appendix: Background & Related Work
+
+Beemesh’s design is not ad‑hoc; it deliberately assembles well‑studied ideas from distributed systems, security, and edge/fog computing. This section maps the main concepts in Beemesh to the research they are grounded in and lists canonical references.
+
+### 11.1 Decentralized orchestration & control‑plane removal
+
+- Stateless, distributed schedulers such as **Sparrow** show that near‑optimal cluster scheduling can be achieved via decentralized random sampling and local queues, avoiding a monolithic scheduler bottleneck. :contentReference[oaicite:0]{index=0}  
+- Market‑based / auction‑based approaches treat resource allocation as **decentralized bidding** among agents (jobs and machines), which closely resembles Beemesh’s “tender / bid” scheduling semantics. :contentReference[oaicite:1]{index=1}  
+
+Beemesh’s Machineplane uses ephemeral tenders and bids over pub/sub in this spirit: scheduling is distributed across all nodes and never relies on a strongly consistent global control plane like an etcd‑backed scheduler.
+
+### 11.2 DHT‑based membership & discovery
+
+- **Distributed Hash Tables (DHTs)** (e.g. Chord) provide scalable key→node lookup with \(O(\log N)\) hops and natural handling of churn in large peer‑to‑peer systems. :contentReference[oaicite:2]{index=2}  
+
+Beemesh’s **Machine DHT** and **Workload DHT** apply the same ideas to node discovery and service discovery respectively, instead of relying on central registries or configuration databases.
+
+### 11.3 Consistency, CAP trade‑offs & per‑workload state
+
+- Gilbert & Lynch’s formalization of the **CAP theorem** shows that in the presence of network partitions, a system must trade off consistency against availability. :contentReference[oaicite:3]{index=3}  
+- **Dynamo** demonstrates “state with the application”: each Amazon service runs its own highly available key‑value store, favoring availability and application‑level conflict resolution over cluster‑wide strong consistency. :contentReference[oaicite:4]{index=4}  
+
+Beemesh generalizes this pattern:
+
+- The **Machineplane** is intentionally **A/P** (Availability + Partition Tolerance) and does not hold durable state.  
+- Any **C/P** needs are pushed into the **Workplane**, where each stateful workload can embed its own consensus or replication protocol.
+
+### 11.4 Security & identity (zero trust, workload identity)
+
+- **Zero Trust Architecture (ZTA)**, as defined by NIST SP 800‑207, moves from perimeter‑based security to continuous, identity‑centric authentication for every request to users, devices, and workloads. :contentReference[oaicite:5]{index=5}  
+- The **SPIFFE/SPIRE** ecosystem specifies workload‑centric cryptographic identities, decoupled from host identity, and uses them for mutual TLS between services. :contentReference[oaicite:6]{index=6}  
+
+Beemesh adopts these principles by issuing **separate, ephemeral cryptographic identities** to machines and workloads and enforcing **mutually authenticated, encrypted streams** at both layers by default. This implements zero trust as a fabric property rather than an add‑on.
+
+### 11.5 Edge, IoT & fog computing
+
+- **Fog computing** extends cloud capabilities towards the network edge, emphasizing low latency, wide geographic distribution, mobility, wireless networks, and very large numbers of heterogeneous nodes. :contentReference[oaicite:7]{index=7}  
+
+These environments match Beemesh’s core assumption that **everything is transient**: machines churn frequently, network partitions are normal, and orchestration must operate without a centralized control plane or reliable backbone. The disposable **Machineplane** and self‑healing **Workplane** are concrete system responses to these edge/fog constraints.
+
+### 11.6 Autonomic & self‑healing behavior
+
+- Autonomic computing research sets out the goal of self‑configuring, self‑optimizing, self‑protecting, and **self‑healing** systems that minimize manual operator involvement. :contentReference[oaicite:8]{index=8}  
+
+Beemesh’s Workplane behaves like a per‑workload autonomic controller: it maintains desired replica counts, performs self‑healing based on local manifests, and tolerates duplicate replicas during races or partitions, converging back to a healthy state without central coordination.
+
+### 11.7 Canonical references
+
+**Decentralized scheduling**
+
+- K. Ousterhout et al., “**Sparrow: Distributed, Low Latency Scheduling**,” SOSP 2013. :contentReference[oaicite:9]{index=9}  
+- M. P. Wellman et al., “**Auction Protocols for Decentralized Scheduling**,” *Games and Economic Behavior*, 2001. :contentReference[oaicite:10]{index=10}  
+
+**DHTs & overlays**
+
+- I. Stoica et al., “**Chord: A Scalable Peer‑to‑Peer Lookup Service for Internet Applications**,” SIGCOMM 2001 / IEEE TON 2003. :contentReference[oaicite:11]{index=11}  
+
+**Consistency & state placement**
+
+- S. Gilbert, N. Lynch, “**Brewer’s Conjecture and the Feasibility of Consistent, Available, Partition‑Tolerant Web Services**,” SIGACT News 2002. :contentReference[oaicite:12]{index=12}  
+- G. DeCandia et al., “**Dynamo: Amazon’s Highly Available Key‑Value Store**,” SOSP 2007. :contentReference[oaicite:13]{index=13}  
+
+**Security & identity**
+
+- NIST, “**SP 800‑207: Zero Trust Architecture**,” 2020. :contentReference[oaicite:14]{index=14}  
+- **SPIFFE Project** – *Secure Production Identity Framework for Everyone*. :contentReference[oaicite:15]{index=15}  
+
+**Edge / fog & autonomic behavior**
+
+- F. Bonomi et al., “**Fog Computing and its Role in the Internet of Things**,” MCC 2012. :contentReference[oaicite:16]{index=16}  
+- J. O. Kephart, D. M. Chess, “**The Vision of Autonomic Computing**,” *Computer*, 2003. :contentReference[oaicite:17]{index=17}  
+
