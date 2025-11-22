@@ -89,7 +89,7 @@ impl Scheduler {
 
     /// Process a Tender message: Evaluate -> Bid
     async fn handle_tender(&self, message: &gossipsub::Message) {
-        match machine::root_as_tender(&message.data) {
+        match machine::decode_tender(&message.data) {
             Ok(tender) => {
                 let tender_id = tender.id.clone();
                 info!("Received Tender: {}", tender_id);
@@ -248,7 +248,7 @@ impl Scheduler {
 
     /// Process a Bid message: Update highest bid
     async fn handle_bid(&self, message: &gossipsub::Message) {
-        match machine::root_as_bid(&message.data) {
+        match machine::decode_bid(&message.data) {
             Ok(bid) => {
                 let tender_id = bid.tender_id.clone();
                 let bidder_id = bid.node_id.clone();
@@ -277,7 +277,7 @@ impl Scheduler {
 
     /// Process Scheduler Events (e.g. Cancelled, Preempted)
     async fn handle_event(&self, message: &gossipsub::Message) {
-        match machine::root_as_scheduler_event(&message.data) {
+        match machine::decode_scheduler_event(&message.data) {
             Ok(event) => {
                 let tender_id = event.tender_id.clone();
                 info!(
@@ -479,7 +479,7 @@ mod runtime_integration {
                 info!("Received apply request from peer={}", peer);
 
                 // Parse the apply request
-                match machine::root_as_apply_request(&request) {
+                match machine::decode_apply_request(&request) {
                     Ok(apply_req) => {
                         info!(
                             "Apply request - operation_id={:?} replicas={}",
@@ -870,7 +870,7 @@ mod runtime_integration {
             manifest.len()
         );
 
-        match machine::root_as_apply_request(manifest) {
+        match machine::decode_apply_request(manifest) {
             Ok(apply_req) => {
                 debug!(
                     "Enhanced self-apply request - operation_id={:?} replicas={}",

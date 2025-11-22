@@ -442,7 +442,7 @@ pub async fn handle_query_capacity_with_payload(
         .push(reply_tx);
 
     // Parse the provided payload and rebuild it into a TopicMessage wrapper
-    match crate::messages::machine::root_as_capacity_request(&payload) {
+    match crate::messages::machine::decode_capacity_request(&payload) {
         Ok(cap_req) => {
             let finished = crate::messages::machine::build_capacity_request_with_id(
                 &request_id,
