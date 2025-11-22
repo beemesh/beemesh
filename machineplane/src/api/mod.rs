@@ -192,7 +192,7 @@ pub(crate) async fn collect_candidate_pubkeys(
         tender_id,
         uuid::Uuid::new_v4()
     );
-    let capacity_fb = crate::messages::machine::build_capacity_request(
+    let capacity_request = crate::messages::machine::build_capacity_request(
         500u32,
         512u64 * 1024 * 1024,
         10u64 * 1024 * 1024 * 1024,
@@ -203,7 +203,7 @@ pub(crate) async fn collect_candidate_pubkeys(
         crate::network::control::Libp2pControl::QueryCapacityWithPayload {
             request_id: request_id.clone(),
             reply_tx: reply_tx.clone(),
-            payload: capacity_fb,
+            payload: capacity_request,
         },
     );
 
