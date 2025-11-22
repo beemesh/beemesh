@@ -49,6 +49,17 @@ impl NodeGuard {
 
         self.cleaned_up = true;
     }
+
+    /// Combine another guard into this one without triggering cleanup on drop.
+    ///
+    /// This is useful when nodes need to be started in multiple phases but
+    /// managed by a single guard for teardown.
+    #[allow(dead_code)]
+    pub fn absorb(&mut self, other: &mut NodeGuard) {
+        self.handles.append(&mut other.handles);
+        self.processes.append(&mut other.processes);
+        other.cleaned_up = true;
+    }
 }
 
 impl Drop for NodeGuard {
