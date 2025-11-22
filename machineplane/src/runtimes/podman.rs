@@ -1070,7 +1070,9 @@ impl RuntimeEngine for PodmanEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
+    #[serial]
     #[tokio::test]
     async fn test_podman_engine_creation() {
         PodmanEngine::configure_runtime(None, false);
@@ -1078,8 +1080,10 @@ mod tests {
         assert_eq!(engine.name(), "podman");
     }
 
+    #[serial]
     #[tokio::test]
     async fn test_manifest_validation() {
+        PodmanEngine::configure_runtime(None, false);
         let engine = PodmanEngine::new();
 
         // Valid manifest
@@ -1110,6 +1114,7 @@ spec:
         assert!(engine.validate_manifest(invalid_manifest).await.is_err());
     }
 
+    #[serial]
     #[tokio::test]
     async fn test_parse_manifest_metadata() {
         PodmanEngine::configure_runtime(None, false);
@@ -1134,6 +1139,7 @@ spec:
         assert_eq!(metadata.get("namespace"), Some(&"default".to_string()));
     }
 
+    #[serial]
     #[tokio::test]
     async fn test_workload_id_generation() {
         PodmanEngine::configure_runtime(None, false);
@@ -1160,8 +1166,10 @@ spec:
         assert_eq!(id4, "beemesh-manifest-789");
     }
 
+    #[serial]
     #[tokio::test]
     async fn test_force_remote_configuration() {
+        PodmanEngine::configure_runtime(None, false);
         PodmanEngine::configure_runtime(Some("/run/podman/podman.sock".to_string()), true);
         let engine = PodmanEngine::new();
         assert!(engine.force_remote);
@@ -1169,5 +1177,6 @@ spec:
             engine.podman_socket.as_deref(),
             Some("unix:///run/podman/podman.sock")
         );
+        PodmanEngine::configure_runtime(None, false);
     }
 }
