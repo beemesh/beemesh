@@ -3,7 +3,7 @@ pub mod discovery;
 pub mod manifest;
 pub mod network;
 pub mod raft;
-pub mod self_heal;
+pub mod selfheal;
 pub mod streams;
 pub mod tender;
 pub mod workload;
