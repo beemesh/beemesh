@@ -3,7 +3,7 @@ use crate::network::behaviour::MyBehaviour;
 use crate::network::{capacity, utils};
 use libp2p::kad::{QueryId, RecordKey};
 use libp2p::{gossipsub, PeerId, Swarm};
-use log::{debug, info, warn};
+use log::{debug, info};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::collections::HashMap as StdHashMap;

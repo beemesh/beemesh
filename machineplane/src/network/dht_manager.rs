@@ -2,7 +2,7 @@
 use libp2p::{kad, Swarm};
 use log::info;
 use crate::messages::machine::root_as_applied_manifest;
-use crate::messages::types::{AppliedManifest, KeyValue, OperationType, SignatureScheme};
+use crate::messages::types::AppliedManifest;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -23,7 +23,7 @@ pub enum DhtOperation {
     /// Get all manifests by a specific peer
     GetManifestsByPeer {
         peer_id: String,
-        reply_tx: mpsc::UnboundedSender<Result<Vec<AppliedManifest<'static>>, String>>,
+        reply_tx: mpsc::UnboundedSender<Result<Vec<AppliedManifest>, String>>,
     },
 }
 
@@ -37,7 +37,7 @@ enum DhtQueryContext {
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
     GetManifest {
-        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest<'static>>, String>>,
+        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest>, String>>,
     },
 }
 
@@ -97,7 +97,7 @@ impl DhtManager {
             }
         };
 
-        let record_key = Self::manifest_key(manifest_id);
+        let record_key = Self::manifest_key(&manifest_id);
         let record = kad::Record {
             key: record_key,
             value: manifest_bytes,
