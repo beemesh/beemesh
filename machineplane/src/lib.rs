@@ -292,7 +292,9 @@ pub async fn start_machine(mut cli: Cli) -> anyhow::Result<Vec<tokio::task::Join
 
     let mut handles = Vec::new();
 
-    let app = api::build_router(peer_rx, control_tx.clone());
+    // Scheduling is enabled by default; this flag can be plumbed from CLI if runtime
+    // configuration is needed in the future.
+    let app = api::build_router(peer_rx, control_tx.clone(), true);
 
     // Public TCP server
     let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);
