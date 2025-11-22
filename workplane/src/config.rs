@@ -1,6 +1,4 @@
-use std::{str::FromStr, time::Duration};
-
-use libp2p::{Multiaddr, multiaddr::Protocol};
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct Config {
