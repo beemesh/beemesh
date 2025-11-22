@@ -106,6 +106,7 @@ use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use serde_yaml::Value;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::RwLock;
 use tokio::process::Command;
@@ -184,7 +185,32 @@ impl PodmanEngine {
 
     /// Detect a podman socket URL from configuration, environment, or common locations
     fn detect_podman_socket() -> Option<String> {
-        Self::socket_override()
+        if let Some(socket) = Self::socket_override() {
+            return Some(socket);
+        }
+
+        for key in ["PODMAN_HOST", "CONTAINER_HOST"] {
+            if let Ok(value) = std::env::var(key) {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(Self::normalize_socket(trimmed));
+                }
+            }
+        }
+
+        if let Some(xdg_runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+            let candidate = PathBuf::from(xdg_runtime_dir).join("podman/podman.sock");
+            if candidate.exists() {
+                return Some(Self::normalize_socket(&candidate.to_string_lossy()));
+            }
+        }
+
+        let default_socket = Path::new("/run/podman/podman.sock");
+        if default_socket.exists() {
+            return Some(Self::normalize_socket(&default_socket.to_string_lossy()));
+        }
+
+        None
     }
 
     /// Execute a podman command and return the output
@@ -1071,6 +1097,45 @@ impl RuntimeEngine for PodmanEngine {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::ffi::OsString;
+    use std::fs::{File, remove_dir_all};
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+
+        fn set_os(key: &'static str, value: &std::ffi::OsStr) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                unsafe {
+                    std::env::set_var(self.key, value);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     #[serial]
     #[tokio::test]
@@ -1164,6 +1229,48 @@ spec:
 
         // Manifest without name should still use manifest_id only
         assert_eq!(id4, "beemesh-manifest-789");
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn detects_podman_socket_from_env() {
+        PodmanEngine::configure_runtime(None, false);
+
+        let _guard = EnvGuard::set("PODMAN_HOST", "/tmp/env-podman.sock");
+
+        let engine = PodmanEngine::new();
+        assert_eq!(
+            engine.podman_socket.as_deref(),
+            Some("unix:///tmp/env-podman.sock")
+        );
+
+        PodmanEngine::configure_runtime(None, false);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn detects_podman_socket_from_xdg_runtime_dir() {
+        PodmanEngine::configure_runtime(None, false);
+
+        let unique_dir =
+            std::env::temp_dir().join(format!("beemesh-podman-test-{}", std::process::id()));
+        let podman_dir = unique_dir.join("podman");
+        std::fs::create_dir_all(&podman_dir).unwrap();
+
+        let socket_path = podman_dir.join("podman.sock");
+        File::create(&socket_path).unwrap();
+
+        let _guard = EnvGuard::set_os("XDG_RUNTIME_DIR", unique_dir.as_os_str());
+
+        let engine = PodmanEngine::new();
+        let expected_socket = format!("unix://{}", socket_path.to_string_lossy());
+        assert_eq!(
+            engine.podman_socket.as_deref(),
+            Some(expected_socket.as_str())
+        );
+
+        remove_dir_all(&unique_dir).unwrap();
+        PodmanEngine::configure_runtime(None, false);
     }
 
     #[serial]
