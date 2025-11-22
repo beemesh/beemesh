@@ -119,7 +119,8 @@ async fn test_apply_with_real_podman() {
     // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
     // In slower environments the first node can take longer to start, which would cause the
     // manifest delivery to fail and the Podman verification to panic later.
-    if !wait_for_rest_api_health(&client, &ports, Duration::from_secs(15)).await {
+    let rest_api_timeout = podman_timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 30);
+    if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
         log::warn!(
             "Skipping Podman integration test - REST APIs did not become healthy in time"
         );
@@ -127,7 +128,8 @@ async fn test_apply_with_real_podman() {
         return;
     }
 
-    let mesh_ready = wait_for_mesh_formation(&client, &ports, Duration::from_secs(20)).await;
+    let mesh_timeout = podman_timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 30);
+    let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_ready {
         log::warn!(
             "Skipping Podman integration test - mesh formation did not complete in time"
@@ -186,36 +188,53 @@ async fn wait_for_rest_api_health(
 ) -> bool {
     let start = std::time::Instant::now();
     loop {
-        let mut healthy = 0usize;
+        let mut healthy_ports = Vec::new();
+        let mut unhealthy_ports = Vec::new();
+
         for &port in ports {
             let base = format!("http://127.0.0.1:{}", port);
-            if let Ok(resp) = client.get(format!("{}/status", base)).send().await {
-                if resp.status().is_success() {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if json.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                            healthy += 1;
+            match client.get(format!("{}/status", base)).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.json::<serde_json::Value>().await {
+                        Ok(json) if json.get("ok").and_then(|v| v.as_bool()) == Some(true) => {
+                            healthy_ports.push(port);
                         }
+                        _ => unhealthy_ports.push(port),
                     }
                 }
+                _ => unhealthy_ports.push(port),
             }
         }
 
-        if healthy == ports.len() {
-            log::info!("All REST APIs are healthy ({} ports)", healthy);
+        if healthy_ports.len() == ports.len() {
+            log::info!("All REST APIs are healthy ({} ports)", healthy_ports.len());
             return true;
         }
 
         if start.elapsed() > timeout {
             log::warn!(
-                "REST API health check timed out after {:?}; healthy nodes: {} / {}",
+                "REST API health check timed out after {:?}; healthy nodes: {} / {}; unhealthy ports: {:?}",
                 timeout,
-                healthy,
-                ports.len()
+                healthy_ports.len(),
+                ports.len(),
+                unhealthy_ports
             );
             return false;
         }
 
         sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Resolve a timeout for the Podman integration test from an env var, falling back to a default in seconds.
+fn podman_timeout_from_env(var: &str, default_secs: u64) -> Duration {
+    match std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+    {
+        Some(secs) => Duration::from_secs(secs),
+        None => Duration::from_secs(default_secs),
     }
 }
 
