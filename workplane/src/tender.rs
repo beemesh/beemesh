@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
-    pub task_id: String,
+    pub tender_id: String,
     pub kind: String,
     pub name: String,
     pub manifest: Vec<u8>,
