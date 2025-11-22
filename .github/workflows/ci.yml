@@ -34,4 +34,4 @@ jobs:
           echo "PODMAN_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock" >> "$GITHUB_ENV"
 
       - name: Cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --verbose
