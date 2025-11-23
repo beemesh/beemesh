@@ -62,6 +62,7 @@ struct SchedulerEventView {
     event_type: super::types::EventType,
     reason: String,
     timestamp: u64,
+    nonce: u64,
 }
 
 #[derive(Serialize)]
@@ -129,6 +130,7 @@ define_sign_verify!(
         event_type: e.event_type,
         reason: e.reason.clone(),
         timestamp: e.timestamp,
+        nonce: e.nonce,
     })
 );
 

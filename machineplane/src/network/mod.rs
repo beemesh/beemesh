@@ -17,6 +17,7 @@ use std::{
 use tokio::sync::{mpsc, watch};
 
 use crate::messages::libp2p_constants::BEEMESH_FABRIC;
+use crate::messages::types::EventType;
 use crate::scheduler::SchedulerCommand;
 
 // Flattened modules
@@ -362,10 +363,11 @@ pub async fn start_libp2p_node(
     let scheduler =
         crate::scheduler::Scheduler::new(local_node_id.clone(), scheduler_keypair, sched_output_tx);
     let scheduler = std::sync::Arc::new(scheduler);
+    let scheduler_for_messages = scheduler.clone();
 
     tokio::spawn(async move {
         while let Some((topic, msg)) = sched_input_rx.recv().await {
-            scheduler.handle_message(&topic, &msg).await;
+            scheduler_for_messages.handle_message(&topic, &msg).await;
         }
     });
     // -----------------------
@@ -381,7 +383,7 @@ pub async fn start_libp2p_node(
                                  log::error!("Failed to publish scheduler message: {}", e);
                              }
                          }
-                         SchedulerCommand::DeployWorkload { manifest_id, manifest_json, replicas } => {
+                         SchedulerCommand::DeployWorkload { tender_id, manifest_id, manifest_json, replicas } => {
                             let apply_req = crate::messages::types::ApplyRequest {
                                 replicas,
                                 operation_id: format!("sched-deploy-{}", uuid::Uuid::new_v4()),
@@ -394,13 +396,27 @@ pub async fn start_libp2p_node(
                              // In a real scenario, we should pass the owner_pubkey from the Tender/Manifest
                              let owner_pubkey = Vec::new();
 
-                             if let Err(e) = crate::scheduler::process_manifest_deployment(
+                             match crate::scheduler::process_manifest_deployment(
                                  &mut swarm,
                                  &apply_req,
                                  &manifest_json,
                                  &owner_pubkey,
                              ).await {
-                                 log::error!("Failed to deploy workload from scheduler: {}", e);
+                                 Ok(workload_id) => {
+                                     scheduler.publish_event(
+                                         &tender_id,
+                                         EventType::Deployed,
+                                         &format!("workload {} deployed", workload_id),
+                                     );
+                                 }
+                                 Err(e) => {
+                                     log::error!("Failed to deploy workload from scheduler: {}", e);
+                                     scheduler.publish_event(
+                                         &tender_id,
+                                         EventType::Failed,
+                                         &format!("deployment failed: {}", e),
+                                     );
+                                 }
                              }
                          }
                          SchedulerCommand::SendManifest { peer_id, payload } => {
@@ -675,12 +691,25 @@ pub async fn start_libp2p_node(
                                                         "Successfully deployed manifest {} for tender {} as workload {}",
                                                         transfer.manifest_id, transfer.tender_id, workload_id
                                                     );
+                                                    scheduler.publish_event(
+                                                        &transfer.tender_id,
+                                                        EventType::Deployed,
+                                                        &format!(
+                                                            "workload {} deployed",
+                                                            workload_id
+                                                        ),
+                                                    );
                                                     b"ok".to_vec()
                                                 }
                                                 Err(e) => {
                                                     error!(
                                                         "Deployment failed for tender {} manifest {}: {}",
                                                         transfer.tender_id, transfer.manifest_id, e
+                                                    );
+                                                    scheduler.publish_event(
+                                                        &transfer.tender_id,
+                                                        EventType::Failed,
+                                                        &format!("deployment failed: {}", e),
                                                     );
                                                     format!("deploy error: {}", e).into_bytes()
                                                 }
