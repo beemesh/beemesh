@@ -4,7 +4,8 @@ use crate::network::{ApplyCodec, DeleteCodec, HandshakeCodec};
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{PeerId, autonat, gossipsub, identify, kad, relay, request_response};
 use log::{debug, error, info, warn};
-use std::sync::OnceLock;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc;
 
 #[derive(NetworkBehaviour)]
@@ -44,6 +45,8 @@ pub fn gossipsub_message(
     let payload = &message.data;
 
     static SCHEDULER_TOPICS: OnceLock<[gossipsub::TopicHash; 3]> = OnceLock::new();
+    static UNSUPPORTED_TOPIC_LOGS: OnceLock<Mutex<HashSet<gossipsub::TopicHash>>> =
+        OnceLock::new();
 
     let scheduler_topics = SCHEDULER_TOPICS.get_or_init(|| {
         [
@@ -70,15 +73,29 @@ pub fn gossipsub_message(
         return;
     }
 
-    warn!(
-        "gossipsub: Dropping message on unsupported topic {} ({} bytes) from peer {}. Supported topics are: {}, {}, {}",
-        topic,
-        payload.len(),
-        peer_id,
-        SCHEDULER_TENDERS,
-        SCHEDULER_PROPOSALS,
-        SCHEDULER_EVENTS
-    );
+    let unsupported_topic_logs = UNSUPPORTED_TOPIC_LOGS.get_or_init(|| Mutex::new(HashSet::new()));
+
+    let should_log = unsupported_topic_logs
+        .lock()
+        .map(|mut logged| logged.insert(topic.clone()))
+        .unwrap_or(true);
+
+    if should_log {
+        warn!(
+            "gossipsub: Dropping message on unsupported topic {} ({} bytes) from peer {}. Supported topics are: {}, {}, {}",
+            topic,
+            payload.len(),
+            peer_id,
+            SCHEDULER_TENDERS,
+            SCHEDULER_PROPOSALS,
+            SCHEDULER_EVENTS
+        );
+    } else {
+        debug!(
+            "gossipsub: Suppressing repeat warning for unsupported topic {}",
+            topic
+        );
+    }
 }
 
 pub fn gossipsub_subscribed(_peer_id: libp2p::PeerId, _topic: gossipsub::TopicHash) {}
