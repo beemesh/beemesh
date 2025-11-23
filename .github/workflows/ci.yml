@@ -33,7 +33,7 @@ jobs:
           export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$UID}
           mkdir -p "$XDG_RUNTIME_DIR/podman"
           podman system service --time=0 unix://$XDG_RUNTIME_DIR/podman/podman.sock &
-          echo "PODMAN_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock" >> "$GITHUB_ENV"
+          echo "CONTAINER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock" >> "$GITHUB_ENV"
 
       - name: Cargo test
         run: cargo test --workspace --verbose
