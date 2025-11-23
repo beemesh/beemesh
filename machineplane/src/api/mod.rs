@@ -1,17 +1,21 @@
 use crate::messages::constants::{BEEMESH_FABRIC, DEFAULT_SELECTION_WINDOW_MS};
-use crate::messages::types::CandidateNode;
+use crate::messages::types::{CandidateNode, SchedulerMessage};
+use crate::messages::{machine, signatures};
+use crate::network::control::Libp2pControl;
 use crate::scheduler::register_local_manifest;
 #[cfg(debug_assertions)]
 use axum::{
     Router,
     body::Bytes,
     extract::{Path, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     routing::{delete, get, post},
 };
 use base64::Engine;
+use libp2p::identity::Keypair;
 use log::{debug, error, info};
 use once_cell::sync::Lazy;
+use rand::RngCore;
 use serde_json::Value;
 
 use std::collections::HashMap;
@@ -19,7 +23,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use tokio::{sync::watch, time::Duration};
+use tokio::{
+    sync::watch,
+    time::{Duration, timeout},
+};
 use ulid::Ulid;
 
 async fn create_response_with_fallback(
@@ -319,6 +326,7 @@ pub async fn create_tender(
     // Store manifest bytes as-is
     let manifest_bytes_to_store = payload_bytes_for_parsing;
     let manifest_str = String::from_utf8_lossy(&manifest_bytes_to_store).to_string();
+    let manifest_digest = machine::compute_manifest_id_from_content(&manifest_bytes_to_store);
     register_local_manifest(&tender_id, &manifest_str);
 
     let rec = TenderRecord {
@@ -360,6 +368,78 @@ pub async fn create_tender(
             "create_tender: missing owner pubkey when recording manifest_id={}",
             manifest_id
         );
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .as_millis() as u64;
+
+    let keypair = crate::network::get_node_keypair()
+        .and_then(|(_, sk)| Keypair::from_protobuf_encoding(&sk).ok())
+        .ok_or_else(|| {
+            error!(
+                "create_tender: failed to publish tender {} due to missing node keypair",
+                tender_id
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut tender = crate::messages::types::Tender {
+        id: tender_id.clone(),
+        manifest_digest: manifest_digest.clone(),
+        qos_preemptible: false,
+        timestamp,
+        nonce: rand::thread_rng().next_u64(),
+        signature: Vec::new(),
+    };
+
+    signatures::sign_tender(&mut tender, &keypair).map_err(|e| {
+        error!("create_tender: failed to sign tender {}: {}", tender_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let tender_bytes = machine::encode_scheduler_message(SchedulerMessage::Tender(tender));
+
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<(), String>>();
+    state
+        .control_tx
+        .send(Libp2pControl::PublishTender {
+            payload: tender_bytes,
+            reply_tx,
+        })
+        .map_err(|e| {
+            error!(
+                "create_tender: failed to dispatch tender publication for {}: {}",
+                manifest_id, e
+            );
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    match timeout(Duration::from_secs(10), reply_rx.recv()).await {
+        Ok(Some(Ok(_))) => {}
+        Ok(Some(Err(e))) => {
+            log::warn!(
+                "create_tender: tender publication failed for manifest {}: {}",
+                manifest_id,
+                e
+            );
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+        Ok(None) => {
+            log::warn!(
+                "create_tender: tender publication channel closed for manifest {}",
+                manifest_id
+            );
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+        Err(_) => {
+            log::warn!(
+                "create_tender: timed out publishing tender for manifest {}",
+                manifest_id
+            );
+            return Err(StatusCode::GATEWAY_TIMEOUT);
+        }
     }
 
     let response_data = crate::messages::machine::build_tender_create_response(

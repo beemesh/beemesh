@@ -403,6 +403,30 @@ pub async fn start_libp2p_node(
                                  log::error!("Failed to deploy workload from scheduler: {}", e);
                              }
                          }
+                         SchedulerCommand::SendManifest { peer_id, payload } => {
+                            match peer_id.parse() {
+                                Ok(peer) => {
+                                    let request_id = swarm
+                                        .behaviour_mut()
+                                        .manifest_fetch_rr
+                                        .send_request(&peer, payload);
+                                    let mut pending_requests = crate::network::control::get_pending_manifest_requests()
+                                        .lock()
+                                        .unwrap();
+                                    pending_requests.insert(
+                                        request_id,
+                                        (mpsc::unbounded_channel::<Result<(), String>>().0, Instant::now()),
+                                    );
+                                    log::info!(
+                                        "Dispatched manifest transfer request {:?} to peer {}",
+                                        request_id, peer
+                                    );
+                                }
+                                Err(e) => {
+                                    log::error!("Invalid peer id {} for manifest transfer: {:?}", peer_id, e);
+                                }
+                            }
+                         }
                      }
             }
             // control messages from other parts of the host (REST handlers)
@@ -587,16 +611,92 @@ pub async fn start_libp2p_node(
                     SwarmEvent::Behaviour(MyBehaviourEvent::ManifestFetchRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
                         match message {
                             request_response::Message::Request { request, channel, .. } => {
-                                warn!(
-                                    "Received manifest fetch request from peer={} ({} bytes)",
+                                info!(
+                                    "Received manifest transfer from peer={} ({} bytes)",
                                     peer,
                                     request.len()
                                 );
-                                let response = b"manifest fetch not implemented".to_vec();
+
+                                let response_bytes = match crate::messages::machine::decode_manifest_transfer(&request) {
+                                    Ok(transfer) => {
+                                        let computed_digest = crate::messages::machine::compute_manifest_id_from_content(
+                                            transfer.manifest_json.as_bytes(),
+                                        );
+
+                                        if computed_digest != transfer.manifest_digest {
+                                            warn!(
+                                                "Rejecting manifest for tender {} from {}: digest mismatch (expected {}, got {})",
+                                                transfer.tender_id,
+                                                peer,
+                                                transfer.manifest_digest,
+                                                computed_digest
+                                            );
+                                            b"digest mismatch".to_vec()
+                                        } else {
+                                            crate::scheduler::register_local_manifest(
+                                                &transfer.tender_id,
+                                                &transfer.manifest_json,
+                                            );
+
+                                            if !transfer.owner_pubkey.is_empty() {
+                                                crate::scheduler::record_manifest_owner(
+                                                    &transfer.manifest_id,
+                                                    &transfer.owner_pubkey,
+                                                )
+                                                .await;
+                                            }
+
+                                            let apply_req = crate::messages::types::ApplyRequest {
+                                                replicas: transfer.replicas.max(1),
+                                                operation_id: format!(
+                                                    "award-{}-{}",
+                                                    transfer.tender_id,
+                                                    uuid::Uuid::new_v4()
+                                                ),
+                                                manifest_json: transfer.manifest_json.clone(),
+                                                origin_peer: transfer.owner_peer_id.clone(),
+                                                manifest_id: transfer.manifest_id.clone(),
+                                                signature: Vec::new(),
+                                            };
+
+                                            let owner_pubkey = transfer.owner_pubkey.clone();
+                                            let manifest_json = transfer.manifest_json.clone();
+
+                                            match crate::scheduler::process_manifest_deployment(
+                                                &mut swarm,
+                                                &apply_req,
+                                                &manifest_json,
+                                                &owner_pubkey,
+                                            )
+                                            .await
+                                            {
+                                                Ok(workload_id) => {
+                                                    info!(
+                                                        "Successfully deployed manifest {} for tender {} as workload {}",
+                                                        transfer.manifest_id, transfer.tender_id, workload_id
+                                                    );
+                                                    b"ok".to_vec()
+                                                }
+                                                Err(e) => {
+                                                    error!(
+                                                        "Deployment failed for tender {} manifest {}: {}",
+                                                        transfer.tender_id, transfer.manifest_id, e
+                                                    );
+                                                    format!("deploy error: {}", e).into_bytes()
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to parse manifest transfer from {}: {}", peer, e);
+                                        b"invalid payload".to_vec()
+                                    }
+                                };
+
                                 let _ = swarm
                                     .behaviour_mut()
                                     .manifest_fetch_rr
-                                    .send_response(channel, response);
+                                    .send_response(channel, response_bytes);
                             }
                             request_response::Message::Response { request_id, response } => {
                                 let reply_sender = {

@@ -4,7 +4,9 @@
 //! evaluate their fit, submit Bids, and if they win, acquire a Lease.
 
 use crate::messages::constants::{BEEMESH_FABRIC, DEFAULT_SELECTION_WINDOW_MS};
-use crate::messages::types::{Award, Bid, SchedulerEvent, SchedulerMessage, Tender};
+use crate::messages::types::{
+    Award, Bid, ManifestTransfer, SchedulerEvent, SchedulerMessage, Tender,
+};
 use crate::messages::{machine, signatures};
 use crate::network::utils::peer_id_to_public_key;
 use libp2p::gossipsub;
@@ -68,6 +70,10 @@ pub enum SchedulerCommand {
         manifest_json: String,
         replicas: u32,
     },
+    SendManifest {
+        peer_id: String,
+        payload: Vec<u8>,
+    },
 }
 
 impl Scheduler {
@@ -118,11 +124,13 @@ impl Scheduler {
     async fn handle_tender(&self, tender: &Tender, message: &gossipsub::Message) {
         let tender_id = tender.id.clone();
         info!("Received Tender: {}", tender_id);
+        println!("tender:received id={}", tender_id);
 
         let source_peer = match message.source.as_ref() {
             Some(peer) => peer,
             None => {
                 error!("Discarding tender {}: missing source peer", tender_id);
+                eprintln!("tender:error id={} reason=missing_source", tender_id);
                 return;
             }
         };
@@ -132,11 +140,13 @@ impl Scheduler {
                 "Discarding tender {}: timestamp outside allowed skew",
                 tender_id
             );
+            eprintln!("tender:error id={} reason=stale_timestamp", tender_id);
             return;
         }
 
         if !self.mark_tender_seen(&tender_id, tender.nonce) {
             info!("Ignoring replayed tender {}", tender_id);
+            eprintln!("tender:replay id={}", tender_id);
             return;
         }
 
@@ -147,12 +157,14 @@ impl Scheduler {
                     "Discarding tender {}: unable to derive public key",
                     tender_id
                 );
+                eprintln!("tender:error id={} reason=no_public_key", tender_id);
                 return;
             }
         };
 
         if !signatures::verify_sign_tender(tender, &public_key) {
             error!("Discarding tender {}: invalid signature", tender_id);
+            eprintln!("tender:error id={} reason=invalid_signature", tender_id);
             return;
         }
 
@@ -169,6 +181,7 @@ impl Scheduler {
                     "Local node issued tender {} without cached manifest; refusing to proceed",
                     tender_id
                 );
+                eprintln!("tender:error id={} reason=missing_manifest", tender_id);
                 return;
             }
 
@@ -182,6 +195,7 @@ impl Scheduler {
                 "Local node issued tender {}; skipping bid as owner",
                 tender_id
             );
+            println!("tender:owned id={} action=skip_bid", tender_id);
             return;
         }
 
@@ -209,6 +223,10 @@ impl Scheduler {
             Ok(_) => machine::encode_scheduler_message(SchedulerMessage::Bid(bid.clone())),
             Err(e) => {
                 error!("Failed to sign bid for tender {}: {}", tender_id, e);
+                eprintln!(
+                    "tender:error id={} reason=sign_bid_failure err={}",
+                    tender_id, e
+                );
                 return;
             }
         };
@@ -327,6 +345,47 @@ impl Scheduler {
                     );
                 }
 
+                if let Some(manifest_json) = manifest_json_opt
+                    .clone()
+                    .or_else(|| get_local_manifest(&manifest_id))
+                {
+                    let owner_pubkey = keypair.public().to_protobuf_encoding().unwrap_or_default();
+
+                    let transfer = ManifestTransfer {
+                        tender_id: tender_id_clone.clone(),
+                        manifest_id: manifest_id.clone(),
+                        manifest_digest: manifest_digest.clone(),
+                        manifest_json: manifest_json.clone(),
+                        owner_peer_id: local_id.clone(),
+                        owner_pubkey,
+                        replicas: 1,
+                    };
+
+                    let transfer_bytes = machine::build_manifest_transfer(&transfer);
+
+                    for winner in winners.iter().filter(|bid| bid.bidder_id != local_id) {
+                        if let Err(e) = outbound_tx.send(SchedulerCommand::SendManifest {
+                            peer_id: winner.bidder_id.clone(),
+                            payload: transfer_bytes.clone(),
+                        }) {
+                            error!(
+                                "Failed to queue manifest transfer for tender {} to {}: {}",
+                                tender_id_clone, winner.bidder_id, e
+                            );
+                        } else {
+                            info!(
+                                "Queued manifest transfer for tender {} to winner {}",
+                                tender_id_clone, winner.bidder_id
+                            );
+                        }
+                    }
+                } else {
+                    error!(
+                        "Unable to load manifest content for tender {}; cannot distribute to winners",
+                        tender_id_clone
+                    );
+                }
+
                 if winners.iter().any(|bid| bid.bidder_id == local_id) {
                     info!(
                         "Local node won tender {}; proceeding to deployment",
@@ -376,6 +435,10 @@ impl Scheduler {
                 "Discarding bid for tender {} from {}: timestamp outside skew",
                 bid.tender_id, bid.node_id
             );
+            eprintln!(
+                "bid:error tender_id={} node_id={} reason=stale_timestamp",
+                bid.tender_id, bid.node_id
+            );
             return;
         }
 
@@ -390,6 +453,10 @@ impl Scheduler {
                     "Discarding bid for tender {}: unable to derive public key from source",
                     bid.tender_id
                 );
+                eprintln!(
+                    "bid:error tender_id={} node_id={} reason=no_public_key",
+                    bid.tender_id, bid.node_id
+                );
                 return;
             }
         };
@@ -399,12 +466,20 @@ impl Scheduler {
                 "Discarding bid for tender {} from {}: invalid signature",
                 bid.tender_id, bid.node_id
             );
+            eprintln!(
+                "bid:error tender_id={} node_id={} reason=invalid_signature",
+                bid.tender_id, bid.node_id
+            );
             return;
         }
 
         if !self.mark_bid_seen(bid) {
             info!(
                 "Ignoring replayed bid {} from {}",
+                bid.tender_id, bid.node_id
+            );
+            eprintln!(
+                "bid:replay tender_id={} node_id={}",
                 bid.tender_id, bid.node_id
             );
             return;
@@ -416,6 +491,10 @@ impl Scheduler {
 
         // Ignore our own bids (handled locally)
         if bidder_id == self.local_node_id {
+            println!(
+                "bid:local tender_id={} node_id={} action=ignore",
+                tender_id, bidder_id
+            );
             return;
         }
 
@@ -425,6 +504,10 @@ impl Scheduler {
                 "Recorded bid for tender {}: {:.2} from {}",
                 tender_id, score, bidder_id
             );
+            println!(
+                "bid:recorded tender_id={} node_id={} score={:.2}",
+                tender_id, bidder_id, score
+            );
             ctx.bid_context.bids.push(BidEntry {
                 bidder_id: bidder_id.to_string(),
                 score,
@@ -433,6 +516,10 @@ impl Scheduler {
             info!(
                 "Ignoring bid for tender {} because this node is not the owner",
                 tender_id
+            );
+            eprintln!(
+                "bid:ignored tender_id={} node_id={} reason=not_owner",
+                tender_id, bidder_id
             );
         }
     }
@@ -467,6 +554,10 @@ impl Scheduler {
                 "Discarding award for tender {}: timestamp outside skew",
                 award.tender_id
             );
+            eprintln!(
+                "award:error tender_id={} reason=stale_timestamp",
+                award.tender_id
+            );
             return;
         }
 
@@ -481,6 +572,10 @@ impl Scheduler {
                     "Discarding award for tender {}: unable to derive public key",
                     award.tender_id
                 );
+                eprintln!(
+                    "award:error tender_id={} reason=no_public_key",
+                    award.tender_id
+                );
                 return;
             }
         };
@@ -490,6 +585,10 @@ impl Scheduler {
                 "Discarding award for tender {}: invalid signature",
                 award.tender_id
             );
+            eprintln!(
+                "award:error tender_id={} reason=invalid_signature",
+                award.tender_id
+            );
             return;
         }
 
@@ -497,6 +596,15 @@ impl Scheduler {
             info!(
                 "Local node awarded tender {}; awaiting manifest transfer",
                 award.tender_id
+            );
+            println!(
+                "award:received tender_id={} outcome=winner awaiting_manifest=true",
+                award.tender_id
+            );
+        } else {
+            println!(
+                "award:received tender_id={} outcome=observer winners={:?}",
+                award.tender_id, award.winners
             );
         }
     }
