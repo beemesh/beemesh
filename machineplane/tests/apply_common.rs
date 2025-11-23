@@ -129,9 +129,9 @@ pub async fn check_workload_deployment(
     port_to_peer_id: &StdHashMap<u16, String>,
     _expect_modified_replicas: bool,
     expected_nodes: Option<usize>,
+    timeout: Duration,
 ) -> (Vec<u16>, Vec<u16>) {
-    let max_attempts = 60usize;
-    let mut attempt = 0usize;
+    let start = Instant::now();
 
     loop {
         let verification_tasks = ports.iter().copied().map(|port| {
@@ -299,8 +299,7 @@ pub async fn check_workload_deployment(
             return (nodes_with_deployed_workloads, nodes_with_content_mismatch);
         }
 
-        attempt += 1;
-        if attempt >= max_attempts {
+        if start.elapsed() >= timeout {
             return (nodes_with_deployed_workloads, nodes_with_content_mismatch);
         }
 

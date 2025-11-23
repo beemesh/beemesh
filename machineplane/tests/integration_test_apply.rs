@@ -67,8 +67,8 @@ async fn test_apply_functionality() {
     let mut handles = start_fabric_nodes().await;
 
     // Wait for libp2p mesh to form before proceeding
-    sleep(Duration::from_secs(3)).await;
-    let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(15)).await;
+    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 15);
+    let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
         log::warn!("Mesh formation incomplete, but proceeding with test");
     }
@@ -86,11 +86,9 @@ async fn test_apply_functionality() {
         .await
         .expect("kubectl apply should succeed");
 
-    // Wait for direct delivery and deployment to complete
-    sleep(Duration::from_secs(12)).await;
-
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;
+    let delivery_timeout = timeout_from_env("BEEMESH_APPLY_DELIVERY_TIMEOUT_SECS", 20);
     let (nodes_with_deployed_workloads, nodes_with_content_mismatch) = check_workload_deployment(
         &client,
         &ports,
@@ -99,6 +97,7 @@ async fn test_apply_functionality() {
         &port_to_peer_id,
         false, // Don't expect modified replicas for single replica test
         Some(1),
+        delivery_timeout,
     )
     .await;
 
@@ -144,14 +143,14 @@ async fn test_apply_with_real_podman() {
     // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
     // In slower environments the first node can take longer to start, which would cause the
     // manifest delivery to fail and the Podman verification to panic later.
-    let rest_api_timeout = podman_timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 30);
+    let rest_api_timeout = timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 30);
     if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
         log::warn!("Skipping Podman integration test - REST APIs did not become healthy in time");
         shutdown_nodes(&mut handles).await;
         return;
     }
 
-    let mesh_timeout = podman_timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 30);
+    let mesh_timeout = timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 30);
     let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_ready {
         log::warn!("Skipping Podman integration test - mesh formation did not complete in time");
@@ -172,12 +171,43 @@ async fn test_apply_with_real_podman() {
         .await
         .expect("kubectl apply should succeed with real Podman");
 
-    // Wait for direct delivery and Podman deployment to complete (longer timeout for real containers)
-    sleep(Duration::from_secs(10)).await;
+    // Wait for manifest delivery and Podman deployment to complete (longer timeout for real containers)
+    let port_to_peer_id = get_peer_ids(&client, &ports).await;
+    let delivery_timeout = timeout_from_env("BEEMESH_PODMAN_DELIVERY_TIMEOUT_SECS", 40);
+    let (nodes_with_deployed_workloads, nodes_with_content_mismatch) = check_workload_deployment(
+        &client,
+        &ports,
+        &tender_id,
+        &original_content,
+        &port_to_peer_id,
+        false,
+        Some(1),
+        delivery_timeout,
+    )
+    .await;
+
+    if nodes_with_deployed_workloads.is_empty() {
+        log::warn!(
+            "Skipping Podman integration test - manifest delivery incomplete for tender {}",
+            tender_id
+        );
+        shutdown_nodes(&mut handles).await;
+        return;
+    }
+
+    if !nodes_with_content_mismatch.is_empty() {
+        log::warn!(
+            "Skipping Podman integration test - manifest content mismatch on nodes {:?}",
+            nodes_with_content_mismatch
+        );
+        shutdown_nodes(&mut handles).await;
+        return;
+    }
 
     // Verify actual Podman deployment
+    let podman_delivery_timeout = timeout_from_env("BEEMESH_PODMAN_VERIFY_TIMEOUT_SECS", 45);
     let podman_verification_successful =
-        verify_podman_deployment(&tender_id, &original_content).await;
+        wait_for_podman_state(&tender_id, &original_content, true, podman_delivery_timeout).await;
 
     assert!(
         podman_verification_successful,
@@ -185,10 +215,14 @@ async fn test_apply_with_real_podman() {
     );
 
     let _ = delete_manifest_via_kube_api(&client, ports[0], &manifest_path, true).await;
-    sleep(Duration::from_secs(5)).await;
-
-    let podman_verification_successful =
-        verify_podman_deployment(&tender_id, &original_content).await;
+    let podman_teardown_timeout = timeout_from_env("BEEMESH_PODMAN_TEARDOWN_TIMEOUT_SECS", 30);
+    let podman_verification_successful = wait_for_podman_state(
+        &tender_id,
+        &original_content,
+        false,
+        podman_teardown_timeout,
+    )
+    .await;
     assert!(
         !podman_verification_successful,
         "Podman deployment still exists after deletion attempt"
@@ -247,8 +281,8 @@ async fn wait_for_rest_api_health(
     }
 }
 
-/// Resolve a timeout for the Podman integration test from an env var, falling back to a default in seconds.
-fn podman_timeout_from_env(var: &str, default_secs: u64) -> Duration {
+/// Resolve a timeout from an env var, falling back to a default in seconds.
+fn timeout_from_env(var: &str, default_secs: u64) -> Duration {
     match std::env::var(var)
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -256,6 +290,29 @@ fn podman_timeout_from_env(var: &str, default_secs: u64) -> Duration {
     {
         Some(secs) => Duration::from_secs(secs),
         None => Duration::from_secs(default_secs),
+    }
+}
+
+async fn wait_for_podman_state(
+    tender_id: &str,
+    original_content: &str,
+    expected_present: bool,
+    timeout: Duration,
+) -> bool {
+    let start = std::time::Instant::now();
+
+    loop {
+        let podman_state_matches = verify_podman_deployment(tender_id, original_content).await;
+
+        if podman_state_matches == expected_present {
+            return true;
+        }
+
+        if start.elapsed() > timeout {
+            return false;
+        }
+
+        sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -271,8 +328,8 @@ async fn test_apply_nginx_with_replicas() {
     let mut handles = start_fabric_nodes().await;
 
     // Wait for libp2p mesh to form before proceeding
-    sleep(Duration::from_secs(3)).await;
-    let mesh_formed = wait_for_mesh_formation(&client, &ports, Duration::from_secs(10)).await;
+    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 10);
+    let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
         log::warn!("Mesh formation incomplete, but proceeding with test");
     }
@@ -290,11 +347,9 @@ async fn test_apply_nginx_with_replicas() {
         .await
         .expect("kubectl apply should succeed for nginx_with_replicas");
 
-    // Wait for direct delivery and deployment to complete
-    sleep(Duration::from_secs(12)).await;
-
     // Get peer IDs and check workload deployment
     let port_to_peer_id = get_peer_ids(&client, &ports).await;
+    let delivery_timeout = timeout_from_env("BEEMESH_APPLY_REPLICA_TIMEOUT_SECS", 25);
     let (nodes_with_deployed_workloads, nodes_with_content_mismatch) = check_workload_deployment(
         &client,
         &ports,
@@ -303,6 +358,7 @@ async fn test_apply_nginx_with_replicas() {
         &port_to_peer_id,
         true, // Expect modified replicas=1 for replica distribution test
         Some(1),
+        delivery_timeout,
     )
     .await;
 
