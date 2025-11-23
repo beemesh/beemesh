@@ -10,7 +10,7 @@ use crate::messages::types::Bid;
 use crate::messages::{machine, signatures, types::LeaseHint};
 use crate::network::utils::peer_id_to_public_key;
 use libp2p::gossipsub;
-use libp2p::identity::{Keypair};
+use libp2p::identity::Keypair;
 use log::{error, info};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
