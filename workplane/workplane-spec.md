@@ -283,17 +283,7 @@ Workplane implementations **SHOULD** emit events (for example, over Pub/Sub or l
 * `ConsistencyViolation` (for example, attempted write on non-leader node)
 * `ReplicaOverprovisioned` / `ReplicaDrained`
 
-### **10.2 Metrics (Prometheus-style)**
-
-Suggested metrics:
-
-* `workplane_service_records_total{service_id, role}`
-* `workplane_leader_changes_total{service_id}`
-* `workplane_consistency_violations_total{service_id, reason}`
-* `workplane_replica_health_total{service_id, status="healthy|unhealthy|degraded"}`
-* `workplane_selfheal_actions_total{service_id, action="restart|scale_up|scale_down"}`
-
-### **10.3 Logs**
+### **10.2 Logs**
 
 Workplane logs **SHOULD** include:
 
@@ -301,6 +291,8 @@ Workplane logs **SHOULD** include:
 * Service ID and role.
 * Correlation IDs for incoming/outgoing requests where applicable.
 * Manifest version and relevant consistency flags.
+
+Logs **MUST** be emitted to `stdout`/`stderr` so that runtime log aggregation can collect them without implementation-specific sinks.
 
 ---
 

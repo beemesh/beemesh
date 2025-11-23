@@ -2,7 +2,7 @@
 
 > Scope: This document specifies the **Machineplane** of Beemesh: node discovery, ephemeral scheduling, deployment, security, failure handling, and observability. It uses RFC 2119 keywords and provides executable-style Gherkin scenarios.
 > **Profile:** Rust implementation using `libp2p` (Kademlia DHT + Gossipsub + Noise/TLS).
-> **Semantics:** Machineplane scheduling is **best-effort and duplicate-tolerant (A/P)**. **Consistency for stateful workloads is guaranteed by the Workplane (C/P).**
+> **Semantics:** Machineplane scheduling is **best-effort with deterministic winner selection (A/P)**. **Consistency for stateful workloads is guaranteed by the duplicate-tolerant Workplane (C/P).**
 
 -----
 
@@ -10,7 +10,7 @@
 
 The Machineplane is a **stateless, decentralized infrastructure layer** that turns machines into fungible resources. It coordinates **node discovery, ephemeral scheduling, and workload deployment** using `libp2p` primitives (**DHT + Pub/Sub + secure streams**). It **MUST NOT** persist fabric-wide state and **MUST** operate under **Availability/Partition-Tolerance (A/P)** tradeoffs.
 
-**Scheduling semantics:** Elections on the Machineplane are **hint-based**; **multiple concurrent lease hints MAY occur**. The Machineplane provides **at-least-once, duplicate-tolerant** scheduling. Exact leadership and write safety for stateful workloads are enforced by the **Workplane**.
+**Scheduling semantics:** Elections on the Machineplane are **hint-based**; **multiple concurrent lease hints MAY occur**. The Machineplane provides **at-least-once scheduling with deterministic winner sets**; duplicates are still tolerated by the **Workplane**, which enforces leadership and write safety for stateful workloads.
 
 ### **1.1 Non-Goals**
 
@@ -39,11 +39,8 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 
   * **Machine DHT (MDHT)**: node discovery, transient metadata, **LeaseHint** storage (TTL).
 
-  * **Pub/Sub Topics (Gossipsub)**:
-
-      * `scheduler-tenders` — tender publication (write-once, best-effort fanout)
-      * `scheduler-proposals` — bid publication / request-response to the tender publisher
-      * `scheduler-events` — confirmations (`Deployed`, `Failed`, `Preempted`, `Cancelled`)
+  * **Pub/Sub Topic (Gossipsub)**: `beemesh-fabric` — single shared topic used for tender publication, bid submission, awards,
+    and deployment events.
 
   * **Secure Streams**: bilateral encrypted channels for optional point-to-point negotiation.
 
@@ -66,8 +63,8 @@ sequenceDiagram
   participant R as Runtime (Podman)
   participant PubSub as Pub/Sub
 
-  P->>PubSub: Publish Tender(tender_id, reqs, qos, manifest_ref)
-  Note over N1,N2: All nodes receive tender via Pub/Sub
+  P->>PubSub: Publish Tender(tender_id, reqs, qos, manifest_digest)
+  Note over N1,N2: All nodes receive tender via Pub/Sub (manifest stays with Producer)
 
   N1->>N1: Local Evaluate(reqs, policies)
   N2->>N2: Local Evaluate(reqs, policies)
@@ -75,20 +72,19 @@ sequenceDiagram
   N1->>PubSub: Bid(tender_id, node_id, score, fit, latency)
   N2->>PubSub: Bid(tender_id, node_id, score, fit, latency)
 
-  par Selection Window (~250ms ± jitter)
-    N1->>N1: best_bid = argmax(score)
-  and
-    N2->>N2: best_bid = argmax(score)
-  end
+  P->>P: Collect bids within window (~250ms ± jitter)
+  P->>PubSub: Award(tender_id, winners)
+  P-->>N1: Secure Stream: Send Manifest(ref or blob) if N1 is winner
+  P-->>N2: Secure Stream: Send Manifest(ref or blob) if N2 is winner
 
-  N1->>MDHT: Put LeaseHint(tender_id, node_id, ttl=3s) [best-effort]
-  N2->>MDHT: Put LeaseHint(tender_id, node_id, ttl=3s) [best-effort]
+  N1->>MDHT: Put LeaseHint(tender_id, node_id, ttl=3s) [best-effort; only if winner]
+  N2->>MDHT: Put LeaseHint(tender_id, node_id, ttl=3s) [best-effort; only if winner]
 
-  alt One or more LeaseHints exist
-    N1->>R: Deploy(manifest_ref) (if self-hint or allowed by policy)
+  alt Awarded and LeaseHint observed
+    N1->>R: Deploy(manifest_ref)
     R-->>N1: Deployment Result (OK / Failed)
-    N1->>PubSub: Event(tender_id, status=Deployed|Failed, node_id)
-  else No hint observed
+  N1->>PubSub: Event(tender_id, status=Deployed|Failed, node_id)
+  else No award or hint observed
     N2->>N2: Backoff and observe events
   end
 ````
@@ -98,8 +94,8 @@ stateDiagram-v2
   [*] --> Idle
   Idle --> Bidding: TenderSeen
   Bidding --> Idle: NotEligible
-  Bidding --> Claiming: BestBidder
-  Claiming --> Deploying: HintObservedOrWritten
+  Bidding --> Claiming: AwardReceived
+  Claiming --> Deploying: ManifestReceived & HintObservedOrWritten
   Claiming --> Observing: HintLost
   Deploying --> Running: DeployOK
   Deploying --> Observing: DeployFail
@@ -115,8 +111,8 @@ graph TD
     B -- MDHT --> C
     A ==> D{{Pub/Sub}}
     B ==> D
-    D -- tenders/proposals/events --> A
-    D -- tenders/proposals/events --> B
+    D -- beemesh-fabric --> A
+    D -- beemesh-fabric --> B
   end
 
   subgraph "Workplane separate"
@@ -147,7 +143,10 @@ is required because libp2p sessions are already mutually authenticated and encry
 * `workload_type`: `"stateless" | "stateful"`
 * `duplicate_tolerant`: `bool` (default `true`)
 * `placement_token`: ULID (monotonic per `(workload_id, attempt)`; hint for Workplane fencing)
+* `manifest_digest`: content hash of the manifest **without sending the manifest itself**.
 * **Replica count is not disclosed in the Tender**; the publisher decides how many bids to accept.
+* **Manifest handling**: The tender owner **MUST** keep the manifest local during bidding and **MUST** only transmit a manifest reference
+  or encrypted blob to awarded nodes over mutually authenticated streams after bids are validated.
 
 **LeaseHint** (MDHT value)
 
@@ -177,7 +176,7 @@ but are encoded directly with bincode without an envelope wrapper.
 
 ### **4.1 Flow (Normative)**
 
-1. **Publication**: A producer **MUST** publish a Tender once on `scheduler-tenders`.
+1. **Publication**: A producer **MUST** publish a Tender once on the `beemesh-fabric` topic that includes `manifest_digest` but **MUST NOT** distribute the manifest itself during publication.
 
 2. **Evaluation**: Each node **MUST** locally evaluate eligibility against `reqs`, policies, and real-time resources, and **MUST NOT** submit a Bid if it is ineligible.
 
@@ -185,21 +184,26 @@ but are encoded directly with bincode without an envelope wrapper.
 
 4. **Score**: Score **MUST** be deterministic given Tender + local metrics. **SHOULD** use: Resource fit (50%), Network locality (30%), Historical reliability (10%), Price/QoS or energy (10%).
 
-5. **Lease Hint (non-exclusive)**:
+5. **Awarding**:
 
-   * Nodes **MUST** compute `best_bid` (tie-break `(score, node_id)`).
-   * The `best_bid` node **MAY** write a **LeaseHint** at `lease/<tender_id>` with TTL **3 s** (best-effort MDHT put). **Multiple LeaseHints MAY coexist**.
+   * The tender owner **MUST** collect bids for at least the bid window and **MUST** deterministically select winners using local policy plus the manifest it owns; manifest content **MUST NOT** leave the publisher until winners are chosen.
+   * Winner selection **MUST** be reproducible by any observer with the same bids (for example, stable sort by score → latency → `node_id`).
+   * The tender owner **SHOULD** broadcast `Award{tender_id, winners}` on `beemesh-fabric` and **MUST** send the manifest reference or encrypted blob only to the awarded nodes over a mutually authenticated stream.
 
-6. **Deployment**:
+6. **Lease Hint (non-exclusive, winner-scoped)**:
 
-   * A node **MAY** proceed to deploy if it wrote or observes a **self-addressed** LeaseHint **and** either `duplicate_tolerant=true` **or** local policy allows tentative start (the **Workplane** gates stateful writes/leadership).
-   * The Machineplane provides **at-least-once** scheduling semantics; multiple concurrent deployments of the same Tender are acceptable, and correctness is enforced by the Workplane/workload logic.
+   * Awarded nodes **MAY** write a **LeaseHint** at `lease/<tender_id>` with TTL **3 s** (best-effort MDHT put). **Multiple LeaseHints MAY coexist**.
 
-7. **Confirmation**: Deployer **MUST** publish `Event{Deployed|Failed}`.
+7. **Deployment**:
 
-8. **Lease Renewal**: Deployer **SHOULD** refresh its LeaseHint every **1 s** until `Deployed` or timeout **(10 s)**.
+   * An awarded node **MAY** proceed to deploy once it has both the manifest from the tender owner and (optionally) its own LeaseHint observed. The **Workplane** continues to gate stateful writes/leadership.
+   * The Machineplane provides **at-least-once** scheduling semantics with deterministic winner sets; duplicate deployments **MAY** still occur in partitions or retries, and correctness is enforced by the Workplane/workload logic.
 
-9. **Backoff**: Non-deployers **MUST** observe `scheduler-events` and **SHOULD** back off with jitter; if no `Deployed` by `(lease_ttl + 1 s)`, they **MAY** re-enter Claiming.
+8. **Confirmation**: Deployer **MUST** publish `Event{Deployed|Failed}`.
+
+9. **Lease Renewal**: Deployer **SHOULD** refresh its LeaseHint every **1 s** until `Deployed` or timeout **(10 s)**.
+
+10. **Backoff**: Non-deployers **MUST** observe deployment events on `beemesh-fabric` and **SHOULD** back off with jitter; if no `Deployed` by `(lease_ttl + 1 s)`, they **MAY** re-enter Claiming.
 
 ### **4.2 Resource Accounting**
 
@@ -230,7 +234,7 @@ but are encoded directly with bincode without an envelope wrapper.
 | **Network Partition**               | Nodes continue local bidding and **LeaseHints**. On heal, **duplicate deployments MAY exist**. Nodes **SHOULD** prefer the deployment with freshest local health and event visibility; excess replicas **SHOULD** be drained or **MUST** respond to Workplane signals to exit. |
 | **Winner crash before deploy**      | LeaseHint expiry triggers re-bidding/backoff.                                                                                                                                                                                                                                  |
 | **Late bids**                       | Ignored for current window; **MAY** be used for retry if deploy fails.                                                                                                                                                                                                         |
-| **Conflicting LeaseHints**          | Nodes **MUST** tolerate multiple hints; **MUST NOT** assume exclusivity. Prefer self-hint + highest score; otherwise observe `scheduler-events` and back off.                                                                                                                  |
+| **Conflicting LeaseHints**          | Nodes **MUST** tolerate multiple hints; **MUST NOT** assume exclusivity. Prefer self-hint + highest score; otherwise observe deployment events on `beemesh-fabric` and back off.                                                                                                                  |
 | **Manifest fetch fail**             | Deployer **MUST** emit `Event{Failed}` and **MAY** retry per local policy.                                                                                                                                                                                                     |
 | **Global bootstrap loss (paradox)** | If the Machineplane and all workloads are lost simultaneously, Beemesh alone **CANNOT** restore the fabric. An external bootstrap mechanism (for example, installers, image registries, GitOps controllers) is **REQUIRED** to repopulate the cluster.                         |
 
@@ -247,7 +251,7 @@ but are encoded directly with bincode without an envelope wrapper.
 ### **7.2 Example Invocation**
 
 ```bash
-podman play kube deployment.yaml --replace --log-driver=journald
+podman play kube deployment.yaml --replace
 ```
 
 ---
@@ -256,10 +260,7 @@ podman play kube deployment.yaml --replace --log-driver=journald
 
 ```yaml
 machineplane:
-  topics:
-    tenders: scheduler-tenders
-    proposals: scheduler-proposals
-    events: scheduler-events
+  topic: beemesh-fabric
   selection_window_ms: 250
   selection_jitter_ms: 100
   lease_ttl_ms: 3000
@@ -290,26 +291,16 @@ machineplane:
 
 * **MUST** be emitted for: `Deployed`, `Failed`, `Preempted`, `Cancelled`.
 
-### **9.2 Metrics (Prometheus-style)**
+### **9.2 Logs**
 
-* `machineplane_tenders_seen_total{tender_id}`
-* `machineplane_bids_submitted_total{tender_id}`
-* `machineplane_leasehint_put_total{result="ok|error"}`
-* `machineplane_schedule_latency_ms_bucket{}`          # publish → first deploy attempt
-* `machineplane_deploy_failures_total{reason}`
-* `machineplane_duplicate_deploys_total{tender_id}`
-* `machineplane_reconcile_kills_total{reason}`
-
-### **9.3 Logs**
-
-* **SHOULD** include Tender ID, Node ID, **LeaseHint** fields (`renew_nonce`, `ttl_ms`), and causal span IDs.
+* Machineplane daemons **MUST** emit logs to **stdout/stderr**. No additional log sinks or field requirements are mandated; downstream collectors **MAY** scrape stdout/stderr if desired.
 
 ---
 
 ## **10. CLI Integration (`kubectl`)**
 
-* `kubectl create -f app.yaml` **MUST** publish a Tender to `scheduler-tenders`.
-* `kubectl get pods` **SHOULD** read from local node/runtime and/or observe `scheduler-events` for status aggregation (best-effort).
+* `kubectl create -f app.yaml` **MUST** publish a Tender to `beemesh-fabric`.
+* `kubectl get pods` **SHOULD** read from local node/runtime and/or observe `beemesh-fabric` for status aggregation (best-effort).
 * `kubectl delete pod <name>` **MUST** result in the Machineplane publishing a cancellation Tender or sending a secure stream command to the owning node.
 * The Machineplane daemon **MUST** expose Kubernetes-compatible REST endpoints (`/version`, `/api`, `/apis/apps/v1/...`) so that the upstream `kubectl` binary can talk to it using its normal HTTP flow.
 
@@ -325,7 +316,7 @@ machineplane:
 ## **12. Security Considerations**
 
 * Replay protection via `(ts, nonce)`; **MUST** reject duplicates.
-* Rate limits on `scheduler-proposals`; nodes **SHOULD** cap bids/sec per peer.
+* Rate limits on `beemesh-fabric`; nodes **SHOULD** cap bids/sec per peer.
 * **MUST** sandbox runtime with least privilege and drop ambient capabilities not required by the manifest.
 
 ---
@@ -344,8 +335,8 @@ Scenario: New node joins the Machine DHT
 ```
 
 ```gherkin
-Scenario: Reject unsigned scheduler messages
-  Given a running node subscribed to scheduler topics
+Scenario: Reject unsigned fabric messages
+  Given a running node subscribed to beemesh-fabric topic
   When it receives an unsigned Tender
   Then it MUST discard the message
   And it MUST NOT emit a Bid
@@ -361,6 +352,15 @@ Scenario: At-least-once scheduling with LeaseHints
   And A and/or B write LeaseHint(T) in the MDHT
   Then one or more nodes MAY proceed to deploy T
   And at least one node MUST publish Event{Deployed} if deployment succeeds
+```
+
+```gherkin
+Scenario: Deterministic winner selection
+  Given three eligible nodes A, B, and C
+  And identical bid payloads observed by the tender owner
+  When the tender owner evaluates bids with the defined scoring and tie-break rules
+  Then the same ordered winner list MUST be produced on every evaluation
+  And the manifest MUST be sent only to that deterministic winner set
 ```
 
 ```gherkin
@@ -389,5 +389,5 @@ Scenario: Higher priority Tender preempts lower priority Tender
   When a Tender H (high priority) arrives with qos.preemptible=true
   Then the node MUST evict L to make space for H
   And the node MUST publish Event{Preempted} for L
-  And the node MUST republish L to the scheduler-tenders topic
+  And the node MUST republish L to the beemesh-fabric topic
 ```
