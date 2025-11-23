@@ -349,7 +349,7 @@ impl Scheduler {
                     .clone()
                     .or_else(|| get_local_manifest(&manifest_id))
                 {
-                    let owner_pubkey = keypair.public().to_protobuf_encoding().unwrap_or_default();
+                    let owner_pubkey = keypair.to_protobuf_encoding().unwrap_or_default();
 
                     let transfer = ManifestTransfer {
                         tender_id: tender_id_clone.clone(),
