@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
+use ulid::Ulid;
 use uuid::Uuid;
 
 const DEPLOYMENT_KIND: &str = "Deployment";
@@ -248,7 +249,8 @@ async fn publish_tender(
         .as_millis() as u64;
 
     let manifest_digest = machine::compute_manifest_id_from_content(manifest_str.as_bytes());
-    register_local_manifest(manifest_id, manifest_str);
+    let tender_id = Ulid::new().to_string();
+    register_local_manifest(&tender_id, manifest_str);
 
     let keypair = crate::network::get_node_keypair()
         .and_then(|(_, sk)| Keypair::from_protobuf_encoding(&sk).ok())
@@ -261,11 +263,10 @@ async fn publish_tender(
         })?;
 
     let mut tender = crate::messages::types::Tender {
-        id: manifest_id.to_string(),
+        id: tender_id.clone(),
         manifest_digest: manifest_digest.clone(),
         workload_type: workload_type.to_string(),
-        duplicate_tolerant: false,
-        placement_token: String::new(),
+        placement_token: Ulid::new().to_string(),
         qos_preemptible: false,
         timestamp,
         nonce: rand::thread_rng().next_u64(),

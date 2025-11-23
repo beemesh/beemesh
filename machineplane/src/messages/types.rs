@@ -82,7 +82,6 @@ pub struct Tender {
     pub manifest_digest: String,
     /// "stateless" | "stateful"
     pub workload_type: String,
-    pub duplicate_tolerant: bool,
     pub placement_token: String,
     pub qos_preemptible: bool,
     pub timestamp: u64,
@@ -323,7 +322,6 @@ impl Default for Tender {
             id: String::new(),
             manifest_digest: String::new(),
             workload_type: "stateless".to_string(),
-            duplicate_tolerant: true,
             placement_token: String::new(),
             qos_preemptible: false,
             timestamp: 0,
