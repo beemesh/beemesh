@@ -54,6 +54,12 @@ pub fn gossipsub_message(
     });
 
     if scheduler_topics.contains(&topic) {
+        debug!(
+            "gossipsub: Forwarding scheduler message on topic {} from peer {} ({} bytes)",
+            topic,
+            peer_id,
+            payload.len()
+        );
         if let Some(tx) = SCHEDULER_INPUT_TX.get() {
             if let Err(e) = tx.send((topic, message)) {
                 error!("Failed to forward scheduler message: {}", e);
@@ -65,9 +71,13 @@ pub fn gossipsub_message(
     }
 
     warn!(
-        "gossipsub: Received unsupported message ({} bytes) from peer {}",
+        "gossipsub: Dropping message on unsupported topic {} ({} bytes) from peer {}. Supported topics are: {}, {}, {}",
+        topic,
         payload.len(),
-        peer_id
+        peer_id,
+        SCHEDULER_TENDERS,
+        SCHEDULER_PROPOSALS,
+        SCHEDULER_EVENTS
     );
 }
 
