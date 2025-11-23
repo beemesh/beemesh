@@ -1,8 +1,8 @@
 use crate::messages::constants::BEEMESH_FABRIC;
 use crate::network::control;
-use crate::network::{ApplyCodec, DeleteCodec, HandshakeCodec};
+use crate::network::ManifestTransferCodec;
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{PeerId, autonat, gossipsub, identify, kad, relay, request_response};
+use libp2p::{PeerId, gossipsub, kad, request_response};
 use log::{debug, error, info, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
@@ -10,14 +10,8 @@ use tokio::sync::mpsc;
 #[derive(NetworkBehaviour)]
 pub struct MyBehaviour {
     pub gossipsub: gossipsub::Behaviour,
-    pub apply_rr: request_response::Behaviour<ApplyCodec>,
-    pub handshake_rr: request_response::Behaviour<HandshakeCodec>,
-    pub delete_rr: request_response::Behaviour<DeleteCodec>,
-    pub manifest_fetch_rr: request_response::Behaviour<ApplyCodec>,
+    pub manifest_fetch_rr: request_response::Behaviour<ManifestTransferCodec>,
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
-    pub relay: relay::Behaviour,
-    pub autonat: autonat::Behaviour,
-    pub identify: identify::Behaviour,
 }
 
 // ============================================================================

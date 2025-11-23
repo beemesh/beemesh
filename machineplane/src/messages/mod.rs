@@ -46,10 +46,6 @@ pub mod machine {
         deserialize(buf)
     }
 
-    pub fn decode_handshake(buf: &[u8]) -> bincode::Result<Handshake> {
-        deserialize(buf)
-    }
-
     pub fn decode_applied_manifest(buf: &[u8]) -> bincode::Result<AppliedManifest> {
         deserialize(buf)
     }
@@ -159,20 +155,6 @@ pub mod machine {
             message: message.to_string(),
             manifest_id: manifest_id.to_string(),
             removed_workloads: removed_workloads.to_vec(),
-        })
-    }
-
-    pub fn build_handshake(
-        nonce: u32,
-        timestamp: u64,
-        protocol_version: &str,
-        signature: &str,
-    ) -> Vec<u8> {
-        serialize(&Handshake {
-            nonce,
-            timestamp,
-            protocol_version: protocol_version.to_string(),
-            signature: signature.to_string(),
         })
     }
 

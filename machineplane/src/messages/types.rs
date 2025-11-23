@@ -51,17 +51,8 @@ pub struct DeleteResponse {
 }
 
 // ============================================================================
-// Handshake and Health
+// Health
 // ============================================================================
-
-/// Peer handshake message
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Handshake {
-    pub nonce: u32,
-    pub signature: String,
-    pub protocol_version: String,
-    pub timestamp: u64,
-}
 
 /// Health check message
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

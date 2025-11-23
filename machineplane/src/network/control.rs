@@ -1,8 +1,8 @@
 use crate::messages::constants::BEEMESH_FABRIC;
 use crate::network::behaviour::{MyBehaviour, SCHEDULER_INPUT_TX};
 use libp2p::kad::{QueryId, RecordKey};
-use libp2p::{PeerId, Swarm, gossipsub};
-use log::{debug, info};
+use libp2p::{Swarm, gossipsub};
+use log::info;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -18,19 +18,6 @@ pub enum Libp2pControl {
         payload: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
-    SendApplyRequest {
-        peer_id: PeerId,
-        /// ApplyRequest bytes (bincode)
-        manifest: Vec<u8>,
-        reply_tx: mpsc::UnboundedSender<Result<String, String>>,
-    },
-    SendDeleteRequest {
-        peer_id: PeerId,
-        /// DeleteRequest bytes (bincode)
-        delete_request: Vec<u8>,
-        reply_tx: mpsc::UnboundedSender<Result<String, String>>,
-    },
-
     /// Find peers that hold shares for a given manifest id using DHT providers
     FindManifestHolders {
         manifest_id: String,
@@ -64,20 +51,6 @@ pub enum Libp2pControl {
 /// Handle incoming control messages from other parts of the host (REST handlers)
 pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBehaviour>) {
     match msg {
-        Libp2pControl::SendApplyRequest {
-            peer_id,
-            manifest,
-            reply_tx,
-        } => {
-            handle_send_apply_request(peer_id, manifest, reply_tx, swarm).await;
-        }
-        Libp2pControl::SendDeleteRequest {
-            peer_id,
-            delete_request,
-            reply_tx,
-        } => {
-            handle_send_delete_request(peer_id, delete_request, reply_tx, swarm).await;
-        }
         Libp2pControl::PublishTender { payload, reply_tx } => {
             let topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC);
             match swarm
@@ -139,56 +112,7 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
                 cid,
                 ttl_ms
             );
-            // For local tests, announce multiple times with short intervals to improve discovery
-            let mut announce_success = false;
-            for attempt in 1..=3 {
-                match announce_provider_direct(swarm, cid.clone(), ttl_ms) {
-                    Ok(()) => {
-                        announce_success = true;
-                        if attempt > 1 {
-                            log::info!(
-                                "libp2p: AnnounceProvider succeeded for cid={} on attempt {}",
-                                cid,
-                                attempt
-                            );
-                        }
-                        break;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "libp2p: AnnounceProvider attempt {} failed for cid={}: {}",
-                            attempt,
-                            cid,
-                            e
-                        );
-                        if attempt < 3 {
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        }
-                    }
-                }
-            }
-
-            if announce_success {
-                // schedule next renewal at half the TTL (or 1s minimum) with more frequent updates for local tests
-                let ttl = if ttl_ms == 0 { 0 } else { ttl_ms };
-                let next = if ttl == 0 {
-                    Instant::now() + Duration::from_secs(3600) // effectively never
-                } else {
-                    // More frequent renewal for local tests - every 2 seconds minimum
-                    Instant::now() + Duration::from_millis(std::cmp::max(2000, ttl / 3))
-                };
-                let mut map = ACTIVE_ANNOUNCES.lock().unwrap();
-                map.insert(
-                    cid.clone(),
-                    AnnounceEntry {
-                        ttl_ms: ttl_ms,
-                        next_due: next,
-                    },
-                );
-                let _ = reply_tx.send(Ok(()));
-            } else {
-                let _ = reply_tx.send(Err("All provider announcement attempts failed".to_string()));
-            }
+            let _ = reply_tx.send(announce_provider_direct(swarm, cid.clone(), ttl_ms));
         }
         Libp2pControl::GetDhtPeers { reply_tx } => {
             // Get DHT peer information for debugging
@@ -204,19 +128,8 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
             let _ = reply_tx.send(Ok(dht_info));
         }
         Libp2pControl::WithdrawProvider { cid, reply_tx } => {
-            // Remove from active announces and issue a withdraw (expiry=now)
-            {
-                let mut map = ACTIVE_ANNOUNCES.lock().unwrap();
-                map.remove(&cid);
-            }
-            match announce_provider_direct(swarm, cid.clone(), 0) {
-                Ok(()) => {
-                    let _ = reply_tx.send(Ok(()));
-                }
-                Err(e) => {
-                    let _ = reply_tx.send(Err(e));
-                }
-            }
+            log::info!("Withdraw requested for cid={}, letting provider record expire", cid);
+            let _ = reply_tx.send(Ok(()));
         }
         Libp2pControl::GetLocalPeerId { reply_tx } => {
             // Get the local peer ID
@@ -255,20 +168,6 @@ pub fn announce_provider_direct(
         Err(e) => Err(format!("kademlia start_providing failed: {:?}", e)),
     }
 }
-
-/// Entry for active announce tracking
-struct AnnounceEntry {
-    ttl_ms: u64,
-    next_due: Instant,
-}
-
-/// Map of active announces: cid -> entry
-static ACTIVE_ANNOUNCES: Lazy<Mutex<HashMap<String, AnnounceEntry>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
-/// Queue for control messages enqueued from inside the libp2p behaviours.
-static ENQUEUED_CONTROLS: Lazy<Mutex<std::collections::VecDeque<Libp2pControl>>> =
-    Lazy::new(|| Mutex::new(std::collections::VecDeque::new()));
 
 /// Pending provider lookup queries: QueryId string -> reply sender (Vec<PeerId>)
 static PENDING_PROVIDERS_QUERIES: Lazy<
@@ -329,135 +228,6 @@ pub fn cleanup_timed_out_manifest_requests() {
     }
 }
 
-/// Enqueue a control message from inside a behaviour handler. This is synchronous and cheap.
-pub fn enqueue_control(msg: Libp2pControl) {
-    let mut q = ENQUEUED_CONTROLS.lock().unwrap();
-    q.push_back(msg);
-}
-
-/// Drain and handle enqueued controls. Should be called from the libp2p task (async context).
-pub async fn drain_enqueued_controls(swarm: &mut Swarm<MyBehaviour>) {
-    // Move queued items into a local vector to minimize lock time
-    let mut items = Vec::new();
-    {
-        let mut q = ENQUEUED_CONTROLS.lock().unwrap();
-        while let Some(it) = q.pop_front() {
-            items.push(it);
-        }
-    }
-
-    for msg in items {
-        handle_control_message(msg, swarm).await;
-    }
-}
-
-/// Renew any announces that are due. Intended to be called periodically from the libp2p loop.
-pub fn renew_due_providers(swarm: &mut Swarm<MyBehaviour>) {
-    let now = Instant::now();
-    let mut map = ACTIVE_ANNOUNCES.lock().unwrap();
-    for (cid, entry) in map.iter_mut() {
-        if entry.ttl_ms == 0 {
-            continue;
-        }
-        if entry.next_due <= now {
-            let _ = announce_provider_direct(swarm, cid.clone(), entry.ttl_ms);
-            // More frequent renewal for local tests - every 2 seconds minimum
-            entry.next_due =
-                Instant::now() + Duration::from_millis(std::cmp::max(2000, entry.ttl_ms / 3));
-        }
-    }
-}
-
-/// Withdraw all announces (used on shutdown)
-pub fn withdraw_all_providers(swarm: &mut Swarm<MyBehaviour>) {
-    let keys: Vec<String> = {
-        let mut m = ACTIVE_ANNOUNCES.lock().unwrap();
-        m.drain().map(|(k, _)| k).collect()
-    };
-    for cid in keys {
-        let _ = announce_provider_direct(swarm, cid.clone(), 0);
-        info!("DHT: withdrew provider for cid={}", cid);
-    }
-}
-
-/// Return a snapshot of active announce CIDs
-pub fn list_active_announces() -> Vec<String> {
-    let map = ACTIVE_ANNOUNCES.lock().unwrap();
-    map.keys().cloned().collect()
-}
-
 // ============================================================================
 // Control Message Handlers
 // ============================================================================
-
-/// Handle QueryCapacityWithPayload control message
-/// Handle SendApplyRequest control message
-pub async fn handle_send_apply_request(
-    peer_id: PeerId,
-    manifest: Vec<u8>,
-    reply_tx: mpsc::UnboundedSender<Result<String, String>>,
-    swarm: &mut Swarm<MyBehaviour>,
-) {
-    info!(
-        "libp2p: control SendApplyRequest received for peer={}",
-        peer_id
-    );
-
-    // Check if this is a self-send - handle locally instead of using RequestResponse
-    if peer_id == *swarm.local_peer_id() {
-        debug!("libp2p: handling self-apply locally for peer {}", peer_id);
-
-        // Use the new workload manager integration for self-apply as well
-        crate::scheduler::process_enhanced_self_apply_request(&manifest, swarm).await;
-
-        let _ = reply_tx.send(Ok(format!("Apply request handled locally for {}", peer_id)));
-        return;
-    }
-
-    // For remote peers, use the normal RequestResponse protocol
-    // Before sending the apply, create a capability token tied to this manifest and
-    // send it to the target peer so they can store it in their keystore.
-    // No capability token needed - direct manifest application
-
-    // Finally send the apply request
-    let request_id = swarm
-        .behaviour_mut()
-        .apply_rr
-        .send_request(&peer_id, manifest);
-    info!(
-        "libp2p: sent apply request to peer={} request_id={:?}",
-        peer_id, request_id
-    );
-
-    // For now, just send success immediately - proper response handling is done elsewhere
-    let _ = reply_tx.send(Ok(format!("Apply request sent to {}", peer_id)));
-}
-
-/// Handle sending a delete request to a specific peer via libp2p request-response
-pub async fn handle_send_delete_request(
-    peer_id: PeerId,
-    delete_request: Vec<u8>,
-    reply_tx: mpsc::UnboundedSender<Result<String, String>>,
-    swarm: &mut Swarm<MyBehaviour>,
-) {
-    info!(
-        "handle_send_delete_request: sending delete request to peer {}",
-        peer_id
-    );
-
-    // Send the delete request via request-response protocol
-    let request_id = swarm
-        .behaviour_mut()
-        .delete_rr
-        .send_request(&peer_id, delete_request);
-
-    info!(
-        "handle_send_delete_request: delete request sent to peer {} with request_id {:?}",
-        peer_id, request_id
-    );
-
-    // For now, send immediate success response
-    // In a complete implementation, we would track the request_id and wait for the actual response
-    // from the peer, but that requires more complex request tracking infrastructure
-    let _ = reply_tx.send(Ok("Delete request sent".to_string()));
-}

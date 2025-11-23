@@ -2,8 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::{AsyncReadExt, AsyncWriteExt, stream::StreamExt};
 use libp2p::{
-    PeerId, Swarm, autonat, gossipsub, identify, identity::Keypair, kad, multiaddr::Multiaddr,
-    multiaddr::Protocol, relay, request_response, swarm::SwarmEvent,
+    Swarm, gossipsub, identity::Keypair, kad, multiaddr::Multiaddr, multiaddr::Protocol,
+    request_response, swarm::SwarmEvent,
 };
 use log::{debug, error, info, warn};
 use once_cell::sync::{Lazy, OnceCell};
@@ -44,17 +44,6 @@ impl AsRef<str> for ByteProtocol {
 
 #[derive(Clone, Default)]
 pub struct ByteCodec;
-
-fn ensure_handshake_state<'a>(
-    peer: &PeerId,
-    handshake_states: &'a mut std::collections::HashMap<PeerId, HandshakeState>,
-) -> &'a mut HandshakeState {
-    handshake_states.entry(*peer).or_insert(HandshakeState {
-        attempts: 0,
-        last_attempt: Instant::now() - Duration::from_secs(3),
-        confirmed: false,
-    })
-}
 
 #[async_trait]
 impl request_response::Codec for ByteCodec {
@@ -116,16 +105,7 @@ impl request_response::Codec for ByteCodec {
 }
 
 // Protocol definitions
-pub type ApplyCodec = ByteCodec;
-pub type HandshakeCodec = ByteCodec;
-pub type DeleteCodec = ByteCodec;
-
-#[derive(Debug, Clone)]
-struct HandshakeState {
-    attempts: u32,
-    last_attempt: std::time::Instant,
-    confirmed: bool,
-}
+pub type ManifestTransferCodec = ByteCodec;
 
 pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
     NODE_KEYPAIR.lock().unwrap().clone()
@@ -172,14 +152,13 @@ pub fn setup_libp2p_node(
     watch::Receiver<Vec<String>>,
     watch::Sender<Vec<String>>,
 )> {
-    // Load the node keypair (set by lib.rs startup) or generate a new one
+    // Load the node keypair (set by lib.rs startup)
     let keypair = {
         let slot = NODE_KEYPAIR.lock().unwrap();
-        if let Some((_pk, sk)) = &*slot {
-            libp2p::identity::Keypair::from_protobuf_encoding(sk)?
-        } else {
-            libp2p::identity::Keypair::generate_ed25519()
-        }
+        let (_, sk) = slot
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("machine peer identity not initialized"))?;
+        libp2p::identity::Keypair::from_protobuf_encoding(sk)?
     };
 
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
@@ -211,33 +190,6 @@ pub fn setup_libp2p_node(
                 gossipsub_config,
             )?;
 
-            // Create the request-response behavior for apply protocol
-            let apply_rr = request_response::Behaviour::new(
-                std::iter::once((
-                    ByteProtocol("/beemesh/apply/1.0.0"),
-                    request_response::ProtocolSupport::Full,
-                )),
-                request_response::Config::default(),
-            );
-
-            // Create the request-response behavior for handshake protocol
-            let handshake_rr = request_response::Behaviour::new(
-                std::iter::once((
-                    ByteProtocol("/beemesh/handshake/1.0.0"),
-                    request_response::ProtocolSupport::Full,
-                )),
-                request_response::Config::default(),
-            );
-
-            // Create the request-response behavior for delete protocol
-            let delete_rr = request_response::Behaviour::new(
-                std::iter::once((
-                    ByteProtocol("/beemesh/delete/1.0.0"),
-                    request_response::ProtocolSupport::Full,
-                )),
-                request_response::Config::default(),
-            );
-
             // Create the request-response behavior for manifest fetch protocol
             let manifest_fetch_rr = request_response::Behaviour::new(
                 std::iter::once((
@@ -258,31 +210,18 @@ pub fn setup_libp2p_node(
             kademlia_config.set_parallelism(std::num::NonZeroUsize::new(3).unwrap()); // Increase parallelism for local tests
             kademlia_config.set_query_timeout(std::time::Duration::from_secs(15)); // Longer timeout for local tests
 
-            // Configure placement record settings (via Kademlia providers) for better local discovery
-            kademlia_config.set_provider_record_ttl(Some(std::time::Duration::from_secs(30))); // Shorter TTL for local tests
+            // Configure placement record settings (via Kademlia providers) for low-touch announcements
             kademlia_config
-                .set_provider_publication_interval(Some(std::time::Duration::from_secs(5))); // More frequent republishing
+                .set_provider_record_ttl(Some(std::time::Duration::from_secs(600)));
+            kademlia_config.set_provider_publication_interval(None);
 
             let kademlia =
                 kad::Behaviour::with_config(key.public().to_peer_id(), store, kademlia_config);
 
-            let relay = relay::Behaviour::new(key.public().to_peer_id(), Default::default());
-            let autonat = autonat::Behaviour::new(key.public().to_peer_id(), Default::default());
-            let identify = identify::Behaviour::new(identify::Config::new(
-                "/beemesh/0.1.0".into(), // protocol version
-                key.public(),
-            ));
-
             Ok(MyBehaviour {
                 gossipsub,
-                apply_rr,
-                handshake_rr,
-                delete_rr,
                 manifest_fetch_rr,
                 kademlia,
-                relay,
-                autonat,
-                identify,
             })
         })?
         .build();
@@ -335,13 +274,7 @@ pub async fn start_libp2p_node(
     peer_tx: watch::Sender<Vec<String>>,
     mut control_rx: mpsc::UnboundedReceiver<Libp2pControl>,
 ) -> Result<()> {
-    use std::collections::HashMap;
-
-    let mut handshake_states: HashMap<PeerId, HandshakeState> = HashMap::new();
-    let mut handshake_interval = tokio::time::interval(Duration::from_secs(1));
-    let mut renew_interval = tokio::time::interval(Duration::from_millis(500));
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(2));
-    //let mut mesh_alive_interval = tokio::time::interval(Duration::from_secs(1));
 
     // --- Scheduler Setup ---
     let (sched_input_tx, mut sched_input_rx) =
@@ -355,10 +288,7 @@ pub async fn start_libp2p_node(
     let local_node_id = swarm.local_peer_id().to_string();
     let scheduler_keypair = get_node_keypair()
         .and_then(|(_, sk)| Keypair::from_protobuf_encoding(&sk).ok())
-        .unwrap_or_else(|| {
-            warn!("Node keypair unavailable; generating ephemeral scheduler keypair");
-            Keypair::generate_ed25519()
-        });
+        .ok_or_else(|| anyhow::anyhow!("machine peer identity not initialized"))?;
 
     let scheduler =
         crate::scheduler::Scheduler::new(local_node_id.clone(), scheduler_keypair, sched_output_tx);
@@ -450,164 +380,13 @@ pub async fn start_libp2p_node(
                 if let Some(msg) = maybe_msg {
                     control::handle_control_message(msg, &mut swarm).await;
                 } else {
-                    // sender was dropped, withdraw provider announces and exit loop
-                    info!("control channel closed; withdrawing provider announcements");
-                    control::withdraw_all_providers(&mut swarm);
+                    // sender was dropped, exit loop
+                    info!("control channel closed; shutting down libp2p loop");
                     break;
                 }
             }
             event = swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::Behaviour(MyBehaviourEvent::HandshakeRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        match message {
-                            request_response::Message::Request { request, channel, .. } => {
-                                let response = match crate::messages::machine::decode_handshake(&request) {
-                                    Ok(_) => {
-                                        ensure_handshake_state(&peer, &mut handshake_states).confirmed = true;
-                                        let timestamp = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_millis() as u64;
-                                        crate::messages::machine::build_handshake(
-                                            rand::random::<u32>(),
-                                            timestamp,
-                                            "beemesh/1.0",
-                                            &peer.to_string(),
-                                        )
-                                    }
-                                    Err(e) => {
-                                        log::error!("libp2p: failed to parse handshake request: {:?}", e);
-                                        crate::messages::machine::build_handshake(0, 0, "", "")
-                                    }
-                                };
-
-                                let _ = swarm
-                                    .behaviour_mut()
-                                    .handshake_rr
-                                    .send_response(channel, response);
-                            }
-                            request_response::Message::Response { response, .. } => {
-                                match crate::messages::machine::decode_handshake(&response) {
-                                    Ok(_) => {
-                                        ensure_handshake_state(&peer, &mut handshake_states).confirmed = true;
-                                    }
-                                    Err(e) => {
-                                        log::error!("libp2p: failed to parse handshake response: {:?}", e);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::HandshakeRr(request_response::Event::OutboundFailure { peer, error, .. })) => {
-                        warn!("handshake outbound failure with peer {}: {:?}", peer, error);
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::HandshakeRr(request_response::Event::InboundFailure { peer, error, .. })) => {
-                        warn!("handshake inbound failure with peer {}: {:?}", peer, error);
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        let local_peer = *swarm.local_peer_id();
-                        // Create a future for the workload manager handler and drive it immediately
-                        let future = crate::scheduler::handle_apply_message_with_podman_manager(
-                            message, peer, &mut swarm, local_peer
-                        );
-                        // Since we're in an async context, we can await this directly
-                        future.await;
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::OutboundFailure { peer, error, .. })) => {
-                        warn!("apply outbound failure with peer {}: {:?}", peer, error);
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::ApplyRr(request_response::Event::InboundFailure { peer, error, .. })) => {
-                        warn!("apply inbound failure with peer {}: {:?}", peer, error);
-                    }
-
-                    SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::Message { message, peer, connection_id: _ })) => {
-                        match message {
-                            request_response::Message::Request { request, channel, .. } => {
-                                info!("Received delete request from peer={}", peer);
-                                match crate::messages::machine::decode_delete_request(&request) {
-                                    Ok(delete_req) => {
-                                        info!(
-                                            "Delete request - manifest_id={:?} operation_id={:?} force={}",
-                                            &delete_req.manifest_id, &delete_req.operation_id, delete_req.force
-                                        );
-
-                                        let manifest_id = delete_req.manifest_id.clone();
-                                        let operation_id = delete_req.operation_id.clone();
-                                        let force = delete_req.force;
-                                        let requesting_peer = peer.to_string();
-
-                                        tokio::spawn(async move {
-                                            let (success, message, removed_workloads) =
-                                                process_delete_request(&manifest_id, force, &requesting_peer).await;
-
-                                            let _response = crate::messages::machine::build_delete_response(
-                                                success,
-                                                &operation_id,
-                                                &message,
-                                                &manifest_id,
-                                                &removed_workloads,
-                                            );
-
-                                            info!(
-                                                "Delete request processed: success={} message={} removed_workloads={:?}",
-                                                success, message, removed_workloads
-                                            );
-                                        });
-
-                                        let ack_response = crate::messages::machine::build_delete_response(
-                                            true,
-                                            delete_req.operation_id.as_str(),
-                                            "delete request received and processing",
-                                            delete_req.manifest_id.as_str(),
-                                            &[],
-                                        );
-                                        let _ = swarm
-                                            .behaviour_mut()
-                                            .delete_rr
-                                            .send_response(channel, ack_response);
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to parse delete request: {}", e);
-                                        let error_response = crate::messages::machine::build_delete_response(
-                                            false,
-                                            "unknown",
-                                            "invalid delete request format",
-                                            "unknown",
-                                            &[],
-                                        );
-                                        let _ = swarm
-                                            .behaviour_mut()
-                                            .delete_rr
-                                            .send_response(channel, error_response);
-                                    }
-                                }
-                            }
-                            request_response::Message::Response { response, .. } => {
-                                info!("Received delete response from peer={}", peer);
-                                match crate::messages::machine::decode_delete_response(&response) {
-                                    Ok(delete_resp) => {
-                                        info!(
-                                            "Delete response - ok={} operation_id={:?} message={:?} removed_workloads={:?}",
-                                            delete_resp.ok,
-                                            &delete_resp.operation_id,
-                                            &delete_resp.message,
-                                            Some(delete_resp.removed_workloads.clone())
-                                        );
-                                    }
-                                    Err(e) => {
-                                        warn!("Failed to parse delete response: {:?}", e);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::OutboundFailure { peer, error, .. })) => {
-                        warn!("delete outbound failure with peer {}: {:?}", peer, error);
-                    }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::DeleteRr(request_response::Event::InboundFailure { peer, error, .. })) => {
-                        warn!("delete inbound failure with peer {}: {:?}", peer, error);
-                    }
-
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                         propagation_source: peer_id,
                         message_id: _id,
@@ -779,16 +558,15 @@ pub async fn start_libp2p_node(
                         let addr = endpoint.get_remote_address();
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
 
-                        // Ensure we track handshake state and proactively include the peer in our mesh
-                        handshake_states
-                            .entry(peer_id)
-                            .or_insert(HandshakeState {
-                                attempts: 0,
-                                // Make the peer immediately eligible for the next handshake tick
-                                last_attempt: Instant::now() - Duration::from_secs(3),
-                                confirmed: false,
-                            });
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+
+                        let all_peers: Vec<String> = swarm
+                            .behaviour()
+                            .gossipsub
+                            .all_peers()
+                            .map(|(p, _topics)| p.to_string())
+                            .collect();
+                        let _ = peer_tx.send(all_peers);
 
                         // Bootstrap DHT after establishing connections to improve local test reliability
                         let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
@@ -802,6 +580,14 @@ pub async fn start_libp2p_node(
                             info!("DHT: All connections to peer {} closed, removing from Kademlia", peer_id);
                             swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
                         }
+
+                        let all_peers: Vec<String> = swarm
+                            .behaviour()
+                            .gossipsub
+                            .all_peers()
+                            .map(|(p, _topics)| p.to_string())
+                            .collect();
+                        let _ = peer_tx.send(all_peers);
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         if let Some((host, port)) = extract_listen_endpoint(&address) {
@@ -812,68 +598,6 @@ pub async fn start_libp2p_node(
                     }
                     _ => {}
                 }
-            }
-            _ = handshake_interval.tick() => {
-                let mut to_remove = Vec::new();
-                for (peer_id, state) in handshake_states.iter_mut() {
-                    if state.confirmed {
-                        continue;
-                    }
-                    if state.attempts >= 3 {
-                        warn!("Removing non-responsive peer: {peer_id}");
-                        swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .remove_explicit_peer(peer_id);
-                        to_remove.push(peer_id.clone());
-                        continue;
-                    }
-                    if state.last_attempt.elapsed() >= Duration::from_secs(2) {
-                        // Send handshake request using request-response protocol
-                        let timestamp = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-                        let nonce = rand::random::<u32>();
-
-                        let protocol_version = "beemesh/1.0";
-                        let local_peer_id = swarm.local_peer_id().to_string();
-
-                        // Build simple handshake request
-                        let handshake_request = crate::messages::machine::build_handshake(
-                            nonce,
-                            timestamp,
-                            protocol_version,
-                            &local_peer_id,
-                        );
-
-                        let request_id = swarm
-                            .behaviour_mut()
-                            .handshake_rr
-                            .send_request(peer_id, handshake_request);
-                        debug!(
-                            "libp2p: sent handshake request to peer={} request_id={:?} attempt={}",
-                            peer_id,
-                            request_id,
-                            state.attempts + 1
-                        );
-
-                        state.attempts += 1;
-                        state.last_attempt = Instant::now();
-                    }
-                }
-                for peer_id in to_remove {
-                    handshake_states.remove(&peer_id);
-                }
-                // Update peer list in channel after handshake changes
-                let all_peers: Vec<String> = swarm.behaviour().gossipsub.all_peers().map(|(p, _topics)| p.to_string()).collect();
-                let _ = peer_tx.send(all_peers);
-            }
-            _ = renew_interval.tick() => {
-                // Drain any enqueued control messages produced by behaviours (e.g. AnnounceProvider)
-                control::drain_enqueued_controls(&mut swarm).await;
-                // renew any due provider announcements
-                control::renew_due_providers(&mut swarm);
             }
             _ = cleanup_interval.tick() => {
                 // Clean up timed-out manifest distribution requests
@@ -891,46 +615,3 @@ pub async fn start_libp2p_node(
     Ok(())
 }
 
-async fn process_delete_request(
-    manifest_id: &str,
-    force: bool,
-    _requesting_peer: &str,
-) -> (bool, String, Vec<String>) {
-    if !force {
-        warn!(
-            "Processing delete request for manifest_id={} without explicit ownership validation",
-            manifest_id
-        );
-    }
-
-    match crate::scheduler::remove_workloads_by_manifest_id(manifest_id).await {
-        Ok(removed_workloads) => {
-            if removed_workloads.is_empty() {
-                info!("No workloads found for manifest_id={}", manifest_id);
-                (
-                    true,
-                    "no workloads found for manifest".to_string(),
-                    removed_workloads,
-                )
-            } else {
-                info!(
-                    "Successfully removed {} workloads for manifest_id={}",
-                    removed_workloads.len(),
-                    manifest_id
-                );
-                (
-                    true,
-                    format!("removed {} workloads", removed_workloads.len()),
-                    removed_workloads,
-                )
-            }
-        }
-        Err(e) => {
-            error!(
-                "Failed to remove workloads for manifest_id={}: {}",
-                manifest_id, e
-            );
-            (false, format!("failed to remove workloads: {}", e), vec![])
-        }
-    }
-}
