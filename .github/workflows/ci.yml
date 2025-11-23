@@ -36,4 +36,6 @@ jobs:
           echo "CONTAINER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock" >> "$GITHUB_ENV"
 
       - name: Cargo test
+        env:
+          CONTAINER_HOST: ${{ env.CONTAINER_HOST }}
         run: cargo test --workspace --verbose
