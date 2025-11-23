@@ -108,14 +108,15 @@ async fn check_health(client: &Client, port: u16) -> bool {
     let base = format!("http://127.0.0.1:{port}");
     match tokio::time::timeout(
         Duration::from_secs(10),
-        client.get(format!("{base}/status")).send(),
+        client.get(format!("{base}/health")).send(),
     )
     .await
     {
-        Ok(Ok(resp)) => match resp.json::<serde_json::Value>().await {
-            Ok(json) => json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
-            Err(_) => false,
-        },
+        Ok(Ok(resp)) => resp
+            .text()
+            .await
+            .map(|text| text.trim() == "ok")
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -141,15 +142,11 @@ async fn wait_for_rest_api_health(client: &Client, ports: &[u16], timeout: Durat
 
         for &port in ports {
             let base = format!("http://127.0.0.1:{port}");
-            match client.get(format!("{base}/status")).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(json) if json.get("ok").and_then(|v| v.as_bool()) == Some(true) => {
-                            healthy += 1
-                        }
-                        _ => unhealthy_ports.push(port),
-                    }
-                }
+            match client.get(format!("{base}/health")).send().await {
+                Ok(resp) if resp.status().is_success() => match resp.text().await {
+                    Ok(text) if text.trim() == "ok" => healthy += 1,
+                    _ => unhealthy_ports.push(port),
+                },
                 _ => unhealthy_ports.push(port),
             }
         }

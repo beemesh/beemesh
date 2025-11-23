@@ -59,8 +59,8 @@ Scenario: Mesh formation MUST discover peers (tests/integration_test.rs)
 
 Scenario: REST endpoints MUST expose non-empty keys (tests/integration_test.rs)
   - Given the nodes are running and REST health has turned green for all ports
-  - When the REST health, `kem_pubkey`, and `signing_pubkey` endpoints are queried on the bootstrap node
-  - Then the health check MUST succeed
+  - When the `/health`, `kem_pubkey`, and `signing_pubkey` endpoints are queried on the bootstrap node
+  - Then the health check MUST succeed (returning `ok`)
   - And both key endpoints MUST return non-empty values
 
 Teardown: Nodes SHOULD be shut down after validation. The suite is `#[ignore]` by default because it requires REST ports 3000/3100/3200/3300/3400 and QUIC ports 4001–4005 plus a working libp2p environment.
