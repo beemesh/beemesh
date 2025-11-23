@@ -232,7 +232,7 @@ async fn schedule_deployment(
 ) -> Result<Vec<String>, StatusCode> {
     let manifest_str =
         serde_json::to_string(manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    publish_tender(state, manifest_id, &manifest_str, DEPLOYMENT_KIND).await?;
+    publish_tender(state, manifest_id, &manifest_str).await?;
 
     Ok(Vec::new())
 }
@@ -241,7 +241,6 @@ async fn publish_tender(
     state: &RestState,
     manifest_id: &str,
     manifest_str: &str,
-    workload_type: &str,
 ) -> Result<(), StatusCode> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -265,8 +264,6 @@ async fn publish_tender(
     let mut tender = crate::messages::types::Tender {
         id: tender_id.clone(),
         manifest_digest: manifest_digest.clone(),
-        workload_type: workload_type.to_string(),
-        placement_token: Ulid::new().to_string(),
         qos_preemptible: false,
         timestamp,
         nonce: rand::thread_rng().next_u64(),
@@ -353,7 +350,7 @@ async fn publish_delete_tender(
     let manifest_str =
         serde_json::to_string(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    publish_tender(state, manifest_id, &manifest_str, "delete").await
+    publish_tender(state, manifest_id, &manifest_str).await
 }
 
 async fn delete_manifest_from_peers(_state: &RestState, manifest_id: &str, peers: &[String]) {

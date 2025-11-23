@@ -133,8 +133,6 @@ is required because libp2p sessions are already mutually authenticated and encry
 
 **Tender (additions)**
 
-* `workload_type`: `"stateless" | "stateful"`
-* `placement_token`: ULID (monotonic per `(workload_id, attempt)`; hint for Workplane fencing)
 * `manifest_digest`: content hash of the manifest **without sending the manifest itself**.
 * **Replica count is not disclosed in the Tender**; the publisher decides how many bids to accept.
 * **Manifest handling**: The tender owner **MUST** keep the manifest local during bidding and **MUST** only transmit a manifest reference

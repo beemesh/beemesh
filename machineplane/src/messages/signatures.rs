@@ -39,8 +39,6 @@ macro_rules! define_sign_verify {
 struct TenderView {
     id: String,
     manifest_digest: String,
-    workload_type: String,
-    placement_token: String,
     qos_preemptible: bool,
     timestamp: u64,
     nonce: u64,
@@ -99,8 +97,6 @@ define_sign_verify!(
         TenderView {
             id: t.id.clone(),
             manifest_digest: t.manifest_digest.clone(),
-            workload_type: t.workload_type.clone(),
-            placement_token: t.placement_token.clone(),
             qos_preemptible: t.qos_preemptible,
             timestamp: t.timestamp,
             nonce: t.nonce,
