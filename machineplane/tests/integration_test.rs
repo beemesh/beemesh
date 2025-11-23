@@ -35,8 +35,12 @@ async fn test_run_host_application() {
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     // start a bootstrap node first
-    let daemon1 = make_test_daemon(3000, vec![], 4001);
+    let daemon1 = make_test_daemon(3001, vec![], 4001);
     let mut handles = start_nodes(vec![daemon1], Duration::from_secs(1)).await;
+
+    // derive the bootstrap multiaddr from the first daemon's swarm port
+    let bootstrap_addr = format!("/ip4/127.0.0.1/udp/{}/quic-v1", 4001);
+    let bootstrap_peers = vec![bootstrap_addr];
 
     // subsequent nodes use the first node as their bootstrap peer
     let bootstrap_peers = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
@@ -62,7 +66,7 @@ async fn test_run_host_application() {
             .expect("peers should be an array")
             .to_vec()
             .len()
-            == 2,
+            > 2,
         "Expected at least two peers in the mesh, got {:?}",
         verify_peers
     );
