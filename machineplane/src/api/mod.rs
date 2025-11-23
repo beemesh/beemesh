@@ -1,4 +1,4 @@
-use crate::messages::constants::{DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_PROPOSALS};
+use crate::messages::constants::{BEEMESH_FABRIC, DEFAULT_SELECTION_WINDOW_MS};
 use crate::messages::types::CandidateNode;
 use crate::scheduler::register_local_manifest;
 #[cfg(debug_assertions)]
@@ -209,7 +209,7 @@ pub(crate) async fn collect_candidate_pubkeys(
     if candidates.is_empty() {
         log::warn!(
             "collect_candidate_pubkeys: no peers available on topic {}; returning empty candidate list",
-            SCHEDULER_PROPOSALS
+            BEEMESH_FABRIC
         );
     }
 

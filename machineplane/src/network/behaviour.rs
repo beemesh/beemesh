@@ -1,6 +1,4 @@
-use crate::messages::constants::{
-    SCHEDULER_AWARDS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
-};
+use crate::messages::constants::BEEMESH_FABRIC;
 use crate::network::control;
 use crate::network::{ApplyCodec, DeleteCodec, HandshakeCodec};
 use libp2p::swarm::NetworkBehaviour;
@@ -45,18 +43,12 @@ pub fn gossipsub_message(
     debug!("received message from {}", peer_id);
     let payload = &message.data;
 
-    static SCHEDULER_TOPICS: OnceLock<[gossipsub::TopicHash; 4]> = OnceLock::new();
+    static FABRIC_TOPIC: OnceLock<gossipsub::TopicHash> = OnceLock::new();
 
-    let scheduler_topics = SCHEDULER_TOPICS.get_or_init(|| {
-        [
-            gossipsub::IdentTopic::new(SCHEDULER_TENDERS).hash(),
-            gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS).hash(),
-            gossipsub::IdentTopic::new(SCHEDULER_EVENTS).hash(),
-            gossipsub::IdentTopic::new(SCHEDULER_AWARDS).hash(),
-        ]
-    });
+    let scheduler_topic =
+        FABRIC_TOPIC.get_or_init(|| gossipsub::IdentTopic::new(BEEMESH_FABRIC).hash());
 
-    if scheduler_topics.contains(&topic) {
+    if topic == *scheduler_topic {
         debug!(
             "gossipsub: Forwarding scheduler message on topic {} from peer {} ({} bytes)",
             topic,
@@ -74,13 +66,11 @@ pub fn gossipsub_message(
     }
 
     warn!(
-        "gossipsub: Dropping message on unsupported topic {} ({} bytes) from peer {}. Supported topics are: {}, {}, {}",
+        "gossipsub: Dropping message on unsupported topic {} ({} bytes) from peer {}. Supported topic is {}",
         topic,
         payload.len(),
         peer_id,
-        SCHEDULER_TENDERS,
-        SCHEDULER_PROPOSALS,
-        SCHEDULER_EVENTS
+        BEEMESH_FABRIC
     );
 }
 

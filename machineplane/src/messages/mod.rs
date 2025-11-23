@@ -78,6 +78,14 @@ pub mod machine {
         deserialize(buf)
     }
 
+    pub fn encode_scheduler_message(message: SchedulerMessage) -> Vec<u8> {
+        serialize(&message)
+    }
+
+    pub fn decode_scheduler_message(buf: &[u8]) -> bincode::Result<SchedulerMessage> {
+        deserialize(buf)
+    }
+
     pub fn decode_tender_create_response(buf: &[u8]) -> bincode::Result<TenderCreateResponse> {
         deserialize(buf)
     }
