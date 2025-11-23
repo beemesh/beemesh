@@ -118,6 +118,7 @@ pub struct SchedulerEvent {
     pub event_type: EventType,
     pub reason: String,
     pub timestamp: u64,
+    pub nonce: u64,
     pub signature: Vec<u8>,
 }
 

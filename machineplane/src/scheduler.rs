@@ -5,7 +5,7 @@
 
 use crate::messages::constants::{BEEMESH_FABRIC, DEFAULT_SELECTION_WINDOW_MS};
 use crate::messages::types::{
-    Award, Bid, ManifestTransfer, SchedulerEvent, SchedulerMessage, Tender,
+    Award, Bid, EventType, ManifestTransfer, SchedulerEvent, SchedulerMessage, Tender,
 };
 use crate::messages::{machine, signatures};
 use crate::network::utils::peer_id_to_public_key;
@@ -14,13 +14,15 @@ use libp2p::identity::Keypair;
 use log::{error, info};
 use once_cell::sync::Lazy;
 use rand::RngCore;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 const MAX_CLOCK_SKEW_MS: u64 = 30_000;
+const REPLAY_WINDOW_MS: u64 = 300_000;
 
 static LOCAL_MANIFEST_CACHE: Lazy<Mutex<HashMap<String, String>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -34,9 +36,13 @@ pub struct Scheduler {
     /// Tenders this node created and is responsible for selecting winners for
     owned_tenders: Arc<Mutex<HashMap<String, OwnedTenderContext>>>,
     /// Replay filter for tenders
-    seen_tenders: Arc<Mutex<HashSet<(String, u64)>>>,
+    seen_tenders: Arc<Mutex<HashMap<(String, u64), u64>>>,
     /// Replay filter for bids
-    seen_bids: Arc<Mutex<HashSet<(String, String, u64)>>>,
+    seen_bids: Arc<Mutex<HashMap<(String, String, u64), u64>>>,
+    /// Replay filter for awards
+    seen_awards: Arc<Mutex<HashMap<(String, u64), u64>>>,
+    /// Replay filter for scheduler events
+    seen_events: Arc<Mutex<HashMap<(String, String, u64), u64>>>,
     /// Channel to send messages back to the network loop
     outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
 }
@@ -66,6 +72,7 @@ pub enum SchedulerCommand {
         payload: Vec<u8>,
     },
     DeployWorkload {
+        tender_id: String,
         manifest_id: String,
         manifest_json: String,
         replicas: u32,
@@ -86,8 +93,10 @@ impl Scheduler {
             local_node_id,
             keypair,
             owned_tenders: Arc::new(Mutex::new(HashMap::new())),
-            seen_tenders: Arc::new(Mutex::new(HashSet::new())),
-            seen_bids: Arc::new(Mutex::new(HashSet::new())),
+            seen_tenders: Arc::new(Mutex::new(HashMap::new())),
+            seen_bids: Arc::new(Mutex::new(HashMap::new())),
+            seen_awards: Arc::new(Mutex::new(HashMap::new())),
+            seen_events: Arc::new(Mutex::new(HashMap::new())),
             outbound_tx,
         }
     }
@@ -111,7 +120,7 @@ impl Scheduler {
                 self.handle_bid(&bid, message).await;
             }
             Ok(SchedulerMessage::Event(event)) => {
-                self.handle_event(&event).await;
+                self.handle_event(&event, message).await;
             }
             Ok(SchedulerMessage::Award(award)) => {
                 self.handle_award(&award, message).await;
@@ -396,6 +405,7 @@ impl Scheduler {
                         manifest_json_opt.or_else(|| get_local_manifest(&manifest_id))
                     {
                         if let Err(e) = outbound_tx.send(SchedulerCommand::DeployWorkload {
+                            tender_id: tender_id_clone.clone(),
                             manifest_id,
                             manifest_json,
                             replicas: 1,
@@ -420,12 +430,28 @@ impl Scheduler {
 
     fn mark_tender_seen(&self, tender_id: &str, nonce: u64) -> bool {
         let mut seen = self.seen_tenders.lock().unwrap();
-        seen.insert((tender_id.to_string(), nonce))
+        record_replay(&mut seen, (tender_id.to_string(), nonce))
     }
 
     fn mark_bid_seen(&self, bid: &Bid) -> bool {
         let mut seen = self.seen_bids.lock().unwrap();
-        seen.insert((bid.tender_id.clone(), bid.node_id.clone(), bid.nonce))
+        record_replay(
+            &mut seen,
+            (bid.tender_id.clone(), bid.node_id.clone(), bid.nonce),
+        )
+    }
+
+    fn mark_award_seen(&self, tender_id: &str, nonce: u64) -> bool {
+        let mut seen = self.seen_awards.lock().unwrap();
+        record_replay(&mut seen, (tender_id.to_string(), nonce))
+    }
+
+    fn mark_event_seen(&self, event: &SchedulerEvent) -> bool {
+        let mut seen = self.seen_events.lock().unwrap();
+        record_replay(
+            &mut seen,
+            (event.tender_id.clone(), event.node_id.clone(), event.nonce),
+        )
     }
 
     /// Process a Bid message: Update highest bid
@@ -525,16 +551,63 @@ impl Scheduler {
     }
 
     /// Process Scheduler Events (e.g. Cancelled, Preempted)
-    async fn handle_event(&self, event: &SchedulerEvent) {
+    async fn handle_event(&self, event: &SchedulerEvent, message: &gossipsub::Message) {
         let tender_id = event.tender_id.clone();
         info!(
             "Received Scheduler Event for tender {}: {:?}",
             tender_id, event.event_type
         );
 
-        if event.node_id == self.local_node_id {
-            use crate::messages::types::EventType;
+        if !is_timestamp_fresh(event.timestamp) {
+            error!(
+                "Discarding scheduler event for tender {}: timestamp outside skew",
+                tender_id
+            );
+            eprintln!("event:error tender_id={} reason=stale_timestamp", tender_id);
+            return;
+        }
 
+        let public_key = match message
+            .source
+            .as_ref()
+            .and_then(|peer_id| peer_id_to_public_key(peer_id))
+        {
+            Some(key) => key,
+            None => {
+                error!(
+                    "Discarding scheduler event for tender {}: unable to derive public key",
+                    tender_id
+                );
+                eprintln!("event:error tender_id={} reason=no_public_key", tender_id);
+                return;
+            }
+        };
+
+        if !signatures::verify_sign_scheduler_event(event, &public_key) {
+            error!(
+                "Discarding scheduler event for tender {}: invalid signature",
+                tender_id
+            );
+            eprintln!(
+                "event:error tender_id={} reason=invalid_signature",
+                tender_id
+            );
+            return;
+        }
+
+        if !self.mark_event_seen(event) {
+            info!(
+                "Ignoring replayed scheduler event for tender {} from {}",
+                tender_id, event.node_id
+            );
+            eprintln!(
+                "event:replay tender_id={} node_id={} nonce={}",
+                tender_id, event.node_id, event.nonce
+            );
+            return;
+        }
+
+        if event.node_id == self.local_node_id {
             if matches!(
                 event.event_type,
                 EventType::Cancelled | EventType::Preempted | EventType::Failed
@@ -592,6 +665,18 @@ impl Scheduler {
             return;
         }
 
+        if !self.mark_award_seen(&award.tender_id, award.nonce) {
+            info!(
+                "Ignoring replayed award for tender {} from {:?}",
+                award.tender_id, message.source
+            );
+            eprintln!(
+                "award:replay tender_id={} nonce={}",
+                award.tender_id, award.nonce
+            );
+            return;
+        }
+
         if award.winners.contains(&self.local_node_id) {
             info!(
                 "Local node awarded tender {}; awaiting manifest transfer",
@@ -605,6 +690,39 @@ impl Scheduler {
             println!(
                 "award:received tender_id={} outcome=observer winners={:?}",
                 award.tender_id, award.winners
+            );
+        }
+    }
+
+    pub fn publish_event(&self, tender_id: &str, event_type: EventType, reason: &str) {
+        let mut event = SchedulerEvent {
+            tender_id: tender_id.to_string(),
+            node_id: self.local_node_id.clone(),
+            event_type,
+            reason: reason.to_string(),
+            timestamp: now_ms(),
+            nonce: rand::thread_rng().next_u64(),
+            signature: Vec::new(),
+        };
+
+        let payload = match signatures::sign_scheduler_event(&mut event, &self.keypair) {
+            Ok(_) => machine::encode_scheduler_message(SchedulerMessage::Event(event)),
+            Err(e) => {
+                error!(
+                    "Failed to sign scheduler event for tender {}: {}",
+                    tender_id, e
+                );
+                return;
+            }
+        };
+
+        if let Err(e) = self.outbound_tx.send(SchedulerCommand::Publish {
+            topic: BEEMESH_FABRIC.to_string(),
+            payload,
+        }) {
+            error!(
+                "Failed to queue scheduler event publication for tender {}: {}",
+                tender_id, e
             );
         }
     }
@@ -659,6 +777,21 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
+}
+
+fn record_replay<K: Eq + Hash + Clone>(map: &mut HashMap<K, u64>, key: K) -> bool {
+    let now = now_ms();
+
+    map.retain(|_, ts| now.saturating_sub(*ts) <= REPLAY_WINDOW_MS);
+
+    if let Some(ts) = map.get(&key) {
+        if now.saturating_sub(*ts) <= REPLAY_WINDOW_MS {
+            return false;
+        }
+    }
+
+    map.insert(key, now);
+    true
 }
 
 fn is_timestamp_fresh(timestamp_ms: u64) -> bool {
