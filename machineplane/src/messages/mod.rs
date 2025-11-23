@@ -219,9 +219,6 @@ pub mod machine {
     pub fn build_tender(
         id: &str,
         manifest_digest: &str,
-        workload_type: &str,
-        duplicate_tolerant: bool,
-        placement_token: &str,
         qos_preemptible: bool,
         timestamp: u64,
         nonce: u64,
@@ -229,9 +226,6 @@ pub mod machine {
         serialize(&Tender {
             id: id.to_string(),
             manifest_digest: manifest_digest.to_string(),
-            workload_type: workload_type.to_string(),
-            duplicate_tolerant,
-            placement_token: placement_token.to_string(),
             qos_preemptible,
             timestamp,
             nonce,

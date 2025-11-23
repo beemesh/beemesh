@@ -231,7 +231,7 @@ async fn schedule_deployment(
 ) -> Result<Vec<String>, StatusCode> {
     let manifest_str =
         serde_json::to_string(manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    publish_tender(state, manifest_id, &manifest_str, DEPLOYMENT_KIND).await?;
+    publish_tender(state, manifest_id, &manifest_str).await?;
 
     Ok(Vec::new())
 }
@@ -240,7 +240,6 @@ async fn publish_tender(
     state: &RestState,
     manifest_id: &str,
     manifest_str: &str,
-    workload_type: &str,
 ) -> Result<(), StatusCode> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -263,9 +262,6 @@ async fn publish_tender(
     let mut tender = crate::messages::types::Tender {
         id: manifest_id.to_string(),
         manifest_digest: manifest_digest.clone(),
-        workload_type: workload_type.to_string(),
-        duplicate_tolerant: false,
-        placement_token: String::new(),
         qos_preemptible: false,
         timestamp,
         nonce: rand::thread_rng().next_u64(),
