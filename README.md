@@ -164,7 +164,7 @@ The **Machineplane** manages infrastructure resources and scheduling, with **no 
 
 Traditional schedulers maintain global fabric state and enforce consensus (Raft, etcd), creating bottlenecks.
 
-Beemesh uses **ephemeral scheduling**: **tenders are never persisted**, and scheduling happens dynamically across the scale-out fabric. The Machineplane provides **at-least-once** scheduling semantics and is **duplicate-tolerant** by design.
+Beemesh uses **ephemeral scheduling**: **tenders are never persisted**, and scheduling happens dynamically across the scale-out fabric through a simple **tender → bid → award** exchange. The Machineplane provides **at-least-once** scheduling semantics with deterministic winner selection.
 
 #### **Step-by-Step Flow**
 
@@ -204,14 +204,12 @@ Beemesh uses **ephemeral scheduling**: **tenders are never persisted**, and sche
 | **High throughput**            | Scales naturally with node count.                                                                       |
 | **Thundering herd mitigation** | Only nodes that match placement and resource criteria bid, so reply volume stays bounded even at scale. |
 
-**Deterministic winners, duplicate-tolerant Workplane**
+**Deterministic tender outcomes**
 
-The Machineplane deterministically selects the winning nodes for each Tender so that every observer derives the same winner set. In partitions or races, an awarded manifest might still be deployed more than once; the Workplane remains **duplicate-tolerant** and gates correctness:
+The Machineplane deterministically selects the winning nodes for each Tender so that every observer derives the same winner set, and awards finalize placement:
 
 * Both stateless and stateful workloads are **self-contained**.
-* The **replica count is always interpreted as “at least”** at the Machineplane.
-* The Workplane/workload logic (leader election, idempotency, quorum writes) is responsible for enforcing correct behavior.
-* It therefore does not matter if one or a few extra pods are scheduled transiently.
+* The Workplane/workload logic (leader election, idempotency, quorum writes) is responsible for enforcing correct behavior based on the awarded placements.
 
 ---
 

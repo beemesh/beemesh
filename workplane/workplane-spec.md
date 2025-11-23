@@ -4,7 +4,7 @@
 >
 > **Profile:** Implementation-agnostic. A reference implementation MAY use `libp2p`-style DHTs and secure streams.
 >
-> **Semantics:** The Workplane is **Consistency/Partition-Tolerant (C/P)**: it scopes consistency to each workload’s own trust domain (for example, a database quorum). The Machineplane is A/P and **duplicate-tolerant**; the Workplane **MUST** enforce correctness in the presence of duplicate replicas.
+> **Semantics:** The Workplane is **Consistency/Partition-Tolerant (C/P)**: it scopes consistency to each workload’s own trust domain (for example, a database quorum). The Machineplane is A/P and schedules via a **tender → bid → award** process; the Workplane **MUST** enforce correctness for the replicas that are awarded.
 
 -----
 
@@ -20,10 +20,10 @@ The Workplane is a **per-workload control and data plane** that runs inside (or 
 
 The Workplane **MUST** assume the Machineplane can:
 
-  * Start **more than one replica** of a workload (duplicate-tolerant scheduling).
+  * Start and restart replicas according to **tender → bid → award** outcomes.
   * Lose or reassign machines without warning.
 
-The Workplane **MUST** therefore keep workloads **self-contained** and **safe under duplication**.
+The Workplane **MUST** therefore keep workloads **self-contained** and resilient to rescheduling.
 
 ### **1.1 Non-Goals**
 
@@ -198,21 +198,13 @@ For stateful workloads (`stateful=true` in manifest):
 
 * A replica that cannot contact a majority of peers (minority partition) **MUST NOT** accept writes, even if it previously believed itself to be leader.
 
-### **6.3 Duplicate Replicas and “At-Least” Semantics**
+### **6.3 Replica Targets and Awards**
 
-Because the Machineplane is duplicate-tolerant:
+* Workplane Agents **MUST** interpret `desired_replicas_at_least` as the target minimum replica count and react when observed replicas drop below that floor.
 
-* Workplane Agents **MUST** assume that **more than one replica** of the same workload may be running.
+* Agents **SHOULD** request additional placements (for example, by triggering a Machineplane tender) when below target and **SHOULD** drain or idle replicas only when policy allows and the target is still satisfied.
 
-* Desired replica counts **MUST** be interpreted as **“at least N”**:
-
-  * The Workplane **MUST** attempt to keep **at least** `desired_replicas_at_least` healthy replicas.
-  * Having more than the desired count **MAY** happen transiently and **MUST NOT** violate correctness for stateful workloads (leader/write gating still applies).
-
-* Workplane Agents **SHOULD** implement policies to:
-
-  * Prefer draining or idling surplus replicas when above target.
-  * Prefer keeping replicas that are healthiest and most up-to-date.
+* Leader/write gating rules in **6.2** continue to apply for stateful workloads irrespective of how replicas were awarded.
 
 ---
 
@@ -263,7 +255,7 @@ The Workplane Agent is responsible for **self-healing within a workload’s trus
 | Failure Scenario                        | Required Workplane Behavior                                                                                                                                                                                        |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Replica crash**                       | Local Agent **MUST** mark the replica unhealthy and/or remove its `ServiceRecord` from WDHT. It **MAY** attempt restart based on manifest policies.                                                                |
-| **Network partition (within workload)** | Agents on both sides **MUST** assume duplicates may exist. Statefulness rules apply: minority-side replicas **MUST NOT** accept writes.                                                                            |
+| **Network partition (within workload)** | Agents on both sides **MUST** enforce statefulness rules: minority-side replicas **MUST NOT** accept writes, and leaders **MUST** revalidate quorum before serving writes.                                    |
 | **Stale leader record in WDHT**         | Clients **MUST** tolerate write failures and **SHOULD** retry, resolving WDHT again. Agents **MUST** refresh leader/follower roles regularly; expired records **MUST** be ignored.                                 |
 | **Surplus replicas**                    | When the number of healthy replicas exceeds `desired_replicas_at_least`, Agents **SHOULD** prefer draining or idling surplus replicas where policies dictate, but **MUST** maintain consistency gating for writes. |
 | **Manifest mismatch / invalid config**  | Agents **MUST** fail fast and log clear errors when manifest data is invalid or incompatible; they **MUST NOT** silently relax security or consistency constraints.                                                |
