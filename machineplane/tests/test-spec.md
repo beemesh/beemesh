@@ -12,15 +12,15 @@ This document describes the tests under `machineplane/tests` that validate the M
   - Marked `#[ignore]` because it requires multiple local ports (3000/3100/3200/3300/3400 REST; 4001–4005 QUIC) and a working libp2p environment.
 - Apply workflow tests (exercise REST, libp2p mesh, and optional Podman runtime):
   - `cargo test -p machineplane integration_test_apply`
-  - These tests auto-skip when Podman is unavailable; set `PODMAN_CMD`/`PODMAN_HOST` to point at a reachable Podman daemon.
+- These tests auto-skip when Podman is unavailable; set `PODMAN_CMD`/`CONTAINER_HOST` to point at a reachable Podman daemon.
 
 ## Test suites as Gherkin scenarios
 
 ### CLI environment parsing (`tests/cli_env_test.rs`)
-Scenario: CLI MUST map `PODMAN_HOST` to `podman_socket` (tests/cli_env_test.rs)
-  - Given a temporary environment where `PODMAN_HOST` is set
+Scenario: CLI MUST map `CONTAINER_HOST` to `podman_socket` (tests/cli_env_test.rs)
+  - Given a temporary environment where `CONTAINER_HOST` is set
   - When the CLI arguments are constructed
-  - Then the parsed configuration MUST include `podman_socket` populated from `PODMAN_HOST`
+  - Then the parsed configuration MUST include `podman_socket` populated from `CONTAINER_HOST`
   - And the temporary environment MUST be cleaned up after the test
 
 ### Manifest parsing and IDs (`tests/error_handling_test.rs`)
@@ -76,7 +76,7 @@ Scenario: Single replica apply MUST land on exactly one node (tests/integration_
   - And the deployed manifest MUST match the submitted content
 
 Scenario: Podman-backed apply MUST provision and clean up containers (tests/integration_test_apply.rs)
-  - Given Podman is available through `PODMAN_CMD` or `PODMAN_HOST`
+  - Given Podman is available through `PODMAN_CMD` or `CONTAINER_HOST`
   - And the fabric is healthy and mesh-ready
   - When `test_apply_with_real_podman` applies the manifest
   - Then Podman MUST create containers named `beemesh-{tender_id}-pod` (or equivalent)
@@ -90,7 +90,7 @@ Scenario: Replica apply SHOULD distribute across nodes (tests/integration_test_a
   - And the replicas SHOULD be distributed across nodes (allowing partial spread in constrained environments)
 
 Environment controls
-- `PODMAN_CMD` / `PODMAN_HOST` MAY be set to select a Podman binary/socket.
+- `PODMAN_CMD` / `CONTAINER_HOST` MAY be set to select a Podman binary/socket.
 - Timeouts MAY be overridden: `BEEMESH_APPLY_MESH_TIMEOUT_SECS`, `BEEMESH_APPLY_DELIVERY_TIMEOUT_SECS`, `BEEMESH_APPLY_REPLICA_TIMEOUT_SECS`, `BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS`, `BEEMESH_PODMAN_MESH_TIMEOUT_SECS`, `BEEMESH_PODMAN_DELIVERY_TIMEOUT_SECS`, `BEEMESH_PODMAN_VERIFY_TIMEOUT_SECS`, `BEEMESH_PODMAN_TEARDOWN_TIMEOUT_SECS`.
 
 ## Helper modules and fixtures

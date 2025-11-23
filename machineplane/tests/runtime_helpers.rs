@@ -17,8 +17,8 @@ pub fn make_test_daemon(
         rest_api_port,
         bootstrap_peer: bootstrap_peers,
         libp2p_quic_port,
-        // Prefer explicit PODMAN_HOST if provided, otherwise let machineplane detect defaults.
-        podman_socket: std::env::var("PODMAN_HOST")
+        // Prefer explicit CONTAINER_HOST if provided, otherwise let machineplane detect defaults.
+        podman_socket: std::env::var("CONTAINER_HOST")
             .ok()
             .filter(|value| !value.trim().is_empty()),
         signing_ephemeral: true,

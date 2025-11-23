@@ -189,12 +189,10 @@ impl PodmanEngine {
             return Some(socket);
         }
 
-        for key in ["PODMAN_HOST", "CONTAINER_HOST"] {
-            if let Ok(value) = std::env::var(key) {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    return Some(Self::normalize_socket(trimmed));
-                }
+        if let Ok(value) = std::env::var("CONTAINER_HOST") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(Self::normalize_socket(trimmed));
             }
         }
 
@@ -267,7 +265,6 @@ impl PodmanEngine {
             .arg(socket)
             .args(args)
             .env("CONTAINER_HOST", socket)
-            .env("PODMAN_HOST", socket)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1223,7 +1220,7 @@ spec:
     async fn detects_podman_socket_from_env() {
         PodmanEngine::configure_runtime(None, false);
 
-        let _guard = EnvGuard::set("PODMAN_HOST", "/tmp/env-podman.sock");
+        let _guard = EnvGuard::set("CONTAINER_HOST", "/tmp/env-podman.sock");
 
         let engine = PodmanEngine::new();
         assert_eq!(
@@ -1239,7 +1236,7 @@ spec:
     async fn detects_podman_socket_from_xdg_runtime_dir() {
         PodmanEngine::configure_runtime(None, false);
 
-        let _podman_env_guard = EnvGuard::set("PODMAN_HOST", "");
+        let _podman_env_guard = EnvGuard::set("CONTAINER_HOST", "");
         let _container_env_guard = EnvGuard::set("CONTAINER_HOST", "");
 
         let unique_dir =

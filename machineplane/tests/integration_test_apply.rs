@@ -31,17 +31,16 @@ use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes};
 use tokio::task::JoinHandle;
 
-/// Construct a Podman command that respects the PODMAN_HOST (and compatible) environment
+/// Construct a Podman command that respects the CONTAINER_HOST environment
 /// variables so the tests work with both local Podman daemons and remote Podman sockets.
 fn podman_command(args: &[&str]) -> Command {
     let mut cmd =
         Command::new(std::env::var("PODMAN_CMD").unwrap_or_else(|_| "podman".to_string()));
     cmd.args(args);
 
-    if let Ok(host) = std::env::var("PODMAN_HOST") {
+    if let Ok(host) = std::env::var("CONTAINER_HOST") {
         if !host.trim().is_empty() {
-            cmd.env("CONTAINER_HOST", &host);
-            cmd.env("PODMAN_HOST", host);
+            cmd.env("CONTAINER_HOST", host);
         }
     }
 
