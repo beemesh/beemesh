@@ -295,15 +295,15 @@ impl Scheduler {
     async fn handle_bid(&self, message: &gossipsub::Message) {
         match machine::decode_bid(&message.data) {
             Ok(bid) => {
-                let public_key: PublicKey = match message
+                let public_key = match message
                     .source
                     .as_ref()
-                    .and_then(peer_id_to_public_key)
+                    .and_then(|peer_id| peer_id_to_public_key(peer_id))
                 {
                     Some(key) => key,
                     None => {
                         error!(
-                            "Discarding bid for tender {}: missing gossipsub public key",
+                            "Discarding bid for tender {}: unable to derive public key from source",
                             bid.tender_id
                         );
                         return;
