@@ -24,8 +24,8 @@ pub struct Cli {
     #[arg(long)]
     pub node_name: Option<String>,
 
-    /// Override the Podman socket URL used by runtime engines (defaults to PODMAN_HOST env)
-    #[arg(long, env = "PODMAN_HOST")]
+    /// Override the Podman socket URL used by runtime engines (defaults to CONTAINER_HOST env)
+    #[arg(long, env = "CONTAINER_HOST")]
     pub podman_socket: Option<String>,
 
     /// Use ephemeral signing keys instead of writing to disk
@@ -73,27 +73,32 @@ impl Default for Cli {
     }
 }
 
-fn resolve_and_configure_podman_socket(cli_socket: Option<String>) -> anyhow::Result<String> {
+fn resolve_and_configure_podman_socket(
+    cli_socket: Option<String>,
+) -> anyhow::Result<Option<String>> {
     let podman_socket = cli_socket
         .filter(|value| !value.trim().is_empty())
-        .or_else(runtimes::podman::PodmanEngine::detect_podman_socket)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Podman socket is required. Provide --podman-socket or set PODMAN_HOST/CONTAINER_HOST"
-            )
-        })?;
+        .or_else(runtimes::podman::PodmanEngine::detect_podman_socket);
+
+    let Some(podman_socket) = podman_socket else {
+        log::warn!(
+            "Podman socket not detected; runtime-backed apply will be disabled. Provide --podman-socket or set CONTAINER_HOST to enable."
+        );
+        // Explicitly clear any overrides so the Podman runtime stays disabled.
+        runtimes::configure_podman_runtime(None);
+        return Ok(None);
+    };
 
     let normalized = runtimes::podman::PodmanEngine::normalize_socket(&podman_socket);
     // SAFETY: Setting process environment variables at startup is required so all runtime
     // consumers (including child processes) consistently use the configured Podman socket.
     unsafe {
-        std::env::set_var("PODMAN_HOST", &normalized);
         std::env::set_var("CONTAINER_HOST", &normalized);
     }
 
     runtimes::configure_podman_runtime(Some(normalized.clone()));
 
-    Ok(normalized)
+    Ok(Some(normalized))
 }
 
 /// Start the machineplane runtime using the provided CLI configuration.
@@ -105,7 +110,9 @@ pub async fn start_machineplane(
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     let podman_socket = resolve_and_configure_podman_socket(cli.podman_socket.clone())?;
-    log::info!("Using Podman socket: {}", podman_socket);
+    if let Some(socket) = &podman_socket {
+        log::info!("Using Podman socket: {}", socket);
+    }
 
     // Generate an ephemeral libp2p keypair for this run. Machineplane intentionally
     // treats peer identities as transient and does not persist them between restarts.
@@ -199,24 +206,36 @@ mod tests {
     #[test]
     #[serial]
     fn configure_socket_normalizes_and_exports_env() {
-        let original_podman = std::env::var("PODMAN_HOST").ok();
         let original_container = std::env::var("CONTAINER_HOST").ok();
 
-        let normalized =
-            resolve_and_configure_podman_socket(Some("/tmp/test-podman.sock".to_string())).unwrap();
+        let normalized = resolve_and_configure_podman_socket(Some("/tmp/test-podman.sock".to_string()))
+            .unwrap()
+            .unwrap();
 
         assert_eq!(normalized, "unix:///tmp/test-podman.sock");
-        assert_eq!(
-            std::env::var("PODMAN_HOST").unwrap(),
-            "unix:///tmp/test-podman.sock"
-        );
         assert_eq!(
             std::env::var("CONTAINER_HOST").unwrap(),
             "unix:///tmp/test-podman.sock"
         );
 
         crate::runtimes::configure_podman_runtime(None);
-        restore_env_var("PODMAN_HOST", original_podman);
+        restore_env_var("CONTAINER_HOST", original_container);
+    }
+
+    #[test]
+    #[serial]
+    fn podman_socket_absence_is_non_fatal() {
+        let original_container = std::env::var("CONTAINER_HOST").ok();
+
+        // Ensure no environment socket is provided
+        unsafe {
+            std::env::remove_var("CONTAINER_HOST");
+        }
+
+        let detected = resolve_and_configure_podman_socket(None).unwrap();
+        assert!(detected.is_none());
+
+        // Cleanup
         restore_env_var("CONTAINER_HOST", original_container);
     }
 }
