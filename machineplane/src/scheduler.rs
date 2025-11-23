@@ -6,6 +6,7 @@
 use crate::messages::constants::{
     DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
+use crate::messages::types::Bid;
 use crate::messages::{machine, signatures, types::LeaseHint};
 use libp2p::gossipsub;
 use libp2p::identity::Keypair;
@@ -130,15 +131,31 @@ impl Scheduler {
                 }
 
                 // 4. Publish Bid
-                let bid_bytes = machine::build_bid(
-                    &tender_id,
-                    &self.local_node_id,
-                    my_score,
-                    capacity_score,
-                    0.5, // Network locality placeholder
-                    now,
-                    &[], // Signature placeholder
-                );
+                let mut bid = Bid {
+                    tender_id: tender_id.clone(),
+                    node_id: self.local_node_id.clone(),
+                    score: my_score,
+                    resource_fit_score: capacity_score,
+                    network_locality_score: 0.5,
+                    timestamp: now,
+                    signature: Vec::new(),
+                };
+
+                let bid_bytes = match signatures::sign_bid(&mut bid, &self.keypair) {
+                    Ok(_) => machine::build_bid(
+                        &bid.tender_id,
+                        &bid.node_id,
+                        bid.score,
+                        bid.resource_fit_score,
+                        bid.network_locality_score,
+                        bid.timestamp,
+                        &bid.signature,
+                    ),
+                    Err(e) => {
+                        error!("Failed to sign bid for tender {}: {}", tender_id, e);
+                        return;
+                    }
+                };
 
                 if let Err(e) = self.outbound_tx.send(SchedulerCommand::Publish {
                     topic: SCHEDULER_PROPOSALS.to_string(),
@@ -277,6 +294,25 @@ impl Scheduler {
     async fn handle_bid(&self, message: &gossipsub::Message) {
         match machine::decode_bid(&message.data) {
             Ok(bid) => {
+                let public_key = match &message.key {
+                    Some(key) => key,
+                    None => {
+                        error!(
+                            "Discarding bid for tender {}: missing gossipsub public key",
+                            bid.tender_id
+                        );
+                        return;
+                    }
+                };
+
+                if !signatures::verify_sign_bid(&bid, public_key) {
+                    error!(
+                        "Discarding bid for tender {} from {}: invalid signature",
+                        bid.tender_id, bid.node_id
+                    );
+                    return;
+                }
+
                 let tender_id = bid.tender_id.clone();
                 let bidder_id = bid.node_id.clone();
                 let score = bid.score;
