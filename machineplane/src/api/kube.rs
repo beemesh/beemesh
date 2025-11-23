@@ -348,7 +348,7 @@ async fn publish_delete_tender(
     let manifest_str =
         serde_json::to_string(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    publish_tender(state, manifest_id, &manifest_str, "delete").await
+    publish_tender(state, manifest_id, &manifest_str).await
 }
 
 async fn delete_manifest_from_peers(_state: &RestState, manifest_id: &str, peers: &[String]) {
