@@ -93,12 +93,12 @@ async fn test_run_host_application() {
         "Expected at least four peers in the mesh, got {total_peers}"
     );
     assert!(
-        kem_pubkey_result.is_empty() == false,
+        !kem_pubkey_result.is_empty(),
         "Expected kem_pubkey field in response, got: {}",
         kem_pubkey_result
     );
     assert!(
-        signing_pubkey_result.is_empty() == false,
+        !signing_pubkey_result.is_empty(),
         "Expected signing_pubkey field in response, got: {}",
         signing_pubkey_result
     );
