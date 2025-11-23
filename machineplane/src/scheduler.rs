@@ -24,14 +24,13 @@ pub struct Scheduler {
     local_node_id: String,
     /// Node keypair for signing LeaseHints
     keypair: Keypair,
-    /// Active bids we are tracking: TenderID -> BidContext
-    active_bids: Arc<Mutex<HashMap<String, BidContext>>>,
+    /// Tenders this node created and is responsible for selecting winners for
+    owned_tenders: Arc<Mutex<HashMap<String, OwnedTenderContext>>>,
     /// Channel to send messages back to the network loop
     outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
 }
 
 struct BidContext {
-    tender_id: String,
     manifest_id: String,
     bids: Vec<BidEntry>,
 }
@@ -40,6 +39,11 @@ struct BidContext {
 struct BidEntry {
     bidder_id: String,
     score: f64,
+}
+
+struct OwnedTenderContext {
+    bid_context: BidContext,
+    manifest_json: String,
 }
 
 /// Commands emitted by the scheduler for the libp2p network loop to process
@@ -69,7 +73,7 @@ impl Scheduler {
         Self {
             local_node_id,
             keypair,
-            active_bids: Arc::new(Mutex::new(HashMap::new())),
+            owned_tenders: Arc::new(Mutex::new(HashMap::new())),
             outbound_tx,
         }
     }
@@ -101,6 +105,19 @@ impl Scheduler {
                 info!("Received Tender: {}", tender_id);
 
                 let manifest_id = tender.id.clone();
+                let is_owner = message
+                    .source
+                    .as_ref()
+                    .map(|peer_id| peer_id.to_string() == self.local_node_id)
+                    .unwrap_or(false);
+
+                if is_owner {
+                    self.initialize_owned_tender(&tender_id, &manifest_id, &tender.manifest_json);
+                    info!(
+                        "Local node issued tender {}; skipping bid as owner", tender_id
+                    );
+                    return;
+                }
 
                 // 1. Evaluate Fit
                 let capacity_score = 1.0; // Placeholder: assume perfect fit for now
@@ -115,21 +132,6 @@ impl Scheduler {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as u64;
-
-                {
-                    let mut bids = self.active_bids.lock().unwrap();
-                    bids.insert(
-                        tender_id.to_string(),
-                        BidContext {
-                            tender_id: tender_id.to_string(),
-                            manifest_id: manifest_id.clone(),
-                            bids: vec![BidEntry {
-                                bidder_id: self.local_node_id.clone(),
-                                score: my_score,
-                            }],
-                        },
-                    );
-                }
 
                 // 4. Publish Bid
                 let mut bid = Bid {
@@ -168,111 +170,145 @@ impl Scheduler {
                         "Queued Bid for tender {} with score {:.2}",
                         tender_id, my_score
                     );
+
+                    if is_owner {
+                        self.record_owned_bid(
+                            &tender_id,
+                            BidEntry {
+                                bidder_id: self.local_node_id.clone(),
+                                score: my_score,
+                            },
+                        );
+                    }
+                }
+            }
+            Err(e) => error!("Failed to parse Tender message: {}", e),
+        }
+    }
+
+    fn initialize_owned_tender(&self, tender_id: &str, manifest_id: &str, manifest_json: &str) {
+        {
+            let mut owned = self.owned_tenders.lock().unwrap();
+            if owned.contains_key(tender_id) {
+                return;
+            }
+
+            owned.insert(
+                tender_id.to_string(),
+                OwnedTenderContext {
+                    bid_context: BidContext {
+                        manifest_id: manifest_id.to_string(),
+                        bids: Vec::new(),
+                    },
+                    manifest_json: manifest_json.to_string(),
+                },
+            );
+        }
+
+        let owned_tenders = self.owned_tenders.clone();
+        let tender_id_clone = tender_id.to_string();
+        let manifest_json = manifest_json.to_string();
+        let local_id = self.local_node_id.clone();
+        let keypair = self.keypair.clone();
+        let outbound_tx = self.outbound_tx.clone();
+
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
+
+            let (winners, manifest_id_opt, manifest_json_opt) = {
+                let mut tenders = owned_tenders.lock().unwrap();
+                if let Some(ctx) = tenders.remove(&tender_id_clone) {
+                    (
+                        select_winners(&ctx.bid_context),
+                        Some(ctx.bid_context.manifest_id.clone()),
+                        Some(ctx.manifest_json.clone()),
+                    )
+                } else {
+                    (Vec::new(), None, None)
+                }
+            };
+
+            if let Some(manifest_id) = manifest_id_opt {
+                if winners.is_empty() {
+                    info!(
+                        "No qualifying bids for tender {} (manifest {})",
+                        tender_id_clone, manifest_id
+                    );
+                    return;
                 }
 
-                // 5. Spawn Selection Window Waiter
-                let active_bids = self.active_bids.clone();
-                let tender_id_clone = tender_id.to_string();
-                let manifest_json = tender.manifest_json.clone();
-                let local_id = self.local_node_id.clone();
-                let keypair = self.keypair.clone();
-                let outbound_tx = self.outbound_tx.clone();
+                let summary = winners
+                    .iter()
+                    .map(|w| format!("{} ({:.2})", w.bidder_id, w.score))
+                    .collect::<Vec<_>>()
+                    .join(", ");
 
-                // We need a way to trigger deployment, for now just log
-                tokio::spawn(async move {
-                    sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
+                info!(
+                    "Selected winners for tender {} (manifest {}): {}",
+                    tender_id_clone, manifest_id, summary
+                );
 
-                    let (winners, manifest_id_opt) = {
-                        let mut bids = active_bids.lock().unwrap();
-                        if let Some(ctx) = bids.remove(&tender_id_clone) {
-                            let winners = select_winners(&ctx);
-                            if !winners.is_empty() {
-                                let summary = winners
-                                    .iter()
-                                    .map(|w| format!("{} ({:.2})", w.bidder_id, w.score))
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                info!(
-                                    "Selected winners for tender {} (manifest {}): {}",
-                                    ctx.tender_id, ctx.manifest_id, summary
-                                );
-                            } else {
-                                info!(
-                                    "No qualifying bids for tender {} (manifest {})",
-                                    ctx.tender_id, ctx.manifest_id
-                                );
-                            }
-                            (winners, Some(ctx.manifest_id.clone()))
-                        } else {
-                            (Vec::new(), None)
+                if winners.iter().any(|bid| bid.bidder_id == local_id) {
+                    info!(
+                        "Local node won tender {}; proceeding to deployment",
+                        tender_id_clone
+                    );
+
+                    // 1. Publish LeaseHint to DHT
+                    let lease_hint = LeaseHint {
+                        tender_id: tender_id_clone.clone(),
+                        node_id: local_id.clone(),
+                        score: 1.0,
+                        ttl_ms: 30000,
+                        renew_nonce: 0,
+                        timestamp: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                        signature: Vec::new(),
+                    };
+
+                    let lease_hint_bytes = match {
+                        let mut lease_hint = lease_hint.clone();
+                        signatures::sign_lease_hint(&mut lease_hint, &keypair).map(|_| lease_hint)
+                    } {
+                        Ok(signed) => Some(machine::build_lease_hint(
+                            &signed.tender_id,
+                            &signed.node_id,
+                            signed.score,
+                            signed.ttl_ms,
+                            signed.renew_nonce,
+                            signed.timestamp,
+                            &signed.signature,
+                        )),
+                        Err(e) => {
+                            error!(
+                                "Failed to sign LeaseHint for tender {}: {}",
+                                tender_id_clone, e
+                            );
+                            None
                         }
                     };
 
-                    if winners.iter().any(|bid| bid.bidder_id == local_id) {
-                        info!(
-                            "WON BID for tender {}! Proceeding to deployment...",
-                            tender_id_clone
-                        );
-                        info!("Deploying workload for tender {}", tender_id_clone);
-
-                        // 1. Publish LeaseHint to DHT
-                        let lease_hint = LeaseHint {
-                            tender_id: tender_id_clone.clone(),
-                            node_id: local_id.clone(),
-                            score: 1.0,
-                            ttl_ms: 30000,
-                            renew_nonce: 0,
-                            timestamp: SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis() as u64,
-                            signature: Vec::new(),
-                        };
-
-                        let lease_hint_bytes = match {
-                            let mut lease_hint = lease_hint.clone();
-                            signatures::sign_lease_hint(&mut lease_hint, &keypair)
-                                .map(|_| lease_hint)
-                        } {
-                            Ok(signed) => Some(machine::build_lease_hint(
-                                &signed.tender_id,
-                                &signed.node_id,
-                                signed.score,
-                                signed.ttl_ms,
-                                signed.renew_nonce,
-                                signed.timestamp,
-                                &signed.signature,
-                            )),
-                            Err(e) => {
-                                error!(
-                                    "Failed to sign LeaseHint for tender {}: {}",
-                                    tender_id_clone, e
-                                );
-                                None
-                            }
-                        };
-
-                        if let Some(lease_hint_bytes) = lease_hint_bytes {
-                            if let Err(e) = outbound_tx.send(SchedulerCommand::PutDHT {
-                                key: format!("lease:{}", tender_id_clone).into_bytes(),
-                                value: lease_hint_bytes,
-                            }) {
-                                error!(
-                                    "Failed to publish LeaseHint for tender {}: {}",
-                                    tender_id_clone, e
-                                );
-                            } else {
-                                info!("Published LeaseHint for tender {}", tender_id_clone);
-                            }
+                    if let Some(lease_hint_bytes) = lease_hint_bytes {
+                        if let Err(e) = outbound_tx.send(SchedulerCommand::PutDHT {
+                            key: format!("lease:{}", tender_id_clone).into_bytes(),
+                            value: lease_hint_bytes,
+                        }) {
+                            error!(
+                                "Failed to publish LeaseHint for tender {}: {}",
+                                tender_id_clone, e
+                            );
+                        } else {
+                            info!("Published LeaseHint for tender {}", tender_id_clone);
                         }
+                    }
 
-                        // 2. Trigger Workload Deployment
-                        let manifest_id =
-                            manifest_id_opt.unwrap_or_else(|| tender_id_clone.clone());
-
+                    // 2. Trigger Workload Deployment
+                    if let Some(manifest_json) = manifest_json_opt.or_else(|| Some(manifest_json)) {
                         if let Err(e) = outbound_tx.send(SchedulerCommand::DeployWorkload {
                             manifest_id,
-                            manifest_json: manifest_json.clone(),
+                            manifest_json,
                             replicas: 1,
                         }) {
                             error!(
@@ -282,12 +318,21 @@ impl Scheduler {
                         } else {
                             info!("Triggered deployment for tender {}", tender_id_clone);
                         }
-                    } else {
-                        info!("Lost bid for tender {}.", tender_id_clone);
                     }
-                });
+                } else if let Some(winner) = winners.first() {
+                    info!(
+                        "Assigned tender {} to bidder {} with score {:.2}",
+                        tender_id_clone, winner.bidder_id, winner.score
+                    );
+                }
             }
-            Err(e) => error!("Failed to parse Tender message: {}", e),
+        });
+    }
+
+    fn record_owned_bid(&self, tender_id: &str, bid: BidEntry) {
+        let mut owned = self.owned_tenders.lock().unwrap();
+        if let Some(ctx) = owned.get_mut(tender_id) {
+            ctx.bid_context.bids.push(bid);
         }
     }
 
@@ -327,16 +372,21 @@ impl Scheduler {
                     return;
                 }
 
-                let mut bids = self.active_bids.lock().unwrap();
-                if let Some(ctx) = bids.get_mut(&tender_id) {
+                let mut owned = self.owned_tenders.lock().unwrap();
+                if let Some(ctx) = owned.get_mut(&tender_id) {
                     info!(
                         "Recorded bid for tender {}: {:.2} from {}",
                         tender_id, score, bidder_id
                     );
-                    ctx.bids.push(BidEntry {
+                    ctx.bid_context.bids.push(BidEntry {
                         bidder_id: bidder_id.to_string(),
                         score,
                     });
+                } else {
+                    info!(
+                        "Ignoring bid for tender {} because this node is not the owner",
+                        tender_id
+                    );
                 }
             }
             Err(e) => error!("Failed to parse Bid message: {}", e),
@@ -1140,7 +1190,6 @@ mod tests {
     #[test]
     fn selects_top_unique_winner() {
         let context = BidContext {
-            tender_id: "tender-a".to_string(),
             manifest_id: "tender-a".to_string(),
             bids: vec![
                 BidEntry {
@@ -1166,7 +1215,6 @@ mod tests {
     #[test]
     fn selects_single_local_winner_when_highest() {
         let context = BidContext {
-            tender_id: "tender-b".to_string(),
             manifest_id: "tender-b".to_string(),
             bids: vec![
                 BidEntry {
