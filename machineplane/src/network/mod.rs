@@ -174,9 +174,8 @@ pub fn setup_libp2p_node(
             };
             let gossipsub_config = gossipsub::ConfigBuilder::default()
                 .heartbeat_interval(Duration::from_secs(10))
-                // Use permissive validation so locally-published scheduler tenders are always
-                // delivered even when a validator is not registered (e.g. in tests).
-                .validation_mode(gossipsub::ValidationMode::Permissive)
+                // Enforce strict validation to ensure only authenticated messages are accepted.
+                .validation_mode(gossipsub::ValidationMode::Strict)
                 .mesh_n_low(1) // minimum peers in mesh
                 .mesh_n(3) // target mesh size
                 .mesh_n_high(6) // maximum peers in mesh
@@ -211,8 +210,7 @@ pub fn setup_libp2p_node(
             kademlia_config.set_query_timeout(std::time::Duration::from_secs(15)); // Longer timeout for local tests
 
             // Configure placement record settings (via Kademlia providers) for low-touch announcements
-            kademlia_config
-                .set_provider_record_ttl(Some(std::time::Duration::from_secs(600)));
+            kademlia_config.set_provider_record_ttl(Some(std::time::Duration::from_secs(600)));
             kademlia_config.set_provider_publication_interval(None);
 
             let kademlia =
@@ -614,4 +612,3 @@ pub async fn start_libp2p_node(
 
     Ok(())
 }
-

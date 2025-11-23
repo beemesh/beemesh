@@ -1,5 +1,4 @@
 use crate::messages::constants::BEEMESH_FABRIC;
-use crate::network::control;
 use crate::network::ManifestTransferCodec;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{PeerId, gossipsub, kad, request_response};
@@ -94,21 +93,6 @@ pub fn kademlia_event(event: kad::Event, _peer_id: Option<PeerId>) {
                     "DHT: Retrieved record with key: {:?} from query: {:?}",
                     record.key, id
                 );
-            }
-            kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
-                key: _key,
-                providers,
-            })) => {
-                info!("DHT: Found providers for query {:?}: {:?}", id, providers);
-                if let Some(tx) = control::take_pending_providers_query(&id) {
-                    let _ = tx.send(providers.into_iter().collect());
-                }
-            }
-            kad::QueryResult::GetProviders(Err(e)) => {
-                warn!("DHT: Failed to get providers for query {:?}: {:?}", id, e);
-                if let Some(tx) = control::take_pending_providers_query(&id) {
-                    let _ = tx.send(Vec::new());
-                }
             }
             kad::QueryResult::GetRecord(Err(e)) => {
                 warn!("DHT: Failed to get record for query {:?}: {:?}", id, e);
