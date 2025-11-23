@@ -8,6 +8,7 @@ use crate::messages::constants::{
 };
 use crate::messages::types::Bid;
 use crate::messages::{machine, signatures, types::LeaseHint};
+use crate::network::utils::peer_id_to_public_key;
 use libp2p::gossipsub;
 use libp2p::identity::Keypair;
 use log::{error, info};
@@ -294,18 +295,22 @@ impl Scheduler {
     async fn handle_bid(&self, message: &gossipsub::Message) {
         match machine::decode_bid(&message.data) {
             Ok(bid) => {
-                let public_key = match &message.key {
+                let public_key = match message
+                    .source
+                    .as_ref()
+                    .and_then(|peer_id| peer_id_to_public_key(peer_id))
+                {
                     Some(key) => key,
                     None => {
                         error!(
-                            "Discarding bid for tender {}: missing gossipsub public key",
+                            "Discarding bid for tender {}: unable to derive public key from source",
                             bid.tender_id
                         );
                         return;
                     }
                 };
 
-                if !signatures::verify_sign_bid(&bid, public_key) {
+                if !signatures::verify_sign_bid(&bid, &public_key) {
                     error!(
                         "Discarding bid for tender {} from {}: invalid signature",
                         bid.tender_id, bid.node_id
