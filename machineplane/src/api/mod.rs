@@ -468,9 +468,11 @@ async fn debug_decrypted_manifests(
 
 // Debug: return the active announces (provider CIDs) tracked by the control module
 async fn debug_active_announces(State(_state): State<RestState>) -> axum::Json<serde_json::Value> {
-    // access the static ACTIVE_ANNOUNCES in control module
-    let cids = crate::network::control::list_active_announces();
-    axum::Json(serde_json::json!({"ok": true, "cids": cids}))
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "cids": [],
+        "message": "provider announcements are low-touch and expire naturally"
+    }))
 }
 
 /// Debug endpoint to get local peer ID
@@ -768,14 +770,11 @@ async fn handle_local_delete(manifest_id: &str, _force: bool) -> Result<Vec<Stri
 /// This bypasses centralized tender storage and forwards the request directly
 pub async fn apply_direct(
     Path(peer_id): Path<String>,
-    State(state): State<RestState>,
+    State(_state): State<RestState>,
     _headers: HeaderMap,
-    body: Bytes,
+    _body: Bytes,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
     debug!("apply_direct: forwarding ApplyRequest to peer {}", peer_id);
-
-    // Use the request body as-is
-    let apply_request_bytes = body.to_vec();
 
     // Parse the peer string into a PeerId
     let target_peer_id: libp2p::PeerId = match peer_id.parse() {
@@ -791,54 +790,16 @@ pub async fn apply_direct(
         }
     };
 
-    // Forward the ApplyRequest directly to the peer via libp2p
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<String, String>>();
-    if let Err(e) =
-        state
-            .control_tx
-            .send(crate::network::control::Libp2pControl::SendApplyRequest {
-                peer_id: target_peer_id,
-                manifest: apply_request_bytes,
-                reply_tx,
-            })
-    {
-        log::error!("apply_direct: failed to send to libp2p control: {}", e);
-        let error_response = crate::messages::machine::build_apply_response(
-            false,
-            "unknown",
-            "Failed to forward request to libp2p",
-        );
-        return create_response_with_fallback(&error_response).await;
-    }
+    log::warn!(
+        "apply_direct request for peer {} denied: direct apply disabled",
+        target_peer_id
+    );
 
-    // Wait for response with timeout
-    let result = match tokio::time::timeout(Duration::from_secs(30), reply_rx.recv()).await {
-        Ok(Some(Ok(_msg))) => {
-            debug!("apply_direct: success for peer {}", peer_id);
-            crate::messages::machine::build_apply_response(
-                true,
-                "forwarded",
-                "Request forwarded successfully",
-            )
-        }
-        Ok(Some(Err(e))) => {
-            log::warn!("apply_direct: error for peer {}: {}", peer_id, e);
-            crate::messages::machine::build_apply_response(
-                false,
-                "forwarded",
-                &format!("Forward failed: {}", e),
-            )
-        }
-        _ => {
-            log::warn!("apply_direct: timeout for peer {}", peer_id);
-            crate::messages::machine::build_apply_response(
-                false,
-                "forwarded",
-                "Timeout waiting for peer response",
-            )
-        }
-    };
+    let error_response = crate::messages::machine::build_apply_response(
+        false,
+        "forwarded",
+        "Direct apply is disabled; use the tender workflow",
+    );
 
-    // Return response (simplified - no encryption needed for this case)
-    create_response_with_fallback(&result).await
+    create_response_with_fallback(&error_response).await
 }

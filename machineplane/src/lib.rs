@@ -1,7 +1,7 @@
 // logging macros are used in submodules; keep root lean
 use clap::Parser;
 use env_logger::Env;
-use std::io::Write;
+
 
 pub mod api;
 pub mod messages;
@@ -83,6 +83,31 @@ impl Default for Cli {
     }
 }
 
+fn load_machine_keypair(cli: &Cli) -> anyhow::Result<libp2p::identity::Keypair> {
+    if cli.ephemeral {
+        log::info!("Using ephemeral keypair (not persisted to disk)");
+        return Ok(libp2p::identity::Keypair::generate_ed25519());
+    }
+
+    let keypair_path = std::path::Path::new(&cli.key_dir).join("libp2p_keypair.bin");
+
+    let bytes = std::fs::read(&keypair_path).map_err(|e| {
+        anyhow::anyhow!(
+            "machine peer identity missing or unreadable at {}: {}",
+            keypair_path.display(),
+            e
+        )
+    })?;
+
+    libp2p::identity::Keypair::from_protobuf_encoding(&bytes).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to decode machine peer identity at {}: {}",
+            keypair_path.display(),
+            e
+        )
+    })
+}
+
 fn resolve_and_configure_podman_socket(cli_socket: Option<String>) -> anyhow::Result<String> {
     let podman_socket = cli_socket
         .filter(|value| !value.trim().is_empty())
@@ -118,65 +143,7 @@ pub async fn start_machineplane(
     log::info!("Using Podman socket: {}", podman_socket);
 
     // Load or generate libp2p keypair
-    let keypair = if cli.ephemeral {
-        log::info!("Using ephemeral keypair (not persisted to disk)");
-        libp2p::identity::Keypair::generate_ed25519()
-    } else {
-        // Store keypair in configured key_dir (default /etc/beemesh/machineplane)
-        use std::fs::OpenOptions;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-        let mut key_path = std::path::PathBuf::from(&cli.key_dir);
-
-        // Helper to create directory with secure permissions
-        let ensure_dir = |p: &std::path::Path| -> std::io::Result<()> {
-            if !p.exists() {
-                std::fs::create_dir_all(p)?;
-            }
-            let perms = std::fs::Permissions::from_mode(0o700);
-            std::fs::set_permissions(p, perms)?;
-            Ok(())
-        };
-
-        // Try to create key directory, fall back to $HOME/.beemesh on failure
-        if let Err(e) = ensure_dir(&key_path) {
-            log::warn!(
-                "could not create/set permissions for {}: {}. Falling back to $HOME/.beemesh",
-                key_path.display(),
-                e
-            );
-            if let Some(home) = dirs::home_dir() {
-                key_path = home.join(".beemesh");
-                ensure_dir(&key_path)?;
-            } else {
-                return Err(anyhow::anyhow!("failed to determine home dir: {}", e));
-            }
-        }
-
-        let keypair_path = key_path.join("libp2p_keypair.bin");
-
-        // Load existing keypair or generate new one
-        if keypair_path.exists() {
-            log::info!("Loading keypair from {}", keypair_path.display());
-            let bytes = std::fs::read(&keypair_path)?;
-            libp2p::identity::Keypair::from_protobuf_encoding(&bytes)?
-        } else {
-            log::info!(
-                "Generating new keypair and saving to {}",
-                keypair_path.display()
-            );
-            let keypair = libp2p::identity::Keypair::generate_ed25519();
-            let bytes = keypair.to_protobuf_encoding()?;
-
-            // Write with secure permissions
-            let mut opts = OpenOptions::new();
-            opts.write(true).create(true).truncate(true).mode(0o600);
-            let mut file = opts.open(&keypair_path)?;
-            file.write_all(&bytes)?;
-
-            keypair
-        }
-    };
+    let keypair = load_machine_keypair(&cli)?;
 
     // Store keypair bytes for network module
     let keypair_bytes = keypair.to_protobuf_encoding()?;
@@ -249,8 +216,11 @@ pub async fn start_machineplane(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use super::resolve_and_configure_podman_socket;
     use serial_test::serial;
+    use std::fs;
+    use uuid::Uuid;
 
     fn restore_env_var(key: &str, value: Option<String>) {
         // SAFETY: Tests reset the environment for isolation within a single-threaded context.
@@ -285,5 +255,46 @@ mod tests {
         crate::runtimes::configure_podman_runtime(None);
         restore_env_var("PODMAN_HOST", original_podman);
         restore_env_var("CONTAINER_HOST", original_container);
+    }
+
+    #[test]
+    fn load_machine_keypair_fails_without_persisted_identity() {
+        let tmp_dir = std::env::temp_dir().join(format!("beemesh-missing-{}", Uuid::new_v4()));
+
+        let cli = Cli {
+            ephemeral: false,
+            key_dir: tmp_dir.to_string_lossy().to_string(),
+            ..Cli::default()
+        };
+
+        let err = load_machine_keypair(&cli).unwrap_err();
+        assert!(err.to_string().contains("machine peer identity missing"));
+    }
+
+    #[test]
+    fn load_machine_keypair_reuses_existing_identity() {
+        let tmp_dir = std::env::temp_dir().join(format!("beemesh-persisted-{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let original = libp2p::identity::Keypair::generate_ed25519();
+        let bytes = original.to_protobuf_encoding().unwrap();
+        let key_path = tmp_dir.join("libp2p_keypair.bin");
+        fs::write(&key_path, bytes).unwrap();
+
+        let cli = Cli {
+            ephemeral: false,
+            key_dir: tmp_dir.to_string_lossy().to_string(),
+            ..Cli::default()
+        };
+
+        let loaded = load_machine_keypair(&cli).expect("expected persisted keypair to load");
+
+        assert_eq!(
+            original.public().to_peer_id(),
+            loaded.public().to_peer_id()
+        );
+
+        let _ = fs::remove_file(key_path);
+        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

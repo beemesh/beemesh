@@ -826,7 +826,6 @@ mod runtime_integration {
     use base64::Engine;
     use libp2p::Swarm;
     use libp2p::kad;
-    use libp2p::request_response;
     use log::{debug, error, info, warn};
     use once_cell::sync::Lazy;
     use std::collections::HashMap;
@@ -891,124 +890,6 @@ mod runtime_integration {
             Some(registry_guard)
         } else {
             None
-        }
-    }
-
-    /// Enhanced apply message handler that uses the workload manager
-    pub async fn handle_apply_message_with_podman_manager(
-        message: request_response::Message<Vec<u8>, Vec<u8>>,
-        peer: libp2p::PeerId,
-        swarm: &mut Swarm<MyBehaviour>,
-        _local_peer: libp2p::PeerId,
-    ) {
-        match message {
-            request_response::Message::Request {
-                request, channel, ..
-            } => {
-                info!("Received apply request from peer={}", peer);
-
-                // Parse the apply request
-                match machine::decode_apply_request(&request) {
-                    Ok(apply_req) => {
-                        info!(
-                            "Apply request - operation_id={:?} replicas={}",
-                            apply_req.operation_id, apply_req.replicas
-                        );
-
-                        let owner_pubkey = Vec::new();
-
-                        // Extract and validate manifest
-                        if !apply_req.manifest_json.is_empty() {
-                            let manifest_id = apply_req.manifest_id.as_str();
-                            if manifest_id.is_empty() {
-                                warn!(
-                                    "Apply request missing manifest_id; rejecting from peer={}",
-                                    peer
-                                );
-                                let error_response = machine::build_apply_response(
-                                    false,
-                                    "unknown",
-                                    "missing manifest id",
-                                );
-                                let _ = swarm
-                                    .behaviour_mut()
-                                    .apply_rr
-                                    .send_response(channel, error_response);
-                                return;
-                            }
-
-                            match process_manifest_deployment(
-                                swarm,
-                                &apply_req,
-                                &apply_req.manifest_json,
-                                &owner_pubkey,
-                            )
-                            .await
-                            {
-                                Ok(workload_id) => {
-                                    info!(
-                                        "Successfully deployed workload {} for apply request",
-                                        workload_id
-                                    );
-
-                                    // Send success response
-                                    let success_response = machine::build_apply_response(
-                                        true,
-                                        &workload_id,
-                                        "workload deployed successfully",
-                                    );
-                                    let _ = swarm
-                                        .behaviour_mut()
-                                        .apply_rr
-                                        .send_response(channel, success_response);
-                                }
-                                Err(e) => {
-                                    error!("Failed to deploy workload for apply request: {}", e);
-
-                                    // Send error response
-                                    let error_message = format!("deployment failed: {}", e);
-                                    let error_response = machine::build_apply_response(
-                                        false,
-                                        "unknown",
-                                        &error_message,
-                                    );
-                                    let _ = swarm
-                                        .behaviour_mut()
-                                        .apply_rr
-                                        .send_response(channel, error_response);
-                                }
-                            }
-                        } else {
-                            warn!("Apply request missing manifest JSON");
-                            let error_response = machine::build_apply_response(
-                                false,
-                                "unknown",
-                                "missing manifest JSON",
-                            );
-                            let _ = swarm
-                                .behaviour_mut()
-                                .apply_rr
-                                .send_response(channel, error_response);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to parse apply request: {}", e);
-                        let error_response = machine::build_apply_response(
-                            false,
-                            "unknown",
-                            "invalid apply request format",
-                        );
-                        let _ = swarm
-                            .behaviour_mut()
-                            .apply_rr
-                            .send_response(channel, error_response);
-                    }
-                }
-            }
-            request_response::Message::Response { .. } => {
-                debug!("Received apply response from peer={}", peer);
-                // Handle response if needed
-            }
         }
     }
 

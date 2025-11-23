@@ -3,16 +3,6 @@
 /// Ident topic used for gossipsub in the beemesh fabric.
 pub const BEEMESH_FABRIC: &str = "beemesh-fabric";
 
-// === MESSAGE PREFIXES ===
-
-/// Prefix used for handshake messages exchanged on the gossip topic.
-pub const HANDSHAKE_PREFIX: &str = "beemesh-handshake";
-
-// === TIMEOUTS AND TIMING ===
-
-/// Timeout, in seconds, to wait for request-response RPCs (ApplyRequest/ApplyResponse)
-pub const REQUEST_RESPONSE_TIMEOUT_SECS: u64 = 3;
-
 /// Default selection window in milliseconds for scheduler operations
 pub const DEFAULT_SELECTION_WINDOW_MS: u64 = 250;
 

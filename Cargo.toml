@@ -13,10 +13,7 @@ libp2p = { version = "0.56", features = [
     "quic",
     "request-response",
     "kad",
-    "dns",
-    "relay",
-    "autonat",
-    "identify"
+    "dns"
 ] }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
