@@ -6,7 +6,7 @@
 
 * No global control plane, no etcd / API server.
 * Machineplane uses **ephemeral tenders + bids over pub/sub** instead of a single scheduler.
-* Scheduling is **stateless, duplicate‑tolerant, at‑least‑once**.
+* Scheduling is **stateless and at‑least‑once** through a simple **tender → bid → award** exchange.
 
 **Research grounding**
 
@@ -175,7 +175,7 @@
 **What Beemesh does**
 
 * Workplane continuously reconciles **desired replica counts** and respawns workloads.
-* Replica counts are treated as “at least”; duplicates during races/partitions are acceptable.
+* Replica counts are treated as “at least” targets with autonomous remediation when they drop below the floor.
 * Machineplane is designed for **rebuild > repair**, with minimal human intervention.
 
 **Research grounding**
@@ -216,7 +216,7 @@ Putting it together:
 * What appears **novel** (and thus research‑worthy) is the *combination*:
 
   1. **Two fully separate planes** (Machineplane A/P, Workplane C/P) with their own DHTs and trust domains.
-  2. A **globally duplicate‑tolerant scheduling semantics**: the fabric is intentionally at‑least‑once, and correctness is guaranteed only by workload‑level protocols.
+  2. A **stateless tender → bid → award scheduling semantics**: the fabric is intentionally at‑least‑once, and correctness is guaranteed by workload‑level protocols and the awarded placements.
   3. Treating **all infrastructure as disposable**, including the “control” substrate itself, and pushing durability entirely to workloads and external bootstrap mechanisms.
   4. Making **mutually authenticated, encrypted streams** the default at *both* infra and workload layers rather than adding a mesh as a sidecar.
 
