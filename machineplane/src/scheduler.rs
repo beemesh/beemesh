@@ -8,8 +8,9 @@ use crate::messages::constants::{
 };
 use crate::messages::types::Bid;
 use crate::messages::{machine, signatures, types::LeaseHint};
+use crate::network::utils::peer_id_to_public_key;
 use libp2p::gossipsub;
-use libp2p::identity::Keypair;
+use libp2p::identity::{Keypair, PublicKey};
 use log::{error, info};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -294,7 +295,11 @@ impl Scheduler {
     async fn handle_bid(&self, message: &gossipsub::Message) {
         match machine::decode_bid(&message.data) {
             Ok(bid) => {
-                let public_key = match &message.key {
+                let public_key: PublicKey = match message
+                    .source
+                    .as_ref()
+                    .and_then(peer_id_to_public_key)
+                {
                     Some(key) => key,
                     None => {
                         error!(
@@ -305,7 +310,7 @@ impl Scheduler {
                     }
                 };
 
-                if !signatures::verify_sign_bid(&bid, public_key) {
+                if !signatures::verify_sign_bid(&bid, &public_key) {
                     error!(
                         "Discarding bid for tender {} from {}: invalid signature",
                         bid.tender_id, bid.node_id
