@@ -94,6 +94,10 @@ pub mod machine {
         deserialize(buf)
     }
 
+    pub fn decode_manifest_transfer(buf: &[u8]) -> bincode::Result<ManifestTransfer> {
+        deserialize(buf)
+    }
+
     // ---------------------------- Builders ---------------------------------
     pub fn build_health(ok: bool, status: &str) -> Vec<u8> {
         serialize(&Health {
@@ -339,5 +343,9 @@ pub mod machine {
         hasher.update(manifest_data);
         let hash = hasher.finalize();
         base64::engine::general_purpose::STANDARD_NO_PAD.encode(hash)
+    }
+
+    pub fn build_manifest_transfer(transfer: &ManifestTransfer) -> Vec<u8> {
+        serialize(transfer)
     }
 }

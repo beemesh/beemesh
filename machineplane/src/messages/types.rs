@@ -141,6 +141,18 @@ pub enum SchedulerMessage {
     Award(Award),
 }
 
+/// Manifest payload delivered to award winners over secure streams
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ManifestTransfer {
+    pub tender_id: String,
+    pub manifest_id: String,
+    pub manifest_digest: String,
+    pub manifest_json: String,
+    pub owner_peer_id: String,
+    pub owner_pubkey: Vec<u8>,
+    pub replicas: u32,
+}
+
 // ============================================================================
 // Tender Response Messages
 // ============================================================================
