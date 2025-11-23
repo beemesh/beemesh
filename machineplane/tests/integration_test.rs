@@ -66,7 +66,6 @@ async fn test_run_host_application() {
 
     // wait for the mesh to form (poll until peers appear or timeout)
     let verify_peers = wait_for_peers(Duration::from_secs(15)).await;
-    let health = check_health().await;
 
     // Test the pubkey endpoint
     let kem_pubkey_result = check_pubkey("kem_pubkey").await;
