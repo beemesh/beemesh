@@ -113,7 +113,7 @@ flowchart TB
   %% ===== Machineplane (infrastructure trust domain) =====
   subgraph "Machineplane (infrastructure trust domain)" as MP
     MDHT[(Machine DHT - Node Discovery)]
-    PS{{Pub/Sub - scheduler topics}}
+    PS{{Pub/Sub - beemesh-fabric topic}}
 
     subgraph "Machine A" as M1
       D1[Machine Daemon A]
@@ -170,8 +170,9 @@ Beemesh uses **ephemeral scheduling**: **tenders are never persisted**, and sche
 
 1. **Tender Publication**
 
-   * A new workload tender is published on the `scheduler-tenders` Pub/Sub topic.
-   * **Tender payload includes:** resource requirements (CPU, memory, and so on), priority and QoS hints, and a **workload manifest reference**.
+   * A new workload tender is published on the `beemesh-fabric` Pub/Sub topic.
+   * **Tender payload includes:** resource requirements (CPU, memory, and so on), priority and QoS hints, and a **manifest digest**;
+     the full manifest **stays with the tender owner** during bidding.
 
 2. **Local Resource Evaluation**
 
@@ -180,18 +181,18 @@ Beemesh uses **ephemeral scheduling**: **tenders are never persisted**, and sche
 
 3. **Bidding Phase**
 
-   * Eligible nodes **submit bids** to the `scheduler-proposals` topic.
+   * Eligible nodes **submit bids** to the `beemesh-fabric` topic.
    * **Bids include:** node identity (Machine Peer ID) and **scoring metrics** (resource fit, network locality, capabilities).
 
 4. **Selection Window**
 
    * A short window (for example, **100–500 ms**) allows multiple bids to arrive.
-   * Nodes independently select the **best bid** based on scoring rules.
+   * The tender owner validates bids against the manifest it holds and **deterministically chooses the winners** using the same inputs and scoring rules for every observer.
 
 5. **Workload Deployment**
 
-   * The winning node deploys the workload using **Podman**.
-   * Deployment is confirmed via a follow-up Pub/Sub event.
+   * The tender owner sends the manifest (reference or encrypted blob) only to the awarded nodes over mutually authenticated streams.
+   * Awarded nodes deploy the workload using **Podman** and confirm via a follow-up Pub/Sub event.
 
 #### **Advantages of Ephemeral Scheduling**
 
@@ -203,9 +204,9 @@ Beemesh uses **ephemeral scheduling**: **tenders are never persisted**, and sche
 | **High throughput**            | Scales naturally with node count.                                                                       |
 | **Thundering herd mitigation** | Only nodes that match placement and resource criteria bid, so reply volume stays bounded even at scale. |
 
-**Duplicate tolerance**
+**Deterministic winners, duplicate-tolerant Workplane**
 
-The Machineplane is **duplicate-tolerant**. In races or partitions, multiple nodes **may** deploy the same workload. This is safe by design:
+The Machineplane deterministically selects the winning nodes for each Tender so that every observer derives the same winner set. In partitions or races, an awarded manifest might still be deployed more than once; the Workplane remains **duplicate-tolerant** and gates correctness:
 
 * Both stateless and stateful workloads are **self-contained**.
 * The **replica count is always interpreted as “at least”** at the Machineplane.
