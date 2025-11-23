@@ -33,8 +33,8 @@ pub fn make_test_daemon(
     }
 }
 
-/// Start a list of nodes given their configurations. Returns JoinHandles for spawned background tasks.
-pub async fn start_nodes(
+/// Start a list of beemesh machineplane given their configurations. Returns JoinHandles for spawned background tasks.
+pub async fn start_machineplane(
     daemons: Vec<DaemonConfig>,
     startup_delay: Duration,
 ) -> Vec<JoinHandle<()>> {
