@@ -114,7 +114,8 @@ impl Scheduler {
                 if is_owner {
                     self.initialize_owned_tender(&tender_id, &manifest_id, &tender.manifest_json);
                     info!(
-                        "Local node issued tender {}; skipping bid as owner", tender_id
+                        "Local node issued tender {}; skipping bid as owner",
+                        tender_id
                     );
                     return;
                 }
