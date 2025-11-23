@@ -78,16 +78,15 @@ pub struct Health {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Tender {
     pub id: String,
-    /// URL or Content Hash
-    pub manifest_ref: String,
-    /// Inline manifest (optional)
-    pub manifest_json: String,
+    /// Content hash of the manifest (manifest is not inlined)
+    pub manifest_digest: String,
     /// "stateless" | "stateful"
     pub workload_type: String,
     pub duplicate_tolerant: bool,
     pub placement_token: String,
     pub qos_preemptible: bool,
     pub timestamp: u64,
+    pub nonce: u64,
     pub signature: Vec<u8>,
 }
 
@@ -100,6 +99,7 @@ pub struct Bid {
     pub resource_fit_score: f64,
     pub network_locality_score: f64,
     pub timestamp: u64,
+    pub nonce: u64,
     /// Signature of the bid content
     pub signature: Vec<u8>,
 }
@@ -125,15 +125,14 @@ pub struct SchedulerEvent {
     pub signature: Vec<u8>,
 }
 
-/// Lease hint for tender assignment
+/// Award message announcing winner set
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LeaseHint {
+pub struct Award {
     pub tender_id: String,
-    pub node_id: String,
-    pub score: f64,
-    pub ttl_ms: u32,
-    pub renew_nonce: u64,
+    pub winners: Vec<String>,
+    pub manifest_digest: String,
     pub timestamp: u64,
+    pub nonce: u64,
     pub signature: Vec<u8>,
 }
 
@@ -313,13 +312,13 @@ impl Default for Tender {
     fn default() -> Self {
         Self {
             id: String::new(),
-            manifest_ref: String::new(),
-            manifest_json: String::new(),
+            manifest_digest: String::new(),
             workload_type: "stateless".to_string(),
             duplicate_tolerant: true,
             placement_token: String::new(),
             qos_preemptible: false,
             timestamp: 0,
+            nonce: 0,
             signature: Vec::new(),
         }
     }

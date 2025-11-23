@@ -17,7 +17,7 @@ use std::{
 use tokio::sync::{mpsc, watch};
 
 use crate::messages::libp2p_constants::{
-    BEEMESH_FABRIC, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
+    BEEMESH_FABRIC, SCHEDULER_AWARDS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
 };
 use crate::scheduler::SchedulerCommand;
 
@@ -292,13 +292,15 @@ pub fn setup_libp2p_node(
     let tenders_topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
     let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
     let events_topic = gossipsub::IdentTopic::new(SCHEDULER_EVENTS);
+    let awards_topic = gossipsub::IdentTopic::new(SCHEDULER_AWARDS);
 
     debug!(
-        "Subscribing to topics: {}, {}, {}, {}",
+        "Subscribing to topics: {}, {}, {}, {}, {}",
         topic.hash(),
         tenders_topic.hash(),
         proposals_topic.hash(),
-        events_topic.hash()
+        events_topic.hash(),
+        awards_topic.hash()
     );
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
     swarm.behaviour_mut().gossipsub.subscribe(&tenders_topic)?;
@@ -307,6 +309,7 @@ pub fn setup_libp2p_node(
         .gossipsub
         .subscribe(&proposals_topic)?;
     swarm.behaviour_mut().gossipsub.subscribe(&events_topic)?;
+    swarm.behaviour_mut().gossipsub.subscribe(&awards_topic)?;
     // Ensure local host is an explicit mesh peer for the topic so publish() finds at least one subscriber
     let local_peer = swarm.local_peer_id().clone();
     swarm
@@ -396,17 +399,6 @@ pub async fn start_libp2p_node(
                              let topic = gossipsub::IdentTopic::new(topic);
                              if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, payload) {
                                  log::error!("Failed to publish scheduler message: {}", e);
-                             }
-                         }
-                         SchedulerCommand::PutDHT { key, value } => {
-                             let record = kad::Record {
-                                 key: kad::RecordKey::new(&key),
-                                 value,
-                                 publisher: None,
-                                 expires: None,
-                             };
-                             if let Err(e) = swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
-                                 log::error!("Failed to put DHT record: {:?}", e);
                              }
                          }
                          SchedulerCommand::DeployWorkload { manifest_id, manifest_json, replicas } => {

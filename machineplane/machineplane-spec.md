@@ -22,7 +22,6 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
   * **MDHT**: Machine DHT (libp2p Kademlia).
   * **Tender**: Scheduling intent to run a workload.
   * **Bid**: A machine’s proposal to run a Tender.
-  * **LeaseHint**: Short-lived **non-exclusive** claim record to progress deployment.
 
 -----
 
@@ -37,7 +36,7 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
       * have permissions to query/apply cgroup limits via the runtime,
       * **NOT** mount workload credentials; machine and workload identities stay disjoint.
 
-  * **Machine DHT (MDHT)**: node discovery, transient metadata, **LeaseHint** storage (TTL).
+  * **Machine DHT (MDHT)**: node discovery and transient machine metadata.
 
   * **Pub/Sub Topic (Gossipsub)**: `beemesh-fabric` — single shared topic used for tender publication, bid submission, awards,
     and deployment events.
@@ -48,7 +47,7 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 
 ### **2.2 Data Isolation**
 
-  * MDHT **MUST** store **only minimal, transient** machine metadata and **LeaseHints** with TTL.
+  * MDHT **MUST** store **only minimal, transient** machine metadata.
   * Workload DHT **MUST NOT** contain any machine-level data.
 
 ### **2.3 Diagrams**
@@ -59,7 +58,6 @@ sequenceDiagram
   participant P as Producer (kubectl/controller)
   participant N1 as Node A
   participant N2 as Node B
-  participant MDHT as Machine DHT
   participant R as Runtime (Podman)
   participant PubSub as Pub/Sub
 
@@ -77,14 +75,11 @@ sequenceDiagram
   P-->>N1: Secure Stream: Send Manifest(ref or blob) if N1 is winner
   P-->>N2: Secure Stream: Send Manifest(ref or blob) if N2 is winner
 
-  N1->>MDHT: Put LeaseHint(tender_id, node_id, ttl=3s) [best-effort; only if winner]
-  N2->>MDHT: Put LeaseHint(tender_id, node_id, ttl=3s) [best-effort; only if winner]
-
-  alt Awarded and LeaseHint observed
+  alt Awarded and manifest received
     N1->>R: Deploy(manifest_ref)
     R-->>N1: Deployment Result (OK / Failed)
   N1->>PubSub: Event(tender_id, status=Deployed|Failed, node_id)
-  else No award or hint observed
+  else No award observed
     N2->>N2: Backoff and observe events
   end
 ````
@@ -94,13 +89,10 @@ stateDiagram-v2
   [*] --> Idle
   Idle --> Bidding: TenderSeen
   Bidding --> Idle: NotEligible
-  Bidding --> Claiming: AwardReceived
-  Claiming --> Deploying: ManifestReceived & HintObservedOrWritten
-  Claiming --> Observing: HintLost
+  Bidding --> Deploying: AwardReceived & ManifestReceived
   Deploying --> Running: DeployOK
-  Deploying --> Observing: DeployFail
-  Running --> Observing: EventPublished
-  Observing --> Idle: TTLExpire | TenderComplete
+  Deploying --> Idle: DeployFail
+  Running --> Idle: EventPublished | TenderComplete
 ```
 
 ```mermaid
@@ -130,7 +122,6 @@ graph TD
 
 * **Machine Peer ID**: `libp2p` peer ID (base58). **MUST** be unique per machine.
 * **Tender ID**: ULID string. **MUST** be globally unique for de-duplication.
-* **Lease Key**: `lease/<tender_id>` in MDHT (value is a **LeaseHint**, not an exclusive lock).
 
 ### **3.2 Message Schemas (libp2p-secured binary payloads)**
 
@@ -148,17 +139,14 @@ is required because libp2p sessions are already mutually authenticated and encry
 * **Manifest handling**: The tender owner **MUST** keep the manifest local during bidding and **MUST** only transmit a manifest reference
   or encrypted blob to awarded nodes over mutually authenticated streams after bids are validated.
 
-**LeaseHint** (MDHT value)
+**Award** (Pub/Sub broadcast)
 
 * `tender_id`: ULID
-* `node_id`: Machine Peer ID
-* `score`: f64
-* `ttl_ms`: u32 (e.g., 3000)
-* `renew_nonce`: u64 (monotonic per renewal)
+* `winners`: ordered list of Machine Peer IDs
+* `manifest_digest`: content hash matching the Tender
 * `ts`: i64 (ms epoch)
-* `sig`: ed25519 signature (by `node_id`)
-
-> **Interpretation:** `LeaseHint` is **non-exclusive**. It signals intent and enables backoff; multiple hints **MAY** coexist.
+* `nonce`: u64 (unique per award)
+* `sig`: ed25519 signature (by tender owner)
 
 **Existing messages** (`ApplyRequest/Response`, `CapacityRequest/Reply`) stay as in v0.1,
 but are encoded directly with bincode without an envelope wrapper.
@@ -190,20 +178,19 @@ but are encoded directly with bincode without an envelope wrapper.
    * Winner selection **MUST** be reproducible by any observer with the same bids (for example, stable sort by score → latency → `node_id`).
    * The tender owner **SHOULD** broadcast `Award{tender_id, winners}` on `beemesh-fabric` and **MUST** send the manifest reference or encrypted blob only to the awarded nodes over a mutually authenticated stream.
 
-6. **Lease Hint (non-exclusive, winner-scoped)**:
+6. **Manifest Transfer**:
 
-   * Awarded nodes **MAY** write a **LeaseHint** at `lease/<tender_id>` with TTL **3 s** (best-effort MDHT put). **Multiple LeaseHints MAY coexist**.
+   * The tender owner **MUST** transmit the manifest reference or encrypted blob to each awarded node over a mutually authenticated stream.
+   * Recipients **MUST** verify the manifest hash matches `manifest_digest` from the Tender/Award before deploying.
 
 7. **Deployment**:
 
-   * An awarded node **MAY** proceed to deploy once it has both the manifest from the tender owner and (optionally) its own LeaseHint observed. The **Workplane** continues to gate stateful writes/leadership.
+   * An awarded node **MAY** proceed to deploy once it has the manifest from the tender owner. The **Workplane** continues to gate stateful writes/leadership.
    * The Machineplane provides **at-least-once** scheduling semantics with deterministic winner sets; duplicate deployments **MAY** still occur in partitions or retries, and correctness is enforced by the Workplane/workload logic.
 
 8. **Confirmation**: Deployer **MUST** publish `Event{Deployed|Failed}`.
 
-9. **Lease Renewal**: Deployer **SHOULD** refresh its LeaseHint every **1 s** until `Deployed` or timeout **(10 s)**.
-
-10. **Backoff**: Non-deployers **MUST** observe deployment events on `beemesh-fabric` and **SHOULD** back off with jitter; if no `Deployed` by `(lease_ttl + 1 s)`, they **MAY** re-enter Claiming.
+9. **Backoff**: Non-deployers **MUST** observe deployment events on `beemesh-fabric` and **SHOULD** back off with jitter; if no `Deployed` by `deploy_timeout_ms`, they **MAY** re-evaluate.
 
 ### **4.2 Resource Accounting**
 
@@ -231,10 +218,10 @@ but are encoded directly with bincode without an envelope wrapper.
 
 | Failure                             | Required Behavior                                                                                                                                                                                                                                                              |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Network Partition**               | Nodes continue local bidding and **LeaseHints**. On heal, **duplicate deployments MAY exist**. Nodes **SHOULD** prefer the deployment with freshest local health and event visibility; excess replicas **SHOULD** be drained or **MUST** respond to Workplane signals to exit. |
-| **Winner crash before deploy**      | LeaseHint expiry triggers re-bidding/backoff.                                                                                                                                                                                                                                  |
+| **Network Partition**               | Nodes continue local bidding. On heal, **duplicate deployments MAY exist**. Nodes **SHOULD** prefer the deployment with freshest local health and event visibility; excess replicas **SHOULD** be drained or **MUST** respond to Workplane signals to exit. |
+| **Winner crash before deploy**      | Lack of deployment events after `deploy_timeout_ms` **SHOULD** trigger backoff and potential re-award.                                                                                                                                                                                                                                  |
 | **Late bids**                       | Ignored for current window; **MAY** be used for retry if deploy fails.                                                                                                                                                                                                         |
-| **Conflicting LeaseHints**          | Nodes **MUST** tolerate multiple hints; **MUST NOT** assume exclusivity. Prefer self-hint + highest score; otherwise observe deployment events on `beemesh-fabric` and back off.                                                                                                                  |
+| **Conflicting Awards**          | Nodes **MUST** tolerate repeated or conflicting awards during partitions; **MUST** rely on manifest digest matching and Workplane signals to converge.                                                                                                                  |
 | **Manifest fetch fail**             | Deployer **MUST** emit `Event{Failed}` and **MAY** retry per local policy.                                                                                                                                                                                                     |
 | **Global bootstrap loss (paradox)** | If the Machineplane and all workloads are lost simultaneously, Beemesh alone **CANNOT** restore the fabric. An external bootstrap mechanism (for example, installers, image registries, GitOps controllers) is **REQUIRED** to repopulate the cluster.                         |
 
@@ -263,8 +250,6 @@ machineplane:
   topic: beemesh-fabric
   selection_window_ms: 250
   selection_jitter_ms: 100
-  lease_ttl_ms: 3000
-  lease_renew_ms: 1000
   deploy_timeout_ms: 10000
   clock_skew_ms: 30000
   duplicate_tolerant_default: true
@@ -345,11 +330,12 @@ Scenario: Reject unsigned fabric messages
 ### **13.2 Feature: Ephemeral, Duplicate-Tolerant Scheduling**
 
 ```gherkin
-Scenario: At-least-once scheduling with LeaseHints
+Scenario: At-least-once scheduling with secure manifest handoff
   Given two eligible nodes A and B
   And a Tender T published at time t0
   When A and B submit valid Bids within the selection window
-  And A and/or B write LeaseHint(T) in the MDHT
+  And an Award for T is published with winners including A and/or B
+  And the tender owner transmits the manifest matching `manifest_digest` to the winners
   Then one or more nodes MAY proceed to deploy T
   And at least one node MUST publish Event{Deployed} if deployment succeeds
 ```
@@ -364,7 +350,7 @@ Scenario: Deterministic winner selection
 ```
 
 ```gherkin
-Scenario: Partition with conflicting LeaseHints
+Scenario: Partition with conflicting awards
   Given a network split causing duplicate deployments for T
   When the partition heals
   Then nodes MUST tolerate the duplicates temporarily
@@ -377,7 +363,7 @@ Scenario: Deployment timeout triggers retry
   Given a node is deploying T
   When deployment does not complete within deploy_timeout_ms
   Then the node MUST publish Event{Failed}
-  And nodes MAY re-enter Claiming for T after LeaseHint expiry
+  And nodes MAY re-evaluate T after backoff when no deployment events arrive
 ```
 
 ### **13.3 Feature: Preemption**

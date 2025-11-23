@@ -1,4 +1,4 @@
-use crate::messages::types::{ApplyRequest, ApplyResponse, Bid, LeaseHint, SchedulerEvent, Tender};
+use crate::messages::types::{ApplyRequest, ApplyResponse, Award, Bid, SchedulerEvent, Tender};
 use libp2p::identity::{Keypair, PublicKey};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -38,13 +38,13 @@ macro_rules! define_sign_verify {
 #[derive(Serialize)]
 struct TenderView {
     id: String,
-    manifest_ref: String,
-    manifest_json: String,
+    manifest_digest: String,
     workload_type: String,
     duplicate_tolerant: bool,
     placement_token: String,
     qos_preemptible: bool,
     timestamp: u64,
+    nonce: u64,
 }
 
 #[derive(Serialize)]
@@ -55,6 +55,7 @@ struct BidView {
     resource_fit_score: f64,
     network_locality_score: f64,
     timestamp: u64,
+    nonce: u64,
 }
 
 #[derive(Serialize)]
@@ -67,13 +68,12 @@ struct SchedulerEventView {
 }
 
 #[derive(Serialize)]
-struct LeaseHintView {
+struct AwardView {
     tender_id: String,
-    node_id: String,
-    score: f64,
-    ttl_ms: u32,
-    renew_nonce: u64,
+    winners: Vec<String>,
+    manifest_digest: String,
     timestamp: u64,
+    nonce: u64,
 }
 
 #[derive(Serialize)]
@@ -99,13 +99,13 @@ define_sign_verify!(
     (|t: &Tender| {
         TenderView {
             id: t.id.clone(),
-            manifest_ref: t.manifest_ref.clone(),
-            manifest_json: t.manifest_json.clone(),
+            manifest_digest: t.manifest_digest.clone(),
             workload_type: t.workload_type.clone(),
             duplicate_tolerant: t.duplicate_tolerant,
             placement_token: t.placement_token.clone(),
             qos_preemptible: t.qos_preemptible,
             timestamp: t.timestamp,
+            nonce: t.nonce,
         }
     })
 );
@@ -121,6 +121,7 @@ define_sign_verify!(
         resource_fit_score: b.resource_fit_score,
         network_locality_score: b.network_locality_score,
         timestamp: b.timestamp,
+        nonce: b.nonce,
     })
 );
 
@@ -138,16 +139,15 @@ define_sign_verify!(
 );
 
 define_sign_verify!(
-    sign_lease_hint,
-    LeaseHint,
-    LeaseHintView,
-    (|l: &LeaseHint| LeaseHintView {
-        tender_id: l.tender_id.clone(),
-        node_id: l.node_id.clone(),
-        score: l.score,
-        ttl_ms: l.ttl_ms,
-        renew_nonce: l.renew_nonce,
-        timestamp: l.timestamp,
+    sign_award,
+    Award,
+    AwardView,
+    (|a: &Award| AwardView {
+        tender_id: a.tender_id.clone(),
+        winners: a.winners.clone(),
+        manifest_digest: a.manifest_digest.clone(),
+        timestamp: a.timestamp,
+        nonce: a.nonce,
     })
 );
 

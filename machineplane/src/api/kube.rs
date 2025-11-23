@@ -1,4 +1,6 @@
 use super::{KubeResourceRecord, RestState, TenderRecord};
+use crate::messages::{machine, signatures};
+use crate::scheduler::register_local_manifest;
 use axum::{
     Json, Router,
     body::Bytes,
@@ -6,7 +8,10 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
+use bincode;
+use libp2p::identity::Keypair;
 use log::{error, warn};
+use rand::RngCore;
 use serde_json::{Map, Value, json};
 use serde_yaml;
 use std::collections::HashMap;
@@ -240,18 +245,42 @@ async fn publish_tender(
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .as_secs();
+        .as_millis() as u64;
 
-    let tender_bytes = crate::messages::machine::build_tender(
-        manifest_id,
-        manifest_id,
-        manifest_str,
-        workload_type,
-        false,
-        "",
-        false,
+    let manifest_digest = machine::compute_manifest_id_from_content(manifest_str.as_bytes());
+    register_local_manifest(manifest_id, manifest_str);
+
+    let keypair = crate::network::get_node_keypair()
+        .and_then(|(_, sk)| Keypair::from_protobuf_encoding(&sk).ok())
+        .ok_or_else(|| {
+            warn!(
+                "Tender publication aborted for {}: missing node keypair",
+                manifest_id
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut tender = crate::messages::types::Tender {
+        id: manifest_id.to_string(),
+        manifest_digest: manifest_digest.clone(),
+        workload_type: workload_type.to_string(),
+        duplicate_tolerant: false,
+        placement_token: String::new(),
+        qos_preemptible: false,
         timestamp,
-    );
+        nonce: rand::thread_rng().next_u64(),
+        signature: Vec::new(),
+    };
+
+    signatures::sign_tender(&mut tender, &keypair).map_err(|e| {
+        warn!("Failed to sign tender {}: {}", manifest_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let tender_bytes = bincode::serialize(&tender).map_err(|e| {
+        warn!("Failed to serialize tender {}: {}", manifest_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<(), String>>();
     state
