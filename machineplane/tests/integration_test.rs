@@ -15,18 +15,18 @@ use tokio::time::sleep;
 
 #[path = "runtime_helpers.rs"]
 mod runtime_helpers;
-use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes};
+use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_local_multiaddr};
 
 // We will start beemesh machineplane deamons directly in this process by calling `start_machineplane(daemon).await`.
 
 /// Tests the full host application flow.
 ///
-/// This test starts three nodes:
+/// This test starts five nodes:
 /// 1. A primary node (port 3000) with REST API and machineplane enabled.
-/// 2. Two secondary nodes (ports 3100, 3200) to form a mesh.
+/// 2. Four secondary nodes (ports 3100, 3200, 3300, 3400) to form a mesh.
 ///
 /// It verifies:
-/// - The mesh forms correctly (at least 2 peers discovered).
+/// - The mesh forms correctly (at least 4 peers discovered).
 /// - The health endpoint returns "ok".
 /// - The public key endpoints return valid keys.
 #[tokio::test]
@@ -38,15 +38,31 @@ async fn test_run_host_application() {
     let daemon1 = make_test_daemon(3000, vec![], 4001);
     let mut handles = start_nodes(vec![daemon1], Duration::from_secs(1)).await;
 
-    // derive the bootstrap multiaddr from the first daemon's swarm port
-    let bootstrap_addr = format!("/ip4/127.0.0.1/udp/{}/quic-v1", 4001);
+    // discover the bootstrap node's peer id before connecting other nodes
+    let bootstrap_addr = wait_for_local_multiaddr(
+        "127.0.0.1",
+        3000,
+        "127.0.0.1",
+        4001,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("bootstrap node did not expose a peer id in time");
     let bootstrap_peers = vec![bootstrap_addr];
 
     // subsequent nodes use the first node as their bootstrap peer
     let daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
-    let daemon3 = make_test_daemon(3200, bootstrap_peers, 4003);
+    let daemon3 = make_test_daemon(3200, bootstrap_peers.clone(), 4003);
+    let daemon4 = make_test_daemon(3300, bootstrap_peers.clone(), 4004);
+    let daemon5 = make_test_daemon(3400, bootstrap_peers, 4005);
 
-    handles.append(&mut start_nodes(vec![daemon2, daemon3], Duration::from_secs(1)).await);
+    handles.append(
+        &mut start_nodes(
+            vec![daemon2, daemon3, daemon4, daemon5],
+            Duration::from_secs(1),
+        )
+        .await,
+    );
 
     // wait for the mesh to form (poll until peers appear or timeout)
     let verify_peers = wait_for_peers(Duration::from_secs(15)).await;
@@ -65,8 +81,8 @@ async fn test_run_host_application() {
             .expect("peers should be an array")
             .to_vec()
             .len()
-            >= 2,
-        "Expected at least two peers in the mesh, got {:?}",
+            >= 4,
+        "Expected at least four peers in the mesh, got {:?}",
         verify_peers
     );
     assert!(
