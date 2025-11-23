@@ -2,7 +2,6 @@
 use clap::Parser;
 use env_logger::Env;
 
-
 pub mod api;
 pub mod messages;
 pub mod network;
@@ -13,9 +12,6 @@ pub mod scheduler;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
-    /// Store keypair in memory only (ephemeral node)
-    #[arg(long, default_value_t = false)]
-    pub ephemeral: bool,
     /// Host address for REST API
     #[arg(long, default_value = "0.0.0.0")]
     pub rest_api_host: String,
@@ -44,10 +40,6 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub ephemeral_keys: bool,
 
-    /// Directory to store machineplane keypair (default: /etc/beemesh/machineplane)
-    #[arg(long, default_value = "/etc/beemesh/machineplane")]
-    pub key_dir: String,
-
     /// Bootstrap peer addresses for explicit peer discovery (can be specified multiple times)
     #[arg(long)]
     pub bootstrap_peer: Vec<String>,
@@ -67,7 +59,6 @@ pub type DaemonConfig = Cli;
 impl Default for Cli {
     fn default() -> Self {
         Self {
-            ephemeral: false,
             rest_api_host: "127.0.0.1".to_string(),
             rest_api_port: 3000,
             node_name: None,
@@ -75,37 +66,11 @@ impl Default for Cli {
             signing_ephemeral: false,
             kem_ephemeral: false,
             ephemeral_keys: false,
-            key_dir: "/etc/beemesh/machineplane".to_string(),
             bootstrap_peer: Vec::new(),
             libp2p_quic_port: 0,
             libp2p_host: "0.0.0.0".to_string(),
         }
     }
-}
-
-fn load_machine_keypair(cli: &Cli) -> anyhow::Result<libp2p::identity::Keypair> {
-    if cli.ephemeral {
-        log::info!("Using ephemeral keypair (not persisted to disk)");
-        return Ok(libp2p::identity::Keypair::generate_ed25519());
-    }
-
-    let keypair_path = std::path::Path::new(&cli.key_dir).join("libp2p_keypair.bin");
-
-    let bytes = std::fs::read(&keypair_path).map_err(|e| {
-        anyhow::anyhow!(
-            "machine peer identity missing or unreadable at {}: {}",
-            keypair_path.display(),
-            e
-        )
-    })?;
-
-    libp2p::identity::Keypair::from_protobuf_encoding(&bytes).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to decode machine peer identity at {}: {}",
-            keypair_path.display(),
-            e
-        )
-    })
 }
 
 fn resolve_and_configure_podman_socket(cli_socket: Option<String>) -> anyhow::Result<String> {
@@ -142,8 +107,9 @@ pub async fn start_machineplane(
     let podman_socket = resolve_and_configure_podman_socket(cli.podman_socket.clone())?;
     log::info!("Using Podman socket: {}", podman_socket);
 
-    // Load or generate libp2p keypair
-    let keypair = load_machine_keypair(&cli)?;
+    // Generate an ephemeral libp2p keypair for this run. Machineplane intentionally
+    // treats peer identities as transient and does not persist them between restarts.
+    let keypair = libp2p::identity::Keypair::generate_ed25519();
 
     // Store keypair bytes for network module
     let keypair_bytes = keypair.to_protobuf_encoding()?;
@@ -216,11 +182,8 @@ pub async fn start_machineplane(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::resolve_and_configure_podman_socket;
     use serial_test::serial;
-    use std::fs;
-    use uuid::Uuid;
 
     fn restore_env_var(key: &str, value: Option<String>) {
         // SAFETY: Tests reset the environment for isolation within a single-threaded context.
@@ -255,46 +218,5 @@ mod tests {
         crate::runtimes::configure_podman_runtime(None);
         restore_env_var("PODMAN_HOST", original_podman);
         restore_env_var("CONTAINER_HOST", original_container);
-    }
-
-    #[test]
-    fn load_machine_keypair_fails_without_persisted_identity() {
-        let tmp_dir = std::env::temp_dir().join(format!("beemesh-missing-{}", Uuid::new_v4()));
-
-        let cli = Cli {
-            ephemeral: false,
-            key_dir: tmp_dir.to_string_lossy().to_string(),
-            ..Cli::default()
-        };
-
-        let err = load_machine_keypair(&cli).unwrap_err();
-        assert!(err.to_string().contains("machine peer identity missing"));
-    }
-
-    #[test]
-    fn load_machine_keypair_reuses_existing_identity() {
-        let tmp_dir = std::env::temp_dir().join(format!("beemesh-persisted-{}", Uuid::new_v4()));
-        fs::create_dir_all(&tmp_dir).unwrap();
-
-        let original = libp2p::identity::Keypair::generate_ed25519();
-        let bytes = original.to_protobuf_encoding().unwrap();
-        let key_path = tmp_dir.join("libp2p_keypair.bin");
-        fs::write(&key_path, bytes).unwrap();
-
-        let cli = Cli {
-            ephemeral: false,
-            key_dir: tmp_dir.to_string_lossy().to_string(),
-            ..Cli::default()
-        };
-
-        let loaded = load_machine_keypair(&cli).expect("expected persisted keypair to load");
-
-        assert_eq!(
-            original.public().to_peer_id(),
-            loaded.public().to_peer_id()
-        );
-
-        let _ = fs::remove_file(key_path);
-        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

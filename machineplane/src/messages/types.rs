@@ -180,6 +180,13 @@ pub struct CandidateNode {
     pub public_key: String,
 }
 
+/// Signed node identity record stored in the DHT.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NodeIdentityRecord {
+    pub peer_id: String,
+    pub signature: Vec<u8>,
+}
+
 /// Response with list of candidate nodes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CandidatesResponse {

@@ -13,10 +13,8 @@ pub fn make_test_daemon(
     libp2p_quic_port: u16,
 ) -> DaemonConfig {
     DaemonConfig {
-        ephemeral: true,
         rest_api_host: "127.0.0.1".to_string(),
         rest_api_port,
-        key_dir: String::from("/tmp/.beemesh_test_unused"),
         bootstrap_peer: bootstrap_peers,
         libp2p_quic_port,
         // Prefer explicit PODMAN_HOST if provided, otherwise let machineplane detect defaults.

@@ -1,29 +1,26 @@
 #![allow(dead_code)]
-use crate::messages::machine::decode_applied_manifest;
-use crate::messages::types::AppliedManifest;
-use libp2p::{Swarm, kad};
-use log::info;
+use crate::messages::machine::decode_node_identity_record;
+use crate::messages::types::NodeIdentityRecord;
+use crate::network::utils::peer_id_to_public_key;
+use libp2p::{PeerId, Swarm, kad};
+use log::{info, warn};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::network::behaviour::MyBehaviour;
 
-/// DHT operations for managing AppliedManifest records
+/// DHT operations for managing signed node identity records
 pub enum DhtOperation {
-    /// Store an AppliedManifest in the DHT
-    StoreManifest {
-        manifest: AppliedManifest,
+    /// Store the local node identity in the DHT
+    PublishIdentity {
+        record: NodeIdentityRecord,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
-    /// Retrieve an AppliedManifest by its ID
-    GetManifest {
-        id: String,
-        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest>, String>>,
-    },
-    /// Get all manifests by a specific peer
-    GetManifestsByPeer {
+    /// Retrieve a peer's identity record by peer ID
+    GetIdentity {
         peer_id: String,
-        reply_tx: mpsc::UnboundedSender<Result<Vec<AppliedManifest>, String>>,
+        reply_tx: mpsc::UnboundedSender<Result<Option<NodeIdentityRecord>, String>>,
     },
 }
 
@@ -33,11 +30,11 @@ pub struct DhtManager {
 }
 
 enum DhtQueryContext {
-    StoreManifest {
+    PublishIdentity {
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
-    GetManifest {
-        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest>, String>>,
+    GetIdentity {
+        reply_tx: mpsc::UnboundedSender<Result<Option<NodeIdentityRecord>, String>>,
     },
 }
 
@@ -48,124 +45,122 @@ impl DhtManager {
         }
     }
 
-    /// Generate a DHT key for storing/retrieving manifests by ID
-    pub fn manifest_key(id: &str) -> kad::RecordKey {
-        kad::RecordKey::new(&format!("manifest:{}", id))
-    }
-
-    /// Generate a DHT key for a given manifest ID
-    /// Generate a DHT key for peer indexing
-    pub fn peer_index_key(peer_id: &str) -> kad::RecordKey {
-        kad::RecordKey::new(&format!("peer-index:{}", peer_id))
+    /// Generate a DHT key for storing/retrieving signed identity records
+    pub fn identity_key(peer_id: &str) -> kad::RecordKey {
+        kad::RecordKey::new(&format!("node:{}", peer_id))
     }
 
     /// Handle a DHT operation request
     pub fn handle_operation(&mut self, operation: DhtOperation, swarm: &mut Swarm<MyBehaviour>) {
         match operation {
-            DhtOperation::StoreManifest { manifest, reply_tx } => {
-                self.store_manifest(manifest, reply_tx, swarm);
+            DhtOperation::PublishIdentity { record, reply_tx } => {
+                self.publish_identity(record, reply_tx, swarm);
             }
-            DhtOperation::GetManifest { id, reply_tx } => {
-                self.get_manifest(id, reply_tx, swarm);
-            }
-            DhtOperation::GetManifestsByPeer {
-                peer_id: _,
-                reply_tx,
-            } => {
-                // For now, send an error as this requires more complex indexing
-                let _ = reply_tx.send(Err("Peer queries not implemented yet".to_string()));
+            DhtOperation::GetIdentity { peer_id, reply_tx } => {
+                self.get_identity(peer_id, reply_tx, swarm);
             }
         }
     }
 
-    fn store_manifest(
+    fn publish_identity(
         &mut self,
-        manifest: AppliedManifest,
+        record: NodeIdentityRecord,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
         swarm: &mut Swarm<MyBehaviour>,
     ) {
-        // Serialize the manifest to bytes for storage
-        let manifest_id = manifest.id.clone();
-        let manifest_bytes = bincode::serialize(&manifest)
-            .map_err(|e| format!("Failed to serialize manifest: {:?}", e));
+        if !self.verify_identity_record(&record) {
+            let _ = reply_tx.send(Err("Refusing to publish unsigned identity".to_string()));
+            return;
+        }
 
-        let manifest_bytes = match manifest_bytes {
+        let record_bytes = match bincode::serialize(&record) {
             Ok(bytes) => bytes,
             Err(err) => {
-                let _ = reply_tx.send(Err(err));
+                let _ = reply_tx.send(Err(format!("Failed to serialize identity: {:?}", err)));
                 return;
             }
         };
 
-        let record_key = Self::manifest_key(&manifest_id);
-        let record = kad::Record {
+        let record_key = Self::identity_key(&record.peer_id);
+        let dht_record = kad::Record {
             key: record_key,
-            value: manifest_bytes,
+            value: record_bytes,
             publisher: None,
-            expires: None,
+            expires: Some(Instant::now() + Duration::from_secs(600)),
         };
 
         match swarm
             .behaviour_mut()
             .kademlia
-            .put_record(record, kad::Quorum::One)
+            .put_record(dht_record, kad::Quorum::One)
         {
             Ok(query_id) => {
                 info!(
-                    "DHT: Initiated store operation for manifest {} (query_id: {:?})",
-                    manifest_id, query_id
+                    "DHT: Initiated identity publish for peer {} (query_id: {:?})",
+                    record.peer_id, query_id
                 );
                 self.pending_queries
-                    .insert(query_id, DhtQueryContext::StoreManifest { reply_tx });
+                    .insert(query_id, DhtQueryContext::PublishIdentity { reply_tx });
             }
             Err(e) => {
-                let _ = reply_tx.send(Err(format!("Failed to initiate DHT store: {:?}", e)));
+                let _ = reply_tx.send(Err(format!(
+                    "Failed to initiate DHT identity publish: {:?}",
+                    e
+                )));
             }
         }
     }
 
-    fn get_manifest(
+    fn get_identity(
         &mut self,
-        id: String,
-        reply_tx: mpsc::UnboundedSender<Result<Option<AppliedManifest>, String>>,
+        peer_id: String,
+        reply_tx: mpsc::UnboundedSender<Result<Option<NodeIdentityRecord>, String>>,
         swarm: &mut Swarm<MyBehaviour>,
     ) {
-        let record_key = Self::manifest_key(&id);
+        let record_key = Self::identity_key(&peer_id);
         let query_id = swarm.behaviour_mut().kademlia.get_record(record_key);
 
         info!(
-            "DHT: Initiated get operation for manifest {} (query_id: {:?})",
-            id, query_id
+            "DHT: Initiated identity lookup for peer {} (query_id: {:?})",
+            peer_id, query_id
         );
 
         self.pending_queries
-            .insert(query_id, DhtQueryContext::GetManifest { reply_tx });
+            .insert(query_id, DhtQueryContext::GetIdentity { reply_tx });
     }
 
     /// Handle Kademlia query results
     pub fn handle_query_result(&mut self, query_id: kad::QueryId, result: kad::QueryResult) {
         if let Some(context) = self.pending_queries.remove(&query_id) {
             match context {
-                DhtQueryContext::StoreManifest { reply_tx } => match result {
+                DhtQueryContext::PublishIdentity { reply_tx } => match result {
                     kad::QueryResult::PutRecord(Ok(_)) => {
                         let _ = reply_tx.send(Ok(()));
                     }
                     kad::QueryResult::PutRecord(Err(e)) => {
-                        let _ = reply_tx.send(Err(format!("Failed to store manifest: {:?}", e)));
+                        let _ = reply_tx.send(Err(format!("Failed to publish identity: {:?}", e)));
                     }
                     _ => {
                         let _ = reply_tx.send(Err("Unexpected query result".to_string()));
                     }
                 },
-                DhtQueryContext::GetManifest { reply_tx } => match result {
+                DhtQueryContext::GetIdentity { reply_tx } => match result {
                     kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))) => {
-                        match decode_applied_manifest(&peer_record.record.value) {
-                            Ok(manifest) => {
-                                let _ = reply_tx.send(Ok(Some(manifest)));
+                        match decode_node_identity_record(&peer_record.record.value) {
+                            Ok(record) if self.verify_identity_record(&record) => {
+                                let _ = reply_tx.send(Ok(Some(record)));
+                            }
+                            Ok(record) => {
+                                warn!(
+                                    "DHT: rejecting unsigned identity record for peer {}",
+                                    record.peer_id
+                                );
+                                let _ =
+                                    reply_tx.send(Err("Invalid identity signature".to_string()));
                             }
                             Err(e) => {
                                 let _ = reply_tx
-                                    .send(Err(format!("Failed to parse manifest: {:?}", e)));
+                                    .send(Err(format!("Failed to parse identity record: {:?}", e)));
                             }
                         }
                     }
@@ -175,7 +170,7 @@ impl DhtManager {
                         let _ = reply_tx.send(Ok(None));
                     }
                     kad::QueryResult::GetRecord(Err(e)) => {
-                        let _ = reply_tx.send(Err(format!("Failed to get manifest: {:?}", e)));
+                        let _ = reply_tx.send(Err(format!("Failed to get identity: {:?}", e)));
                     }
                     _ => {
                         let _ = reply_tx.send(Err("Unexpected query result".to_string()));
@@ -183,5 +178,17 @@ impl DhtManager {
                 },
             }
         }
+    }
+
+    fn verify_identity_record(&self, record: &NodeIdentityRecord) -> bool {
+        let Ok(peer_id) = record.peer_id.parse::<PeerId>() else {
+            return false;
+        };
+
+        let Some(public_key) = peer_id_to_public_key(&peer_id) else {
+            return false;
+        };
+
+        public_key.verify(record.peer_id.as_bytes(), &record.signature)
     }
 }

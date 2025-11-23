@@ -1,8 +1,6 @@
 use crate::messages::constants::BEEMESH_FABRIC;
 use crate::network::behaviour::{MyBehaviour, SCHEDULER_INPUT_TX};
-use libp2p::kad::{QueryId, RecordKey};
 use libp2p::{Swarm, gossipsub};
-use log::info;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -18,24 +16,8 @@ pub enum Libp2pControl {
         payload: Vec<u8>,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
-    /// Find peers that hold shares for a given manifest id using DHT providers
-    FindManifestHolders {
-        manifest_id: String,
-        reply_tx: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
-    },
     /// Bootstrap the DHT by connecting to known peers
     BootstrapDht {
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
-    /// Announce that this node hosts the workload for the given CID (uses Kademlia provider records for placement)
-    AnnounceProvider {
-        cid: String,
-        ttl_ms: u64,
-        reply_tx: mpsc::UnboundedSender<Result<(), String>>,
-    },
-    /// Withdraw a previously announced placement
-    WithdrawProvider {
-        cid: String,
         reply_tx: mpsc::UnboundedSender<Result<(), String>>,
     },
     /// Get DHT peer information for debugging
@@ -79,40 +61,9 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
             }
         }
 
-        Libp2pControl::FindManifestHolders {
-            manifest_id,
-            reply_tx,
-        } => {
-            // Use Kademlia providers API to find placement holders
-            let record_key = RecordKey::new(&format!("provider:{}", manifest_id));
-            info!(
-                "DHT: attempting get_providers for key=provider:{}",
-                manifest_id
-            );
-            let query_id = swarm.behaviour_mut().kademlia.get_providers(record_key);
-            // Register pending sender so the kademlia_event handler can reply when results arrive
-            insert_pending_providers_query(query_id, reply_tx);
-            info!(
-                "DHT: initiated find_providers for manifest (query_id={:?})",
-                query_id
-            );
-        }
-
         Libp2pControl::BootstrapDht { reply_tx } => {
             let _ = swarm.behaviour_mut().kademlia.bootstrap();
             let _ = reply_tx.send(Ok(()));
-        }
-        Libp2pControl::AnnounceProvider {
-            cid,
-            ttl_ms,
-            reply_tx,
-        } => {
-            log::warn!(
-                "libp2p: processing AnnounceProvider for cid={} ttl_ms={}",
-                cid,
-                ttl_ms
-            );
-            let _ = reply_tx.send(announce_provider_direct(swarm, cid.clone(), ttl_ms));
         }
         Libp2pControl::GetDhtPeers { reply_tx } => {
             // Get DHT peer information for debugging
@@ -127,70 +78,12 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
 
             let _ = reply_tx.send(Ok(dht_info));
         }
-        Libp2pControl::WithdrawProvider { cid, reply_tx } => {
-            log::info!("Withdraw requested for cid={}, letting provider record expire", cid);
-            let _ = reply_tx.send(Ok(()));
-        }
         Libp2pControl::GetLocalPeerId { reply_tx } => {
             // Get the local peer ID
             let local_peer_id = *swarm.local_peer_id();
             let _ = reply_tx.send(local_peer_id);
         }
     }
-}
-
-/// Announce a placement record directly using the swarm's Kademlia behaviour.
-/// This helper centralizes the key/record format used for placement announcements (via Kademlia providers).
-pub fn announce_provider_direct(
-    swarm: &mut Swarm<MyBehaviour>,
-    cid: String,
-    _ttl_ms: u64,
-) -> Result<(), String> {
-    // Use Kademlia's provider mechanism instead of records
-    let record_key = RecordKey::new(&cid);
-
-    // Check if we have sufficient DHT connectivity before announcing
-    let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
-    if connected_peers.is_empty() {
-        return Err("No connected peers for DHT announcement".to_string());
-    }
-
-    match swarm.behaviour_mut().kademlia.start_providing(record_key) {
-        Ok(query_id) => {
-            log::info!(
-                "DHT: announced provider for cid={} (query_id={:?}) with {} connected peers",
-                cid,
-                query_id,
-                connected_peers.len()
-            );
-            Ok(())
-        }
-        Err(e) => Err(format!("kademlia start_providing failed: {:?}", e)),
-    }
-}
-
-/// Pending provider lookup queries: QueryId string -> reply sender (Vec<PeerId>)
-static PENDING_PROVIDERS_QUERIES: Lazy<
-    Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Vec<libp2p::PeerId>>>>,
-> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
-
-/// Insert a pending providers query sender for the given QueryId
-pub fn insert_pending_providers_query(
-    id: QueryId,
-    sender: mpsc::UnboundedSender<Vec<libp2p::PeerId>>,
-) {
-    let key = format!("{:?}", id);
-    let mut map = PENDING_PROVIDERS_QUERIES.lock().unwrap();
-    map.insert(key, sender);
-}
-
-/// Take and remove a pending providers query sender by QueryId
-pub fn take_pending_providers_query(
-    id: &QueryId,
-) -> Option<mpsc::UnboundedSender<Vec<libp2p::PeerId>>> {
-    let key = format!("{:?}", id);
-    let mut map = PENDING_PROVIDERS_QUERIES.lock().unwrap();
-    map.remove(&key)
 }
 
 /// Global store for tracking pending manifest distribution requests

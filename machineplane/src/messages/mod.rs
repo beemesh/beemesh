@@ -74,6 +74,10 @@ pub mod machine {
         deserialize(buf)
     }
 
+    pub fn decode_node_identity_record(buf: &[u8]) -> bincode::Result<NodeIdentityRecord> {
+        deserialize(buf)
+    }
+
     pub fn encode_scheduler_message(message: SchedulerMessage) -> Vec<u8> {
         serialize(&message)
     }
