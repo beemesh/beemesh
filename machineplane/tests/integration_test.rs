@@ -17,7 +17,7 @@ use tokio::time::sleep;
 mod runtime_helpers;
 use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes};
 
-// We will start machines directly in this process by calling `start_machineplane(daemon).await`.
+// We will start beemesh machineplane deamons directly in this process by calling `start_machineplane(daemon).await`.
 
 /// Tests the full host application flow.
 ///
@@ -79,19 +79,6 @@ async fn test_run_host_application() {
         "Expected signing_pubkey field in response, got: {}",
         signing_pubkey_result
     );
-}
-
-async fn check_health() -> String {
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        reqwest::get("http://localhost:3000/health"),
-    )
-    .await
-    .unwrap()
-    .unwrap()
-    .text()
-    .await
-    .expect("failed to call health api")
 }
 
 async fn check_pubkey(url: &str) -> String {
