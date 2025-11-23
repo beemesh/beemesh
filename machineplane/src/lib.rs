@@ -208,9 +208,10 @@ mod tests {
     fn configure_socket_normalizes_and_exports_env() {
         let original_container = std::env::var("CONTAINER_HOST").ok();
 
-        let normalized = resolve_and_configure_podman_socket(Some("/tmp/test-podman.sock".to_string()))
-            .unwrap()
-            .unwrap();
+        let normalized =
+            resolve_and_configure_podman_socket(Some("/tmp/test-podman.sock".to_string()))
+                .unwrap()
+                .unwrap();
 
         assert_eq!(normalized, "unix:///tmp/test-podman.sock");
         assert_eq!(
