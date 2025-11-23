@@ -4,34 +4,47 @@
 //! evaluate their fit, submit Bids, and if they win, acquire a Lease.
 
 use crate::messages::constants::{
-    DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
+    DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_AWARDS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS,
+    SCHEDULER_TENDERS,
 };
-use crate::messages::types::Bid;
-use crate::messages::{machine, signatures, types::LeaseHint};
+use crate::messages::types::{Award, Bid};
+use crate::messages::{machine, signatures};
 use crate::network::utils::peer_id_to_public_key;
 use libp2p::gossipsub;
 use libp2p::identity::Keypair;
 use log::{error, info};
-use std::collections::HashMap;
+use once_cell::sync::Lazy;
+use rand::RngCore;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
+const MAX_CLOCK_SKEW_MS: u64 = 30_000;
+
+static LOCAL_MANIFEST_CACHE: Lazy<Mutex<HashMap<String, String>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 /// Scheduler manages the bidding lifecycle
 pub struct Scheduler {
     /// Local node ID (PeerId string)
     local_node_id: String,
-    /// Node keypair for signing LeaseHints
+    /// Node keypair for signing scheduler messages
     keypair: Keypair,
     /// Tenders this node created and is responsible for selecting winners for
     owned_tenders: Arc<Mutex<HashMap<String, OwnedTenderContext>>>,
+    /// Replay filter for tenders
+    seen_tenders: Arc<Mutex<HashSet<(String, u64)>>>,
+    /// Replay filter for bids
+    seen_bids: Arc<Mutex<HashSet<(String, String, u64)>>>,
     /// Channel to send messages back to the network loop
     outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
 }
 
 struct BidContext {
     manifest_id: String,
+    manifest_digest: String,
     bids: Vec<BidEntry>,
 }
 
@@ -43,7 +56,7 @@ struct BidEntry {
 
 struct OwnedTenderContext {
     bid_context: BidContext,
-    manifest_json: String,
+    manifest_json: Option<String>,
 }
 
 /// Commands emitted by the scheduler for the libp2p network loop to process
@@ -52,10 +65,6 @@ pub enum SchedulerCommand {
     Publish {
         topic: String,
         payload: Vec<u8>,
-    },
-    PutDHT {
-        key: Vec<u8>,
-        value: Vec<u8>,
     },
     DeployWorkload {
         manifest_id: String,
@@ -74,6 +83,8 @@ impl Scheduler {
             local_node_id,
             keypair,
             owned_tenders: Arc::new(Mutex::new(HashMap::new())),
+            seen_tenders: Arc::new(Mutex::new(HashSet::new())),
+            seen_bids: Arc::new(Mutex::new(HashSet::new())),
             outbound_tx,
         }
     }
@@ -87,6 +98,7 @@ impl Scheduler {
         let tenders = gossipsub::IdentTopic::new(SCHEDULER_TENDERS).hash();
         let proposals = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS).hash();
         let events = gossipsub::IdentTopic::new(SCHEDULER_EVENTS).hash();
+        let awards = gossipsub::IdentTopic::new(SCHEDULER_AWARDS).hash();
 
         if *topic_hash == tenders {
             self.handle_tender(message).await;
@@ -94,6 +106,8 @@ impl Scheduler {
             self.handle_bid(message).await;
         } else if *topic_hash == events {
             self.handle_event(message).await;
+        } else if *topic_hash == awards {
+            self.handle_award(message).await;
         }
     }
 
@@ -104,15 +118,65 @@ impl Scheduler {
                 let tender_id = tender.id.clone();
                 info!("Received Tender: {}", tender_id);
 
-                let manifest_id = tender.id.clone();
-                let is_owner = message
-                    .source
-                    .as_ref()
-                    .map(|peer_id| peer_id.to_string() == self.local_node_id)
-                    .unwrap_or(false);
+                let source_peer = match message.source.as_ref() {
+                    Some(peer) => peer,
+                    None => {
+                        error!("Discarding tender {}: missing source peer", tender_id);
+                        return;
+                    }
+                };
+
+                if !is_timestamp_fresh(tender.timestamp) {
+                    error!(
+                        "Discarding tender {}: timestamp outside allowed skew",
+                        tender_id
+                    );
+                    return;
+                }
+
+                if !self.mark_tender_seen(&tender_id, tender.nonce) {
+                    info!("Ignoring replayed tender {}", tender_id);
+                    return;
+                }
+
+                let public_key = match peer_id_to_public_key(source_peer) {
+                    Some(key) => key,
+                    None => {
+                        error!(
+                            "Discarding tender {}: unable to derive public key",
+                            tender_id
+                        );
+                        return;
+                    }
+                };
+
+                if !signatures::verify_sign_tender(&tender, &public_key) {
+                    error!("Discarding tender {}: invalid signature", tender_id);
+                    return;
+                }
+
+                let is_owner = source_peer.to_string() == self.local_node_id;
+                let manifest_json = if is_owner {
+                    get_local_manifest(&tender_id)
+                } else {
+                    None
+                };
 
                 if is_owner {
-                    self.initialize_owned_tender(&tender_id, &manifest_id, &tender.manifest_json);
+                    if manifest_json.is_none() {
+                        error!(
+                            "Local node issued tender {} without cached manifest; refusing to proceed",
+                            tender_id
+                        );
+                        return;
+                    }
+
+                    self.initialize_owned_tender(
+                        &tender_id,
+                        &tender_id,
+                        &tender.manifest_digest,
+                        manifest_json.clone(),
+                    );
                     info!(
                         "Local node issued tender {}; skipping bid as owner",
                         tender_id
@@ -128,20 +192,15 @@ impl Scheduler {
                 // For now, just use random or static for testing
                 let my_score = capacity_score * 0.8 + 0.2; // Simple formula
 
-                // 3. Create BidContext
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
-
-                // 4. Publish Bid
+                // 3. Publish Bid
                 let mut bid = Bid {
                     tender_id: tender_id.clone(),
                     node_id: self.local_node_id.clone(),
                     score: my_score,
                     resource_fit_score: capacity_score,
                     network_locality_score: 0.5,
-                    timestamp: now,
+                    timestamp: now_ms(),
+                    nonce: rand::thread_rng().next_u64(),
                     signature: Vec::new(),
                 };
 
@@ -153,6 +212,7 @@ impl Scheduler {
                         bid.resource_fit_score,
                         bid.network_locality_score,
                         bid.timestamp,
+                        bid.nonce,
                         &bid.signature,
                     ),
                     Err(e) => {
@@ -171,23 +231,19 @@ impl Scheduler {
                         "Queued Bid for tender {} with score {:.2}",
                         tender_id, my_score
                     );
-
-                    if is_owner {
-                        self.record_owned_bid(
-                            &tender_id,
-                            BidEntry {
-                                bidder_id: self.local_node_id.clone(),
-                                score: my_score,
-                            },
-                        );
-                    }
                 }
             }
             Err(e) => error!("Failed to parse Tender message: {}", e),
         }
     }
 
-    fn initialize_owned_tender(&self, tender_id: &str, manifest_id: &str, manifest_json: &str) {
+    fn initialize_owned_tender(
+        &self,
+        tender_id: &str,
+        manifest_id: &str,
+        manifest_digest: &str,
+        manifest_json: Option<String>,
+    ) {
         {
             let mut owned = self.owned_tenders.lock().unwrap();
             if owned.contains_key(tender_id) {
@@ -199,16 +255,16 @@ impl Scheduler {
                 OwnedTenderContext {
                     bid_context: BidContext {
                         manifest_id: manifest_id.to_string(),
+                        manifest_digest: manifest_digest.to_string(),
                         bids: Vec::new(),
                     },
-                    manifest_json: manifest_json.to_string(),
+                    manifest_json,
                 },
             );
         }
 
         let owned_tenders = self.owned_tenders.clone();
         let tender_id_clone = tender_id.to_string();
-        let manifest_json = manifest_json.to_string();
         let local_id = self.local_node_id.clone();
         let keypair = self.keypair.clone();
         let outbound_tx = self.outbound_tx.clone();
@@ -216,20 +272,23 @@ impl Scheduler {
         tokio::spawn(async move {
             sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
 
-            let (winners, manifest_id_opt, manifest_json_opt) = {
+            let (winners, manifest_id_opt, manifest_json_opt, manifest_digest_opt) = {
                 let mut tenders = owned_tenders.lock().unwrap();
                 if let Some(ctx) = tenders.remove(&tender_id_clone) {
                     (
                         select_winners(&ctx.bid_context),
                         Some(ctx.bid_context.manifest_id.clone()),
-                        Some(ctx.manifest_json.clone()),
+                        ctx.manifest_json.clone(),
+                        Some(ctx.bid_context.manifest_digest.clone()),
                     )
                 } else {
-                    (Vec::new(), None, None)
+                    (Vec::new(), None, None, None)
                 }
             };
 
-            if let Some(manifest_id) = manifest_id_opt {
+            if let (Some(manifest_id), Some(manifest_digest)) =
+                (manifest_id_opt, manifest_digest_opt)
+            {
                 if winners.is_empty() {
                     info!(
                         "No qualifying bids for tender {} (manifest {})",
@@ -249,64 +308,50 @@ impl Scheduler {
                     tender_id_clone, manifest_id, summary
                 );
 
+                let winners_list: Vec<String> =
+                    winners.iter().map(|w| w.bidder_id.clone()).collect();
+                let mut award = Award {
+                    tender_id: tender_id_clone.clone(),
+                    winners: winners_list.clone(),
+                    manifest_digest: manifest_digest.clone(),
+                    timestamp: now_ms(),
+                    nonce: rand::thread_rng().next_u64(),
+                    signature: Vec::new(),
+                };
+
+                if let Err(e) = signatures::sign_award(&mut award, &keypair) {
+                    error!("Failed to sign award for tender {}: {}", tender_id_clone, e);
+                } else if let Err(e) = outbound_tx.send(SchedulerCommand::Publish {
+                    topic: SCHEDULER_AWARDS.to_string(),
+                    payload: machine::build_award(
+                        &award.tender_id,
+                        &award.winners,
+                        &award.manifest_digest,
+                        award.timestamp,
+                        award.nonce,
+                        &award.signature,
+                    ),
+                }) {
+                    error!(
+                        "Failed to publish award for tender {}: {}",
+                        tender_id_clone, e
+                    );
+                } else {
+                    info!(
+                        "Published award for tender {} to {:?}",
+                        tender_id_clone, winners_list
+                    );
+                }
+
                 if winners.iter().any(|bid| bid.bidder_id == local_id) {
                     info!(
                         "Local node won tender {}; proceeding to deployment",
                         tender_id_clone
                     );
 
-                    // 1. Publish LeaseHint to DHT
-                    let lease_hint = LeaseHint {
-                        tender_id: tender_id_clone.clone(),
-                        node_id: local_id.clone(),
-                        score: 1.0,
-                        ttl_ms: 30000,
-                        renew_nonce: 0,
-                        timestamp: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u64,
-                        signature: Vec::new(),
-                    };
-
-                    let lease_hint_bytes = match {
-                        let mut lease_hint = lease_hint.clone();
-                        signatures::sign_lease_hint(&mut lease_hint, &keypair).map(|_| lease_hint)
-                    } {
-                        Ok(signed) => Some(machine::build_lease_hint(
-                            &signed.tender_id,
-                            &signed.node_id,
-                            signed.score,
-                            signed.ttl_ms,
-                            signed.renew_nonce,
-                            signed.timestamp,
-                            &signed.signature,
-                        )),
-                        Err(e) => {
-                            error!(
-                                "Failed to sign LeaseHint for tender {}: {}",
-                                tender_id_clone, e
-                            );
-                            None
-                        }
-                    };
-
-                    if let Some(lease_hint_bytes) = lease_hint_bytes {
-                        if let Err(e) = outbound_tx.send(SchedulerCommand::PutDHT {
-                            key: format!("lease:{}", tender_id_clone).into_bytes(),
-                            value: lease_hint_bytes,
-                        }) {
-                            error!(
-                                "Failed to publish LeaseHint for tender {}: {}",
-                                tender_id_clone, e
-                            );
-                        } else {
-                            info!("Published LeaseHint for tender {}", tender_id_clone);
-                        }
-                    }
-
-                    // 2. Trigger Workload Deployment
-                    if let Some(manifest_json) = manifest_json_opt.or_else(|| Some(manifest_json)) {
+                    if let Some(manifest_json) =
+                        manifest_json_opt.or_else(|| get_local_manifest(&manifest_id))
+                    {
                         if let Err(e) = outbound_tx.send(SchedulerCommand::DeployWorkload {
                             manifest_id,
                             manifest_json,
@@ -319,28 +364,39 @@ impl Scheduler {
                         } else {
                             info!("Triggered deployment for tender {}", tender_id_clone);
                         }
+                    } else {
+                        error!(
+                            "Local node lacks manifest content for tender {}; cannot deploy",
+                            tender_id_clone
+                        );
                     }
-                } else if let Some(winner) = winners.first() {
-                    info!(
-                        "Assigned tender {} to bidder {} with score {:.2}",
-                        tender_id_clone, winner.bidder_id, winner.score
-                    );
                 }
             }
         });
     }
 
-    fn record_owned_bid(&self, tender_id: &str, bid: BidEntry) {
-        let mut owned = self.owned_tenders.lock().unwrap();
-        if let Some(ctx) = owned.get_mut(tender_id) {
-            ctx.bid_context.bids.push(bid);
-        }
+    fn mark_tender_seen(&self, tender_id: &str, nonce: u64) -> bool {
+        let mut seen = self.seen_tenders.lock().unwrap();
+        seen.insert((tender_id.to_string(), nonce))
+    }
+
+    fn mark_bid_seen(&self, bid: &Bid) -> bool {
+        let mut seen = self.seen_bids.lock().unwrap();
+        seen.insert((bid.tender_id.clone(), bid.node_id.clone(), bid.nonce))
     }
 
     /// Process a Bid message: Update highest bid
     async fn handle_bid(&self, message: &gossipsub::Message) {
         match machine::decode_bid(&message.data) {
             Ok(bid) => {
+                if !is_timestamp_fresh(bid.timestamp) {
+                    error!(
+                        "Discarding bid for tender {} from {}: timestamp outside skew",
+                        bid.tender_id, bid.node_id
+                    );
+                    return;
+                }
+
                 let public_key = match message
                     .source
                     .as_ref()
@@ -359,6 +415,14 @@ impl Scheduler {
                 if !signatures::verify_sign_bid(&bid, &public_key) {
                     error!(
                         "Discarding bid for tender {} from {}: invalid signature",
+                        bid.tender_id, bid.node_id
+                    );
+                    return;
+                }
+
+                if !self.mark_bid_seen(&bid) {
+                    info!(
+                        "Ignoring replayed bid {} from {}",
                         bid.tender_id, bid.node_id
                     );
                     return;
@@ -421,6 +485,52 @@ impl Scheduler {
             Err(e) => error!("Failed to parse SchedulerEvent message: {}", e),
         }
     }
+
+    /// Process Award messages announcing winners
+    async fn handle_award(&self, message: &gossipsub::Message) {
+        match machine::decode_award(&message.data) {
+            Ok(award) => {
+                if !is_timestamp_fresh(award.timestamp) {
+                    error!(
+                        "Discarding award for tender {}: timestamp outside skew",
+                        award.tender_id
+                    );
+                    return;
+                }
+
+                let public_key = match message
+                    .source
+                    .as_ref()
+                    .and_then(|peer_id| peer_id_to_public_key(peer_id))
+                {
+                    Some(key) => key,
+                    None => {
+                        error!(
+                            "Discarding award for tender {}: unable to derive public key",
+                            award.tender_id
+                        );
+                        return;
+                    }
+                };
+
+                if !signatures::verify_sign_award(&award, &public_key) {
+                    error!(
+                        "Discarding award for tender {}: invalid signature",
+                        award.tender_id
+                    );
+                    return;
+                }
+
+                if award.winners.contains(&self.local_node_id) {
+                    info!(
+                        "Local node awarded tender {}; awaiting manifest transfer",
+                        award.tender_id
+                    );
+                }
+            }
+            Err(e) => error!("Failed to parse Award message: {}", e),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -447,18 +557,42 @@ fn select_winners(context: &BidContext) -> Vec<BidOutcome> {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.bidder_id.cmp(&b.bidder_id))
     });
 
-    let mut outcomes = Vec::new();
+    bids.into_iter()
+        .map(|bid| BidOutcome {
+            bidder_id: bid.bidder_id,
+            score: bid.score,
+        })
+        .collect()
+}
 
-    if let Some(top_bid) = bids.into_iter().next() {
-        outcomes.push(BidOutcome {
-            bidder_id: top_bid.bidder_id,
-            score: top_bid.score,
-        });
-    }
+pub fn register_local_manifest(tender_id: &str, manifest_json: &str) {
+    let mut cache = LOCAL_MANIFEST_CACHE.lock().unwrap();
+    cache.insert(tender_id.to_string(), manifest_json.to_string());
+}
 
-    outcomes
+fn get_local_manifest(tender_id: &str) -> Option<String> {
+    LOCAL_MANIFEST_CACHE.lock().unwrap().get(tender_id).cloned()
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn is_timestamp_fresh(timestamp_ms: u64) -> bool {
+    let now = now_ms();
+    let (min, max) = if now > timestamp_ms {
+        (timestamp_ms, now)
+    } else {
+        (now, timestamp_ms)
+    };
+
+    max - min <= MAX_CLOCK_SKEW_MS
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,6 +1326,7 @@ mod tests {
     fn selects_top_unique_winner() {
         let context = BidContext {
             manifest_id: "tender-a".to_string(),
+            manifest_digest: "digest-a".to_string(),
             bids: vec![
                 BidEntry {
                     bidder_id: "node1".to_string(),
@@ -1209,14 +1344,16 @@ mod tests {
         };
 
         let winners = select_winners(&context);
-        assert_eq!(winners.len(), 1);
+        assert_eq!(winners.len(), 2);
         assert_eq!(winners[0].bidder_id, "node2");
+        assert_eq!(winners[1].bidder_id, "node1");
     }
 
     #[test]
     fn selects_single_local_winner_when_highest() {
         let context = BidContext {
             manifest_id: "tender-b".to_string(),
+            manifest_digest: "digest-b".to_string(),
             bids: vec![
                 BidEntry {
                     bidder_id: "local".to_string(),
@@ -1234,7 +1371,7 @@ mod tests {
         };
 
         let winners = select_winners(&context);
-        assert_eq!(winners.len(), 1);
+        assert_eq!(winners.len(), 2);
         assert_eq!(winners[0].bidder_id, "local");
     }
 }

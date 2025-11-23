@@ -1,4 +1,6 @@
-use crate::messages::constants::{SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS};
+use crate::messages::constants::{
+    SCHEDULER_AWARDS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
+};
 use crate::network::control;
 use crate::network::{ApplyCodec, DeleteCodec, HandshakeCodec};
 use libp2p::swarm::NetworkBehaviour;
@@ -43,13 +45,14 @@ pub fn gossipsub_message(
     debug!("received message from {}", peer_id);
     let payload = &message.data;
 
-    static SCHEDULER_TOPICS: OnceLock<[gossipsub::TopicHash; 3]> = OnceLock::new();
+    static SCHEDULER_TOPICS: OnceLock<[gossipsub::TopicHash; 4]> = OnceLock::new();
 
     let scheduler_topics = SCHEDULER_TOPICS.get_or_init(|| {
         [
             gossipsub::IdentTopic::new(SCHEDULER_TENDERS).hash(),
             gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS).hash(),
             gossipsub::IdentTopic::new(SCHEDULER_EVENTS).hash(),
+            gossipsub::IdentTopic::new(SCHEDULER_AWARDS).hash(),
         ]
     });
 

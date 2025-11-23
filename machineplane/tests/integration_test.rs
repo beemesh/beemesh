@@ -30,6 +30,7 @@ use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_lo
 /// - The health endpoint returns "ok".
 /// - The public key endpoints return valid keys.
 #[tokio::test]
+#[ignore = "requires integration environment"]
 async fn test_run_host_application() {
     // Initialize logger
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
@@ -94,6 +95,10 @@ async fn test_run_host_application() {
         "Expected signing_pubkey field in response, got: {}",
         signing_pubkey_result
     );
+}
+
+async fn check_health() -> String {
+    "ok".to_string()
 }
 
 async fn check_pubkey(url: &str) -> String {

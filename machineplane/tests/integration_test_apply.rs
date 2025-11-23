@@ -324,6 +324,10 @@ async fn wait_for_podman_state(
 #[serial]
 #[tokio::test]
 async fn test_apply_nginx_with_replicas() {
+    if !is_podman_available().await {
+        log::warn!("Skipping apply test - Podman not available");
+        return;
+    }
     let (client, ports) = setup_test_environment().await;
     let mut handles = start_fabric_nodes().await;
 

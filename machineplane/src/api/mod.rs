@@ -1,5 +1,6 @@
 use crate::messages::constants::{DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_PROPOSALS};
 use crate::messages::types::CandidateNode;
+use crate::scheduler::register_local_manifest;
 #[cfg(debug_assertions)]
 use axum::{
     Router,
@@ -320,6 +321,8 @@ pub async fn create_tender(
 
     // Store manifest bytes as-is
     let manifest_bytes_to_store = payload_bytes_for_parsing;
+    let manifest_str = String::from_utf8_lossy(&manifest_bytes_to_store).to_string();
+    register_local_manifest(&tender_id, &manifest_str);
 
     let rec = TenderRecord {
         manifest_bytes: manifest_bytes_to_store,

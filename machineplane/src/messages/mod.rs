@@ -66,7 +66,7 @@ pub mod machine {
         deserialize(buf)
     }
 
-    pub fn decode_lease_hint(buf: &[u8]) -> bincode::Result<LeaseHint> {
+    pub fn decode_award(buf: &[u8]) -> bincode::Result<Award> {
         deserialize(buf)
     }
 
@@ -210,23 +210,23 @@ pub mod machine {
 
     pub fn build_tender(
         id: &str,
-        manifest_ref: &str,
-        manifest_json: &str,
+        manifest_digest: &str,
         workload_type: &str,
         duplicate_tolerant: bool,
         placement_token: &str,
         qos_preemptible: bool,
         timestamp: u64,
+        nonce: u64,
     ) -> Vec<u8> {
         serialize(&Tender {
             id: id.to_string(),
-            manifest_ref: manifest_ref.to_string(),
-            manifest_json: manifest_json.to_string(),
+            manifest_digest: manifest_digest.to_string(),
             workload_type: workload_type.to_string(),
             duplicate_tolerant,
             placement_token: placement_token.to_string(),
             qos_preemptible,
             timestamp,
+            nonce,
             signature: Vec::new(),
         })
     }
@@ -238,6 +238,7 @@ pub mod machine {
         resource_fit_score: f64,
         network_locality_score: f64,
         timestamp: u64,
+        nonce: u64,
         signature: &[u8],
     ) -> Vec<u8> {
         serialize(&Bid {
@@ -247,26 +248,25 @@ pub mod machine {
             resource_fit_score,
             network_locality_score,
             timestamp,
+            nonce,
             signature: signature.to_vec(),
         })
     }
 
-    pub fn build_lease_hint(
+    pub fn build_award(
         tender_id: &str,
-        node_id: &str,
-        score: f64,
-        ttl_ms: u32,
-        renew_nonce: u64,
+        winners: &[String],
+        manifest_digest: &str,
         timestamp: u64,
+        nonce: u64,
         signature: &[u8],
     ) -> Vec<u8> {
-        serialize(&LeaseHint {
+        serialize(&Award {
             tender_id: tender_id.to_string(),
-            node_id: node_id.to_string(),
-            score,
-            ttl_ms,
-            renew_nonce,
+            winners: winners.to_vec(),
+            manifest_digest: manifest_digest.to_string(),
             timestamp,
+            nonce,
             signature: signature.to_vec(),
         })
     }
