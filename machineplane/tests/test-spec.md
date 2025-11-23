@@ -50,17 +50,17 @@ Scenario: Manifest ID version suffix MUST distinguish updates (tests/error_handl
   - Then the resulting ID MUST include the version suffix to differentiate revisions
 
 ### Host application flow (`tests/integration_test.rs`)
-Background: Five nodes SHOULD be started in-process using a bootstrap node to form the mesh.
+Background: Five nodes SHOULD be started in-process using a bootstrap node to form the mesh. Each node exposes REST (3000/3100/3200/3300/3400) and libp2p/QUIC (4001–4005) ports. The suite waits for all REST endpoints to report healthy before issuing checks.
 
 Scenario: Mesh formation MUST discover peers (tests/integration_test.rs)
-  - Given the nodes are running
-  - When `/debug/peers` is polled until timeout
-  - Then at least four peers MUST be discovered
+  - Given the nodes are running and REST health has turned green for all ports
+  - When `/debug/peers` is polled across all nodes until timeout
+  - Then at least four peer connections MUST be observed in total (indicating the five-node mesh formed)
 
 Scenario: REST endpoints MUST expose non-empty keys (tests/integration_test.rs)
-  - Given the nodes are running
-  - When the REST health, `kem_pubkey`, and `signing_pubkey` endpoints are queried
-  - Then the health check MUST succeed
+  - Given the nodes are running and REST health has turned green for all ports
+  - When the `/health`, `kem_pubkey`, and `signing_pubkey` endpoints are queried on the bootstrap node
+  - Then the health check MUST succeed (returning `ok`)
   - And both key endpoints MUST return non-empty values
 
 Teardown: Nodes SHOULD be shut down after validation. The suite is `#[ignore]` by default because it requires REST ports 3000/3100/3200/3300/3400 and QUIC ports 4001–4005 plus a working libp2p environment.

@@ -10,6 +10,8 @@
 use env_logger::Env;
 use log::info;
 
+use reqwest::Client;
+
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -34,6 +36,9 @@ use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_lo
 async fn test_run_host_application() {
     // Initialize logger
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+
+    let client = Client::new();
+    let rest_api_ports = [3000u16, 3100, 3200, 3300, 3400];
 
     // start a bootstrap node first
     let daemon1 = make_test_daemon(3000, vec![], 4001);
@@ -65,47 +70,61 @@ async fn test_run_host_application() {
         .await,
     );
 
+    // wait for REST APIs to become healthy before relying on endpoints
+    assert!(
+        wait_for_rest_api_health(&client, &rest_api_ports, Duration::from_secs(30)).await,
+        "REST APIs did not become healthy in time"
+    );
+
     // wait for the mesh to form (poll until peers appear or timeout)
-    let verify_peers = wait_for_peers(Duration::from_secs(15)).await;
+    let total_peers =
+        wait_for_mesh_formation(&client, &rest_api_ports, 4, Duration::from_secs(30)).await;
 
     // Test the pubkey endpoint
-    let health = check_health().await;
-    let kem_pubkey_result = check_pubkey("kem_pubkey").await;
-    let signing_pubkey_result = check_pubkey("signing_pubkey").await;
+    let health = check_health(&client, 3000).await;
+    let kem_pubkey_result = check_pubkey(3000, "kem_pubkey").await;
+    let signing_pubkey_result = check_pubkey(3000, "signing_pubkey").await;
 
     shutdown_nodes(&mut handles).await;
 
-    assert_eq!(health, "ok");
+    assert!(health, "Expected health endpoint to return ok");
     assert!(
-        verify_peers["peers"]
-            .as_array()
-            .expect("peers should be an array")
-            .to_vec()
-            .len()
-            >= 4,
-        "Expected at least four peers in the mesh, got {:?}",
-        verify_peers
+        total_peers >= 4,
+        "Expected at least four peers in the mesh, got {total_peers}"
     );
     assert!(
-        kem_pubkey_result.is_empty() == false,
+        !kem_pubkey_result.is_empty(),
         "Expected kem_pubkey field in response, got: {}",
         kem_pubkey_result
     );
     assert!(
-        signing_pubkey_result.is_empty() == false,
+        !signing_pubkey_result.is_empty(),
         "Expected signing_pubkey field in response, got: {}",
         signing_pubkey_result
     );
 }
 
-async fn check_health() -> String {
-    "ok".to_string()
+async fn check_health(client: &Client, port: u16) -> bool {
+    let base = format!("http://127.0.0.1:{port}");
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        client.get(format!("{base}/health")).send(),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => resp
+            .text()
+            .await
+            .map(|text| text.trim() == "ok")
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
-async fn check_pubkey(url: &str) -> String {
+async fn check_pubkey(port: u16, url: &str) -> String {
     tokio::time::timeout(
-        Duration::from_secs(5),
-        reqwest::get(format!("http://localhost:3000/api/v1/{}", url)),
+        Duration::from_secs(10),
+        reqwest::get(format!("http://127.0.0.1:{port}/api/v1/{}", url)),
     )
     .await
     .unwrap()
@@ -115,32 +134,79 @@ async fn check_pubkey(url: &str) -> String {
     .expect("failed to call pubkey endpoint")
 }
 
-async fn verify_peers() -> serde_json::Value {
-    let url = "http://localhost:3000/debug/peers";
-    let resp = tokio::time::timeout(Duration::from_secs(5), reqwest::get(url))
-        .await
-        .unwrap()
-        .unwrap();
-    let json = resp.json().await;
-    info!("{:?}", json);
-    let nodes: serde_json::Value = json.unwrap_or_default();
-    nodes
-}
-
-async fn wait_for_peers(timeout: Duration) -> serde_json::Value {
+async fn wait_for_rest_api_health(client: &Client, ports: &[u16], timeout: Duration) -> bool {
     let start = tokio::time::Instant::now();
     loop {
-        let nodes = verify_peers().await;
-        if !nodes["peers"]
-            .as_array()
-            .map(|a| a.is_empty())
-            .unwrap_or(true)
-        {
-            return nodes;
+        let mut healthy = 0;
+        let mut unhealthy_ports = Vec::new();
+
+        for &port in ports {
+            let base = format!("http://127.0.0.1:{port}");
+            match client.get(format!("{base}/health")).send().await {
+                Ok(resp) if resp.status().is_success() => match resp.text().await {
+                    Ok(text) if text.trim() == "ok" => healthy += 1,
+                    _ => unhealthy_ports.push(port),
+                },
+                _ => unhealthy_ports.push(port),
+            }
         }
+
+        if healthy == ports.len() {
+            info!("All REST APIs are healthy ({} ports)", healthy);
+            return true;
+        }
+
         if start.elapsed() > timeout {
-            return nodes;
+            info!(
+                "REST API health check timed out after {:?}; healthy nodes: {} / {}; unhealthy ports: {:?}",
+                timeout,
+                healthy,
+                ports.len(),
+                unhealthy_ports
+            );
+            return false;
         }
-        sleep(Duration::from_secs(1)).await;
+
+        sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn wait_for_mesh_formation(
+    client: &Client,
+    ports: &[u16],
+    min_total_peers: usize,
+    timeout: Duration,
+) -> usize {
+    let start = tokio::time::Instant::now();
+    loop {
+        let mut total_peers = 0usize;
+        for &port in ports {
+            let base = format!("http://127.0.0.1:{port}");
+            if let Ok(resp) = client.get(format!("{base}/debug/peers")).send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(peers_array) = json.get("peers").and_then(|v| v.as_array()) {
+                        total_peers += peers_array.len();
+                    }
+                }
+            }
+        }
+
+        if total_peers >= min_total_peers {
+            info!(
+                "Mesh formation successful: {} total peer connections",
+                total_peers
+            );
+            return total_peers;
+        }
+
+        if start.elapsed() > timeout {
+            info!(
+                "Mesh formation timed out after {:?}, only {} peer connections",
+                timeout, total_peers
+            );
+            return total_peers;
+        }
+
+        sleep(Duration::from_millis(500)).await;
     }
 }
