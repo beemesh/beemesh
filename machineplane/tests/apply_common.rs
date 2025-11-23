@@ -37,7 +37,7 @@ pub async fn start_fabric_nodes() -> Vec<JoinHandle<()>> {
     // Start additional nodes that exclusively use the first node as bootstrap.
     let bootstrap_peers = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
     let daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
-    let daemon3 = make_test_daemon(3200, bootstrap_peers, 0);
+    let daemon3 = make_test_daemon(3200, bootstrap_peers, 4003);
 
     handles.append(&mut start_nodes(vec![daemon2, daemon3], Duration::from_secs(1)).await);
     handles

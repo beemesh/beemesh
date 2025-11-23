@@ -383,7 +383,7 @@ async fn start_test_nodes_for_podman() -> Vec<JoinHandle<()>> {
         "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
     ];
 
-    let mut daemon3 = make_test_daemon(3200, bootstrap_peers.clone(), 0);
+    let mut daemon3 = make_test_daemon(3200, bootstrap_peers.clone(), 4003);
     daemon3.signing_ephemeral = false;
     daemon3.kem_ephemeral = false;
     daemon3.ephemeral_keys = false;

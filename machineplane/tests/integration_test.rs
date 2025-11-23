@@ -43,8 +43,9 @@ async fn test_run_host_application() {
     let bootstrap_peers = vec![bootstrap_addr];
 
     // subsequent nodes use the first node as their bootstrap peer
-    let daemon2 = make_test_daemon(3002, bootstrap_peers.clone(), 4002);
-    let daemon3 = make_test_daemon(3003, bootstrap_peers.clone(), 4003);
+    let bootstrap_peers = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
+    let daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
+    let daemon3 = make_test_daemon(3200, bootstrap_peers, 4003);
 
     handles.append(&mut start_nodes(vec![daemon2, daemon3], Duration::from_secs(1)).await);
 
