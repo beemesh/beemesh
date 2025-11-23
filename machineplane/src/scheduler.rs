@@ -3,11 +3,8 @@
 //! This module implements the "Pull" model where nodes listen for Tenders,
 //! evaluate their fit, submit Bids, and if they win, acquire a Lease.
 
-use crate::messages::constants::{
-    DEFAULT_SELECTION_WINDOW_MS, SCHEDULER_AWARDS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS,
-    SCHEDULER_TENDERS,
-};
-use crate::messages::types::{Award, Bid};
+use crate::messages::constants::{BEEMESH_FABRIC, DEFAULT_SELECTION_WINDOW_MS};
+use crate::messages::types::{Award, Bid, SchedulerEvent, SchedulerMessage, Tender};
 use crate::messages::{machine, signatures};
 use crate::network::utils::peer_id_to_public_key;
 use libp2p::gossipsub;
@@ -95,145 +92,137 @@ impl Scheduler {
         topic_hash: &gossipsub::TopicHash,
         message: &gossipsub::Message,
     ) {
-        let tenders = gossipsub::IdentTopic::new(SCHEDULER_TENDERS).hash();
-        let proposals = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS).hash();
-        let events = gossipsub::IdentTopic::new(SCHEDULER_EVENTS).hash();
-        let awards = gossipsub::IdentTopic::new(SCHEDULER_AWARDS).hash();
+        let fabric_topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC).hash();
+        if *topic_hash != fabric_topic {
+            return;
+        }
 
-        if *topic_hash == tenders {
-            self.handle_tender(message).await;
-        } else if *topic_hash == proposals {
-            self.handle_bid(message).await;
-        } else if *topic_hash == events {
-            self.handle_event(message).await;
-        } else if *topic_hash == awards {
-            self.handle_award(message).await;
+        match machine::decode_scheduler_message(&message.data) {
+            Ok(SchedulerMessage::Tender(tender)) => {
+                self.handle_tender(&tender, message).await;
+            }
+            Ok(SchedulerMessage::Bid(bid)) => {
+                self.handle_bid(&bid, message).await;
+            }
+            Ok(SchedulerMessage::Event(event)) => {
+                self.handle_event(&event).await;
+            }
+            Ok(SchedulerMessage::Award(award)) => {
+                self.handle_award(&award, message).await;
+            }
+            Err(e) => error!("Failed to parse scheduler message: {}", e),
         }
     }
 
     /// Process a Tender message: Evaluate -> Bid
-    async fn handle_tender(&self, message: &gossipsub::Message) {
-        match machine::decode_tender(&message.data) {
-            Ok(tender) => {
-                let tender_id = tender.id.clone();
-                info!("Received Tender: {}", tender_id);
+    async fn handle_tender(&self, tender: &Tender, message: &gossipsub::Message) {
+        let tender_id = tender.id.clone();
+        info!("Received Tender: {}", tender_id);
 
-                let source_peer = match message.source.as_ref() {
-                    Some(peer) => peer,
-                    None => {
-                        error!("Discarding tender {}: missing source peer", tender_id);
-                        return;
-                    }
-                };
-
-                if !is_timestamp_fresh(tender.timestamp) {
-                    error!(
-                        "Discarding tender {}: timestamp outside allowed skew",
-                        tender_id
-                    );
-                    return;
-                }
-
-                if !self.mark_tender_seen(&tender_id, tender.nonce) {
-                    info!("Ignoring replayed tender {}", tender_id);
-                    return;
-                }
-
-                let public_key = match peer_id_to_public_key(source_peer) {
-                    Some(key) => key,
-                    None => {
-                        error!(
-                            "Discarding tender {}: unable to derive public key",
-                            tender_id
-                        );
-                        return;
-                    }
-                };
-
-                if !signatures::verify_sign_tender(&tender, &public_key) {
-                    error!("Discarding tender {}: invalid signature", tender_id);
-                    return;
-                }
-
-                let is_owner = source_peer.to_string() == self.local_node_id;
-                let manifest_json = if is_owner {
-                    get_local_manifest(&tender_id)
-                } else {
-                    None
-                };
-
-                if is_owner {
-                    if manifest_json.is_none() {
-                        error!(
-                            "Local node issued tender {} without cached manifest; refusing to proceed",
-                            tender_id
-                        );
-                        return;
-                    }
-
-                    self.initialize_owned_tender(
-                        &tender_id,
-                        &tender_id,
-                        &tender.manifest_digest,
-                        manifest_json.clone(),
-                    );
-                    info!(
-                        "Local node issued tender {}; skipping bid as owner",
-                        tender_id
-                    );
-                    return;
-                }
-
-                // 1. Evaluate Fit
-                let capacity_score = 1.0; // Placeholder: assume perfect fit for now
-
-                // 2. Calculate Bid Score
-                // Score = (ResourceFit * 0.4) + (NetworkLocality * 0.3) + (Reputation * 0.3)
-                // For now, just use random or static for testing
-                let my_score = capacity_score * 0.8 + 0.2; // Simple formula
-
-                // 3. Publish Bid
-                let mut bid = Bid {
-                    tender_id: tender_id.clone(),
-                    node_id: self.local_node_id.clone(),
-                    score: my_score,
-                    resource_fit_score: capacity_score,
-                    network_locality_score: 0.5,
-                    timestamp: now_ms(),
-                    nonce: rand::thread_rng().next_u64(),
-                    signature: Vec::new(),
-                };
-
-                let bid_bytes = match signatures::sign_bid(&mut bid, &self.keypair) {
-                    Ok(_) => machine::build_bid(
-                        &bid.tender_id,
-                        &bid.node_id,
-                        bid.score,
-                        bid.resource_fit_score,
-                        bid.network_locality_score,
-                        bid.timestamp,
-                        bid.nonce,
-                        &bid.signature,
-                    ),
-                    Err(e) => {
-                        error!("Failed to sign bid for tender {}: {}", tender_id, e);
-                        return;
-                    }
-                };
-
-                if let Err(e) = self.outbound_tx.send(SchedulerCommand::Publish {
-                    topic: SCHEDULER_PROPOSALS.to_string(),
-                    payload: bid_bytes,
-                }) {
-                    error!("Failed to queue bid for tender {}: {}", tender_id, e);
-                } else {
-                    info!(
-                        "Queued Bid for tender {} with score {:.2}",
-                        tender_id, my_score
-                    );
-                }
+        let source_peer = match message.source.as_ref() {
+            Some(peer) => peer,
+            None => {
+                error!("Discarding tender {}: missing source peer", tender_id);
+                return;
             }
-            Err(e) => error!("Failed to parse Tender message: {}", e),
+        };
+
+        if !is_timestamp_fresh(tender.timestamp) {
+            error!(
+                "Discarding tender {}: timestamp outside allowed skew",
+                tender_id
+            );
+            return;
+        }
+
+        if !self.mark_tender_seen(&tender_id, tender.nonce) {
+            info!("Ignoring replayed tender {}", tender_id);
+            return;
+        }
+
+        let public_key = match peer_id_to_public_key(source_peer) {
+            Some(key) => key,
+            None => {
+                error!(
+                    "Discarding tender {}: unable to derive public key",
+                    tender_id
+                );
+                return;
+            }
+        };
+
+        if !signatures::verify_sign_tender(tender, &public_key) {
+            error!("Discarding tender {}: invalid signature", tender_id);
+            return;
+        }
+
+        let is_owner = source_peer.to_string() == self.local_node_id;
+        let manifest_json = if is_owner {
+            get_local_manifest(&tender_id)
+        } else {
+            None
+        };
+
+        if is_owner {
+            if manifest_json.is_none() {
+                error!(
+                    "Local node issued tender {} without cached manifest; refusing to proceed",
+                    tender_id
+                );
+                return;
+            }
+
+            self.initialize_owned_tender(
+                &tender_id,
+                &tender_id,
+                &tender.manifest_digest,
+                manifest_json.clone(),
+            );
+            info!(
+                "Local node issued tender {}; skipping bid as owner",
+                tender_id
+            );
+            return;
+        }
+
+        // 1. Evaluate Fit
+        let capacity_score = 1.0; // Placeholder: assume perfect fit for now
+
+        // 2. Calculate Bid Score
+        // Score = (ResourceFit * 0.4) + (NetworkLocality * 0.3) + (Reputation * 0.3)
+        // For now, just use random or static for testing
+        let my_score = capacity_score * 0.8 + 0.2; // Simple formula
+
+        // 3. Publish Bid
+        let mut bid = Bid {
+            tender_id: tender_id.clone(),
+            node_id: self.local_node_id.clone(),
+            score: my_score,
+            resource_fit_score: capacity_score,
+            network_locality_score: 0.5,
+            timestamp: now_ms(),
+            nonce: rand::thread_rng().next_u64(),
+            signature: Vec::new(),
+        };
+
+        let bid_bytes = match signatures::sign_bid(&mut bid, &self.keypair) {
+            Ok(_) => machine::encode_scheduler_message(SchedulerMessage::Bid(bid.clone())),
+            Err(e) => {
+                error!("Failed to sign bid for tender {}: {}", tender_id, e);
+                return;
+            }
+        };
+
+        if let Err(e) = self.outbound_tx.send(SchedulerCommand::Publish {
+            topic: BEEMESH_FABRIC.to_string(),
+            payload: bid_bytes,
+        }) {
+            error!("Failed to queue bid for tender {}: {}", tender_id, e);
+        } else {
+            info!(
+                "Queued Bid for tender {} with score {:.2}",
+                tender_id, my_score
+            );
         }
     }
 
@@ -322,15 +311,10 @@ impl Scheduler {
                 if let Err(e) = signatures::sign_award(&mut award, &keypair) {
                     error!("Failed to sign award for tender {}: {}", tender_id_clone, e);
                 } else if let Err(e) = outbound_tx.send(SchedulerCommand::Publish {
-                    topic: SCHEDULER_AWARDS.to_string(),
-                    payload: machine::build_award(
-                        &award.tender_id,
-                        &award.winners,
-                        &award.manifest_digest,
-                        award.timestamp,
-                        award.nonce,
-                        &award.signature,
-                    ),
+                    topic: BEEMESH_FABRIC.to_string(),
+                    payload: machine::encode_scheduler_message(SchedulerMessage::Award(
+                        award.clone(),
+                    )),
                 }) {
                     error!(
                         "Failed to publish award for tender {}: {}",
@@ -386,149 +370,134 @@ impl Scheduler {
     }
 
     /// Process a Bid message: Update highest bid
-    async fn handle_bid(&self, message: &gossipsub::Message) {
-        match machine::decode_bid(&message.data) {
-            Ok(bid) => {
-                if !is_timestamp_fresh(bid.timestamp) {
-                    error!(
-                        "Discarding bid for tender {} from {}: timestamp outside skew",
-                        bid.tender_id, bid.node_id
-                    );
-                    return;
-                }
+    async fn handle_bid(&self, bid: &Bid, message: &gossipsub::Message) {
+        if !is_timestamp_fresh(bid.timestamp) {
+            error!(
+                "Discarding bid for tender {} from {}: timestamp outside skew",
+                bid.tender_id, bid.node_id
+            );
+            return;
+        }
 
-                let public_key = match message
-                    .source
-                    .as_ref()
-                    .and_then(|peer_id| peer_id_to_public_key(peer_id))
-                {
-                    Some(key) => key,
-                    None => {
-                        error!(
-                            "Discarding bid for tender {}: unable to derive public key from source",
-                            bid.tender_id
-                        );
-                        return;
-                    }
-                };
-
-                if !signatures::verify_sign_bid(&bid, &public_key) {
-                    error!(
-                        "Discarding bid for tender {} from {}: invalid signature",
-                        bid.tender_id, bid.node_id
-                    );
-                    return;
-                }
-
-                if !self.mark_bid_seen(&bid) {
-                    info!(
-                        "Ignoring replayed bid {} from {}",
-                        bid.tender_id, bid.node_id
-                    );
-                    return;
-                }
-
-                let tender_id = bid.tender_id.clone();
-                let bidder_id = bid.node_id.clone();
-                let score = bid.score;
-
-                // Ignore our own bids (handled locally)
-                if bidder_id == self.local_node_id {
-                    return;
-                }
-
-                let mut owned = self.owned_tenders.lock().unwrap();
-                if let Some(ctx) = owned.get_mut(&tender_id) {
-                    info!(
-                        "Recorded bid for tender {}: {:.2} from {}",
-                        tender_id, score, bidder_id
-                    );
-                    ctx.bid_context.bids.push(BidEntry {
-                        bidder_id: bidder_id.to_string(),
-                        score,
-                    });
-                } else {
-                    info!(
-                        "Ignoring bid for tender {} because this node is not the owner",
-                        tender_id
-                    );
-                }
+        let public_key = match message
+            .source
+            .as_ref()
+            .and_then(|peer_id| peer_id_to_public_key(peer_id))
+        {
+            Some(key) => key,
+            None => {
+                error!(
+                    "Discarding bid for tender {}: unable to derive public key from source",
+                    bid.tender_id
+                );
+                return;
             }
-            Err(e) => error!("Failed to parse Bid message: {}", e),
+        };
+
+        if !signatures::verify_sign_bid(bid, &public_key) {
+            error!(
+                "Discarding bid for tender {} from {}: invalid signature",
+                bid.tender_id, bid.node_id
+            );
+            return;
+        }
+
+        if !self.mark_bid_seen(bid) {
+            info!(
+                "Ignoring replayed bid {} from {}",
+                bid.tender_id, bid.node_id
+            );
+            return;
+        }
+
+        let tender_id = bid.tender_id.clone();
+        let bidder_id = bid.node_id.clone();
+        let score = bid.score;
+
+        // Ignore our own bids (handled locally)
+        if bidder_id == self.local_node_id {
+            return;
+        }
+
+        let mut owned = self.owned_tenders.lock().unwrap();
+        if let Some(ctx) = owned.get_mut(&tender_id) {
+            info!(
+                "Recorded bid for tender {}: {:.2} from {}",
+                tender_id, score, bidder_id
+            );
+            ctx.bid_context.bids.push(BidEntry {
+                bidder_id: bidder_id.to_string(),
+                score,
+            });
+        } else {
+            info!(
+                "Ignoring bid for tender {} because this node is not the owner",
+                tender_id
+            );
         }
     }
 
     /// Process Scheduler Events (e.g. Cancelled, Preempted)
-    async fn handle_event(&self, message: &gossipsub::Message) {
-        match machine::decode_scheduler_event(&message.data) {
-            Ok(event) => {
-                let tender_id = event.tender_id.clone();
+    async fn handle_event(&self, event: &SchedulerEvent) {
+        let tender_id = event.tender_id.clone();
+        info!(
+            "Received Scheduler Event for tender {}: {:?}",
+            tender_id, event.event_type
+        );
+
+        if event.node_id == self.local_node_id {
+            use crate::messages::types::EventType;
+
+            if matches!(
+                event.event_type,
+                EventType::Cancelled | EventType::Preempted | EventType::Failed
+            ) {
                 info!(
-                    "Received Scheduler Event for tender {}: {:?}",
-                    tender_id, event.event_type
+                    "Received termination event for locally deployed tender {}",
+                    tender_id
                 );
-
-                if event.node_id == self.local_node_id {
-                    use crate::messages::types::EventType;
-
-                    if matches!(
-                        event.event_type,
-                        EventType::Cancelled | EventType::Preempted | EventType::Failed
-                    ) {
-                        info!(
-                            "Received termination event for locally deployed tender {}",
-                            tender_id
-                        );
-                    }
-                }
             }
-            Err(e) => error!("Failed to parse SchedulerEvent message: {}", e),
         }
     }
 
     /// Process Award messages announcing winners
-    async fn handle_award(&self, message: &gossipsub::Message) {
-        match machine::decode_award(&message.data) {
-            Ok(award) => {
-                if !is_timestamp_fresh(award.timestamp) {
-                    error!(
-                        "Discarding award for tender {}: timestamp outside skew",
-                        award.tender_id
-                    );
-                    return;
-                }
+    async fn handle_award(&self, award: &Award, message: &gossipsub::Message) {
+        if !is_timestamp_fresh(award.timestamp) {
+            error!(
+                "Discarding award for tender {}: timestamp outside skew",
+                award.tender_id
+            );
+            return;
+        }
 
-                let public_key = match message
-                    .source
-                    .as_ref()
-                    .and_then(|peer_id| peer_id_to_public_key(peer_id))
-                {
-                    Some(key) => key,
-                    None => {
-                        error!(
-                            "Discarding award for tender {}: unable to derive public key",
-                            award.tender_id
-                        );
-                        return;
-                    }
-                };
-
-                if !signatures::verify_sign_award(&award, &public_key) {
-                    error!(
-                        "Discarding award for tender {}: invalid signature",
-                        award.tender_id
-                    );
-                    return;
-                }
-
-                if award.winners.contains(&self.local_node_id) {
-                    info!(
-                        "Local node awarded tender {}; awaiting manifest transfer",
-                        award.tender_id
-                    );
-                }
+        let public_key = match message
+            .source
+            .as_ref()
+            .and_then(|peer_id| peer_id_to_public_key(peer_id))
+        {
+            Some(key) => key,
+            None => {
+                error!(
+                    "Discarding award for tender {}: unable to derive public key",
+                    award.tender_id
+                );
+                return;
             }
-            Err(e) => error!("Failed to parse Award message: {}", e),
+        };
+
+        if !signatures::verify_sign_award(award, &public_key) {
+            error!(
+                "Discarding award for tender {}: invalid signature",
+                award.tender_id
+            );
+            return;
+        }
+
+        if award.winners.contains(&self.local_node_id) {
+            info!(
+                "Local node awarded tender {}; awaiting manifest transfer",
+                award.tender_id
+            );
         }
     }
 }

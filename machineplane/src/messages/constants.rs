@@ -3,24 +3,6 @@
 /// Ident topic used for gossipsub in the beemesh fabric.
 pub const BEEMESH_FABRIC: &str = "beemesh-fabric";
 
-// === GOSSIPSUB TOPICS ===
-
-/// Topic used for scheduler tenders
-pub const SCHEDULER_TENDERS: &str = "scheduler-tenders";
-
-/// Topic used for scheduler events
-pub const SCHEDULER_EVENTS: &str = "scheduler-events";
-/// Alias for backwards compatibility
-pub const TOPIC_EVENTS: &str = SCHEDULER_EVENTS;
-
-/// Topic used for scheduler awards
-pub const SCHEDULER_AWARDS: &str = "scheduler-awards";
-
-/// Topic used for scheduler proposals
-pub const SCHEDULER_PROPOSALS: &str = "scheduler-proposals";
-/// Alias for backwards compatibility
-pub const TOPIC_PROPOSALS: &str = SCHEDULER_PROPOSALS;
-
 // === MESSAGE PREFIXES ===
 
 /// Prefix used for handshake messages exchanged on the gossip topic.

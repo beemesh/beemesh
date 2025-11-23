@@ -1,4 +1,5 @@
 use super::{KubeResourceRecord, RestState, TenderRecord};
+use crate::messages::types::SchedulerMessage;
 use crate::messages::{machine, signatures};
 use crate::scheduler::register_local_manifest;
 use axum::{
@@ -8,7 +9,6 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
-use bincode;
 use libp2p::identity::Keypair;
 use log::{error, warn};
 use rand::RngCore;
@@ -277,10 +277,7 @@ async fn publish_tender(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let tender_bytes = bincode::serialize(&tender).map_err(|e| {
-        warn!("Failed to serialize tender {}: {}", manifest_id, e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let tender_bytes = machine::encode_scheduler_message(SchedulerMessage::Tender(tender.clone()));
 
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Result<(), String>>();
     state

@@ -136,6 +136,15 @@ pub struct Award {
     pub signature: Vec<u8>,
 }
 
+/// Envelope used to multiplex scheduler messages on a single fabric topic
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum SchedulerMessage {
+    Tender(Tender),
+    Bid(Bid),
+    Event(SchedulerEvent),
+    Award(Award),
+}
+
 // ============================================================================
 // Tender Response Messages
 // ============================================================================

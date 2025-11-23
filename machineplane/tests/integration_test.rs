@@ -69,6 +69,7 @@ async fn test_run_host_application() {
     let verify_peers = wait_for_peers(Duration::from_secs(15)).await;
 
     // Test the pubkey endpoint
+    let health = check_health().await;
     let kem_pubkey_result = check_pubkey("kem_pubkey").await;
     let signing_pubkey_result = check_pubkey("signing_pubkey").await;
 

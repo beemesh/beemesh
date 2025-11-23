@@ -1,4 +1,4 @@
-use crate::messages::constants::SCHEDULER_TENDERS;
+use crate::messages::constants::BEEMESH_FABRIC;
 use crate::network::behaviour::{MyBehaviour, SCHEDULER_INPUT_TX};
 use libp2p::kad::{QueryId, RecordKey};
 use libp2p::{PeerId, Swarm, gossipsub};
@@ -79,7 +79,7 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
             handle_send_delete_request(peer_id, delete_request, reply_tx, swarm).await;
         }
         Libp2pControl::PublishTender { payload, reply_tx } => {
-            let topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
+            let topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC);
             match swarm
                 .behaviour_mut()
                 .gossipsub

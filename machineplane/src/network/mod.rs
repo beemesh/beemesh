@@ -16,9 +16,7 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
-use crate::messages::libp2p_constants::{
-    BEEMESH_FABRIC, SCHEDULER_AWARDS, SCHEDULER_EVENTS, SCHEDULER_PROPOSALS, SCHEDULER_TENDERS,
-};
+use crate::messages::libp2p_constants::BEEMESH_FABRIC;
 use crate::scheduler::SchedulerCommand;
 
 // Flattened modules
@@ -289,27 +287,9 @@ pub fn setup_libp2p_node(
         .build();
 
     let topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC);
-    let tenders_topic = gossipsub::IdentTopic::new(SCHEDULER_TENDERS);
-    let proposals_topic = gossipsub::IdentTopic::new(SCHEDULER_PROPOSALS);
-    let events_topic = gossipsub::IdentTopic::new(SCHEDULER_EVENTS);
-    let awards_topic = gossipsub::IdentTopic::new(SCHEDULER_AWARDS);
 
-    debug!(
-        "Subscribing to topics: {}, {}, {}, {}, {}",
-        topic.hash(),
-        tenders_topic.hash(),
-        proposals_topic.hash(),
-        events_topic.hash(),
-        awards_topic.hash()
-    );
+    debug!("Subscribing to topics: {}", topic.hash());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-    swarm.behaviour_mut().gossipsub.subscribe(&tenders_topic)?;
-    swarm
-        .behaviour_mut()
-        .gossipsub
-        .subscribe(&proposals_topic)?;
-    swarm.behaviour_mut().gossipsub.subscribe(&events_topic)?;
-    swarm.behaviour_mut().gossipsub.subscribe(&awards_topic)?;
     // Ensure local host is an explicit mesh peer for the topic so publish() finds at least one subscriber
     let local_peer = swarm.local_peer_id().clone();
     swarm

@@ -40,6 +40,8 @@ The Machineplane is a **stateless, decentralized infrastructure layer** that tur
 
   * **Pub/Sub Topic (Gossipsub)**: `beemesh-fabric` — single shared topic used for tender publication, bid submission, awards,
     and deployment events.
+      * All scheduler payloads **MUST** be bincode-encoded `SchedulerMessage` envelopes on this topic; additional scheduler topics
+        are **NOT ALLOWED**.
 
   * **Secure Streams**: bilateral encrypted channels for optional point-to-point negotiation.
 
