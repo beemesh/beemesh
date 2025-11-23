@@ -12,24 +12,21 @@ pub fn make_test_daemon(
     bootstrap_peers: Vec<String>,
     libp2p_quic_port: u16,
 ) -> DaemonConfig {
-    let podman_socket = std::env::var("PODMAN_HOST")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "/run/podman/podman.sock".to_string());
-
     DaemonConfig {
         ephemeral: true,
         rest_api_host: "127.0.0.1".to_string(),
         rest_api_port,
-        node_name: None,
         key_dir: String::from("/tmp/.beemesh_test_unused"),
         bootstrap_peer: bootstrap_peers,
         libp2p_quic_port,
-        libp2p_host: "0.0.0.0".to_string(),
-        podman_socket: Some(podman_socket),
+        // Prefer explicit PODMAN_HOST if provided, otherwise let machineplane detect defaults.
+        podman_socket: std::env::var("PODMAN_HOST")
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
         signing_ephemeral: true,
         kem_ephemeral: true,
         ephemeral_keys: true,
+        ..DaemonConfig::default()
     }
 }
 
@@ -57,7 +54,7 @@ pub async fn start_nodes(
             Ok(mut handles) => {
                 all_handles.append(&mut handles);
             }
-            Err(e) => panic!("failed to start node: {:?}", e),
+            Err(e) => panic!("failed to start node: {e:?}"),
         }
         tokio::spawn(log_local_address(
             rest_api_host,
