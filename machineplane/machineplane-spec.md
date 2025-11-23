@@ -2,7 +2,7 @@
 
 > Scope: This document specifies the **Machineplane** of Beemesh: node discovery, ephemeral scheduling, deployment, security, failure handling, and observability. It uses RFC 2119 keywords and provides executable-style Gherkin scenarios.
 > **Profile:** Rust implementation using `libp2p` (Kademlia DHT + Gossipsub + Noise/TLS).
-> **Semantics:** Machineplane scheduling is **best-effort with deterministic winner selection (A/P)**. **Consistency for stateful workloads is guaranteed by the duplicate-tolerant Workplane (C/P).**
+> **Semantics:** Machineplane scheduling is **best-effort with deterministic winner selection (A/P)**. **Consistency for stateful workloads is enforced by the Workplane (C/P).**
 
 -----
 
@@ -10,7 +10,7 @@
 
 The Machineplane is a **stateless, decentralized infrastructure layer** that turns machines into fungible resources. It coordinates **node discovery, ephemeral scheduling, and workload deployment** using `libp2p` primitives (**DHT + Pub/Sub + secure streams**). It **MUST NOT** persist fabric-wide state and **MUST** operate under **Availability/Partition-Tolerance (A/P)** tradeoffs.
 
-**Scheduling semantics:** Elections on the Machineplane are **hint-based**; **multiple concurrent lease hints MAY occur**. The Machineplane provides **at-least-once scheduling with deterministic winner sets**; duplicates are still tolerated by the **Workplane**, which enforces leadership and write safety for stateful workloads.
+**Scheduling semantics:** Elections on the Machineplane are **hint-based**; **multiple concurrent lease hints MAY occur**. The Machineplane provides **at-least-once scheduling with deterministic winner sets**, and the **Workplane** enforces leadership and write safety for stateful workloads.
 
 ### **1.1 Non-Goals**
 
@@ -134,7 +134,6 @@ is required because libp2p sessions are already mutually authenticated and encry
 **Tender (additions)**
 
 * `workload_type`: `"stateless" | "stateful"`
-* `duplicate_tolerant`: `bool` (default `true`)
 * `placement_token`: ULID (monotonic per `(workload_id, attempt)`; hint for Workplane fencing)
 * `manifest_digest`: content hash of the manifest **without sending the manifest itself**.
 * **Replica count is not disclosed in the Tender**; the publisher decides how many bids to accept.
@@ -162,7 +161,7 @@ but are encoded directly with bincode without an envelope wrapper.
 
 ---
 
-## **4. Scheduling Algorithm (Ephemeral, Duplicate-Tolerant)**
+## **4. Scheduling Algorithm (Ephemeral)**
 
 ### **4.1 Flow (Normative)**
 
@@ -188,7 +187,7 @@ but are encoded directly with bincode without an envelope wrapper.
 7. **Deployment**:
 
    * An awarded node **MAY** proceed to deploy once it has the manifest from the tender owner. The **Workplane** continues to gate stateful writes/leadership.
-   * The Machineplane provides **at-least-once** scheduling semantics with deterministic winner sets; duplicate deployments **MAY** still occur in partitions or retries, and correctness is enforced by the Workplane/workload logic.
+   * The Machineplane provides **at-least-once** scheduling semantics with deterministic winner sets; deployment correctness is enforced by the Workplane/workload logic.
 
 8. **Confirmation**: Deployer **MUST** publish `Event{Deployed|Failed}`.
 
@@ -220,7 +219,7 @@ but are encoded directly with bincode without an envelope wrapper.
 
 | Failure                             | Required Behavior                                                                                                                                                                                                                                                              |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Network Partition**               | Nodes continue local bidding. On heal, **duplicate deployments MAY exist**. Nodes **SHOULD** prefer the deployment with freshest local health and event visibility; excess replicas **SHOULD** be drained or **MUST** respond to Workplane signals to exit. |
+| **Network Partition**               | Nodes continue local bidding. On heal, nodes **SHOULD** prefer the deployment with freshest local health and event visibility; unexpected replicas **SHOULD** be drained or **MUST** respond to Workplane signals to exit. |
 | **Winner crash before deploy**      | Lack of deployment events after `deploy_timeout_ms` **SHOULD** trigger backoff and potential re-award.                                                                                                                                                                                                                                  |
 | **Late bids**                       | Ignored for current window; **MAY** be used for retry if deploy fails.                                                                                                                                                                                                         |
 | **Conflicting Awards**          | Nodes **MUST** tolerate repeated or conflicting awards during partitions; **MUST** rely on manifest digest matching and Workplane signals to converge.                                                                                                                  |
@@ -254,7 +253,6 @@ machineplane:
   selection_jitter_ms: 100
   deploy_timeout_ms: 10000
   clock_skew_ms: 30000
-  duplicate_tolerant_default: true
   policies:
     overcommit:
       cpu: 1.2
@@ -329,7 +327,7 @@ Scenario: Reject unsigned fabric messages
   And it MUST NOT emit a Bid
 ```
 
-### **13.2 Feature: Ephemeral, Duplicate-Tolerant Scheduling**
+### **13.2 Feature: Ephemeral Scheduling**
 
 ```gherkin
 Scenario: At-least-once scheduling with secure manifest handoff
@@ -353,10 +351,10 @@ Scenario: Deterministic winner selection
 
 ```gherkin
 Scenario: Partition with conflicting awards
-  Given a network split causing duplicate deployments for T
+  Given a network split affecting tender T
   When the partition heals
-  Then nodes MUST tolerate the duplicates temporarily
-  And nodes SHOULD drain excess replicas
+  Then nodes MUST converge on the freshest valid award for T
+  And nodes SHOULD drain any deployments that do not match that award
   And nodes MUST honor Workplane leader/consistency signals when present
 ```
 

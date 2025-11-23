@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::{sync::watch, time::Duration};
+use ulid::Ulid;
 
 async fn create_response_with_fallback(
     body: &[u8],
@@ -306,13 +307,9 @@ pub async fn create_tender(
         (manifest_id, operation_id)
     };
 
-    // Use manifest_id as the tender_id (since manifest_id is the central identifier)
-    let tender_id = manifest_id.clone();
-    log::info!(
-        "create_tender: using manifest_id='{}' as tender_id='{}'",
-        manifest_id,
-        tender_id
-    );
+    // Generate a unique tender_id to satisfy the ULID requirement in the spec
+    let tender_id = Ulid::new().to_string();
+    log::info!("create_tender: generated tender_id='{}'", tender_id);
 
     // Store the operation_id -> manifest_id mapping for later self-apply lookups
     store_operation_manifest_mapping(&operation_id, &manifest_id).await;
