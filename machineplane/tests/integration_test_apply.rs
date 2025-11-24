@@ -9,6 +9,7 @@
 //! - Testing replica distribution.
 
 use env_logger::Env;
+use machineplane::runtimes::podman::PodmanEngine;
 use serial_test::serial;
 
 use std::path::PathBuf;
@@ -65,11 +66,26 @@ async fn test_apply_functionality() {
     let (client, ports) = setup_test_environment().await;
     let mut handles = start_fabric_nodes().await;
 
+    // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
+    // Give ample time for all REST endpoints to come up in slower CI environments.
+    let rest_api_timeout = timeout_from_env("BEEMESH_APPLY_HEALTH_TIMEOUT_SECS", 45);
+    if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "REST APIs MUST become healthy before apply workflow verification (see test-spec.md); timeout: {:?}",
+            rest_api_timeout
+        );
+    }
+
     // Wait for libp2p mesh to form before proceeding
-    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 15);
+    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 30);
     let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
-        log::warn!("Mesh formation incomplete, but proceeding with test");
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path relative to this test crate's manifest dir so it's robust under cargo test
@@ -101,14 +117,12 @@ async fn test_apply_functionality() {
     .await;
 
     // With peer ID filtering, we can now properly verify that only the intended node has the workload
-    if nodes_with_deployed_workloads.is_empty() {
-        log::warn!(
-            "No nodes reported deployed workloads for tender {} after extended retries",
-            tender_id
-        );
-        shutdown_nodes(&mut handles).await;
-        return;
-    }
+    assert_eq!(
+        nodes_with_deployed_workloads.len(),
+        1,
+        "Single replica apply MUST land on exactly one node; observed nodes: {:?}",
+        nodes_with_deployed_workloads
+    );
 
     // Verify that manifest content matches on the node that has the workload
     assert!(
@@ -142,19 +156,24 @@ async fn test_apply_with_real_podman() {
     // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
     // In slower environments the first node can take longer to start, which would cause the
     // manifest delivery to fail and the Podman verification to panic later.
-    let rest_api_timeout = timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 30);
+    // Podman-backed runs are slower because real containers have to initialize.
+    let rest_api_timeout = timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 60);
     if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
-        log::warn!("Skipping Podman integration test - REST APIs did not become healthy in time");
         shutdown_nodes(&mut handles).await;
-        return;
+        panic!(
+            "REST APIs MUST become healthy before Podman apply verification (see test-spec.md); timeout: {:?}",
+            rest_api_timeout
+        );
     }
 
-    let mesh_timeout = timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 30);
+    let mesh_timeout = timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 60);
     let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_ready {
-        log::warn!("Skipping Podman integration test - mesh formation did not complete in time");
         shutdown_nodes(&mut handles).await;
-        return;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path relative to this test crate's manifest dir
@@ -185,23 +204,18 @@ async fn test_apply_with_real_podman() {
     )
     .await;
 
-    if nodes_with_deployed_workloads.is_empty() {
-        log::warn!(
-            "Skipping Podman integration test - manifest delivery incomplete for tender {}",
-            tender_id
-        );
-        shutdown_nodes(&mut handles).await;
-        return;
-    }
+    assert_eq!(
+        nodes_with_deployed_workloads.len(),
+        1,
+        "Podman-backed apply MUST land single replica on exactly one node; observed nodes: {:?}",
+        nodes_with_deployed_workloads
+    );
 
-    if !nodes_with_content_mismatch.is_empty() {
-        log::warn!(
-            "Skipping Podman integration test - manifest content mismatch on nodes {:?}",
-            nodes_with_content_mismatch
-        );
-        shutdown_nodes(&mut handles).await;
-        return;
-    }
+    assert!(
+        nodes_with_content_mismatch.is_empty(),
+        "Podman-backed apply produced manifest content mismatch on nodes {:?}",
+        nodes_with_content_mismatch
+    );
 
     // Verify actual Podman deployment
     let podman_delivery_timeout = timeout_from_env("BEEMESH_PODMAN_VERIFY_TIMEOUT_SECS", 45);
@@ -247,10 +261,10 @@ async fn wait_for_rest_api_health(
 
         for &port in ports {
             let base = format!("http://127.0.0.1:{}", port);
-            match client.get(format!("{}/status", base)).send().await {
+            match client.get(format!("{}/health", base)).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(json) if json.get("ok").and_then(|v| v.as_bool()) == Some(true) => {
+                    match resp.text().await {
+                        Ok(body) if body.trim() == "ok" => {
                             healthy_ports.push(port);
                         }
                         _ => unhealthy_ports.push(port),
@@ -330,11 +344,26 @@ async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
     let mut handles = start_fabric_nodes().await;
 
+    // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
+    // Allow additional startup time before verifying replica distribution.
+    let rest_api_timeout = timeout_from_env("BEEMESH_APPLY_HEALTH_TIMEOUT_SECS", 45);
+    if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "REST APIs MUST become healthy before apply workflow verification (see test-spec.md); timeout: {:?}",
+            rest_api_timeout
+        );
+    }
+
     // Wait for libp2p mesh to form before proceeding
-    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 10);
+    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 30);
     let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
-        log::warn!("Mesh formation incomplete, but proceeding with test");
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path for nginx with replicas
@@ -365,19 +394,11 @@ async fn test_apply_nginx_with_replicas() {
     )
     .await;
 
-    // For replicas=3 we still expect broad distribution, but in resource constrained or slow environments we
-    // allow tests to proceed as long as at least one node has taken the workload.
-    if nodes_with_deployed_workloads.len() < 3 {
-        log::warn!(
-            "Replica distribution incomplete: expected 3 nodes but saw {} nodes: {:?}",
-            nodes_with_deployed_workloads.len(),
-            nodes_with_deployed_workloads
+    if nodes_with_deployed_workloads.is_empty() {
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "Replica apply SHOULD distribute across nodes but MUST land on at least one; no nodes reported workloads"
         );
-
-        if nodes_with_deployed_workloads.is_empty() {
-            shutdown_nodes(&mut handles).await;
-            return;
-        }
     }
 
     if nodes_with_deployed_workloads.len() == ports.len() {
@@ -396,6 +417,13 @@ async fn test_apply_nginx_with_replicas() {
         assert!(
             nodes_with_content_mismatch.is_empty(),
             "Manifest content verification failed on nodes: {:?}. The deployed manifest content does not match the original manifest.",
+            nodes_with_content_mismatch
+        );
+    } else {
+        // Even when not all replicas spread, the deployed nodes must agree on manifest content.
+        assert!(
+            nodes_with_content_mismatch.is_empty(),
+            "Replica apply produced manifest content mismatch on nodes {:?}",
             nodes_with_content_mismatch
         );
     }
@@ -452,15 +480,53 @@ async fn start_test_nodes_for_podman() -> Vec<JoinHandle<()>> {
 }
 
 async fn is_podman_available() -> bool {
-    match podman_command(&["--version"])
+    // Require a configured Podman socket; without it the runtime-backed apply flow
+    // will be disabled inside machineplane, leaving no workloads to observe.
+    let configured_socket = std::env::var("CONTAINER_HOST")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(PodmanEngine::detect_podman_socket);
+
+    let Some(socket) = configured_socket else {
+        log::warn!("Podman socket not detected; skipping Podman-dependent apply tests");
+        return false;
+    };
+
+    let normalized_socket = PodmanEngine::normalize_socket(&socket);
+    // SAFETY: configuring the process environment for test child tasks is required so
+    // the Podman runtime can discover the socket. This mirrors the main binary's
+    // startup configuration path.
+    unsafe {
+        std::env::set_var("CONTAINER_HOST", &normalized_socket);
+    }
+
+    // Podman CLI existing is not enough; the daemon must also be reachable for the
+    // apply flows to make progress. Use `podman info` to verify connectivity.
+    let version_ok = podman_command(&["--version"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .await
-    {
-        Ok(status) => status.success(),
-        Err(_) => false,
+        .map(|status| status.success())
+        .unwrap_or(false);
+
+    if !version_ok {
+        log::warn!("Podman CLI not available; skipping Podman-dependent apply tests");
+        return false;
     }
+
+    podman_command(&["info", "--format", "json"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|status| status.success())
+        .unwrap_or_else(|err| {
+            log::warn!(
+                "Podman daemon unreachable ({err}); skipping Podman-dependent apply tests"
+            );
+            false
+        })
 }
 
 async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> bool {
