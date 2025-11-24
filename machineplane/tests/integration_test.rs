@@ -14,12 +14,6 @@ use reqwest::Client;
 use std::time::Duration;
 use tokio::time::sleep;
 
-#[path = "apply_common.rs"]
-#[allow(dead_code)]
-mod apply_common;
-#[path = "kube_helpers.rs"]
-#[allow(dead_code)]
-mod kube_helpers;
 #[path = "runtime_helpers.rs"]
 mod runtime_helpers;
 
