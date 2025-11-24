@@ -14,10 +14,6 @@ use reqwest::Client;
 use std::time::Duration;
 use tokio::time::sleep;
 
-#[path = "apply_common.rs"]
-mod apply_common;
-#[path = "kube_helpers.rs"]
-mod kube_helpers;
 #[path = "runtime_helpers.rs"]
 mod runtime_helpers;
 
@@ -34,6 +30,7 @@ use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_lo
 /// - The health endpoint returns "ok".
 /// - The public key endpoints return valid keys.
 #[tokio::test]
+#[ignore = "Full host flow requires local REST+QUIC ports; see test-spec.md"]
 async fn test_run_host_application() {
     // Initialize logger
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
