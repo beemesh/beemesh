@@ -23,19 +23,33 @@ jobs:
       - name: Cargo build
         run: cargo build --workspace --all-targets
 
-      - name: Install dependencies
+      - name: Install Podman
         run: |
           sudo apt-get update
           sudo apt-get -y install podman
 
-      - name: Start Podman service
+      - name: Start Podman API service
         run: |
           export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$UID}
           mkdir -p "$XDG_RUNTIME_DIR/podman"
           podman system service --time=0 unix://$XDG_RUNTIME_DIR/podman/podman.sock &
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
           echo "CONTAINER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock" >> "$GITHUB_ENV"
 
-      - name: Cargo test
+      - name: Wait for Podman
+        run: |
+          for i in {1..20}; do
+            if podman info >/dev/null 2>&1; then
+              echo "Podman is ready"
+              exit 0
+            fi
+            echo "Waiting for Podman..."
+            sleep 0.5
+          done
+          echo "Podman did not become ready in time"
+          exit 1
+      
+      - name: Cargo tests with Podman
         env:
           CONTAINER_HOST: ${{ env.CONTAINER_HOST }}
         run: cargo test --workspace --verbose
