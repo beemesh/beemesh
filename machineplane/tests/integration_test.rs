@@ -9,17 +9,19 @@
 
 use env_logger::Env;
 use log::info;
-
 use reqwest::Client;
 
 use std::time::Duration;
 use tokio::time::sleep;
 
+#[path = "apply_common.rs"]
+mod apply_common;
+#[path = "kube_helpers.rs"]
+mod kube_helpers;
 #[path = "runtime_helpers.rs"]
 mod runtime_helpers;
-use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_local_multiaddr};
 
-// We will start beemesh machineplane deamons directly in this process by calling `start_machineplane(daemon).await`.
+use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_local_multiaddr};
 
 /// Tests the full host application flow.
 ///
@@ -31,7 +33,6 @@ use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_lo
 /// - The mesh forms correctly (at least 4 peers discovered).
 /// - The health endpoint returns "ok".
 /// - The public key endpoints return valid keys.
-#[serial]
 #[tokio::test]
 async fn test_run_host_application() {
     // Initialize logger
@@ -78,7 +79,7 @@ async fn test_run_host_application() {
 
     // wait for the mesh to form (poll until peers appear or timeout)
     let total_peers =
-        wait_for_mesh_formation(&client, &rest_api_ports, 4, Duration::from_secs(30)).await;
+        wait_for_mesh_formation(&client, &rest_api_ports, Duration::from_secs(30)).await;
 
     // Test the pubkey endpoint
     let health = check_health(&client, 3000).await;
@@ -89,8 +90,8 @@ async fn test_run_host_application() {
 
     assert!(health, "Expected health endpoint to return ok");
     assert!(
-        total_peers >= 4,
-        "Expected at least four peers in the mesh, got {total_peers}"
+        total_peers,
+        "Expected mesh to form successfully"
     );
     assert!(
         !kem_pubkey_result.is_empty(),
@@ -174,10 +175,11 @@ async fn wait_for_rest_api_health(client: &Client, ports: &[u16], timeout: Durat
 async fn wait_for_mesh_formation(
     client: &Client,
     ports: &[u16],
-    min_total_peers: usize,
     timeout: Duration,
-) -> usize {
+) -> bool {
     let start = tokio::time::Instant::now();
+    let min_total_peers = 4;
+    
     loop {
         let mut total_peers = 0usize;
         for &port in ports {
@@ -196,7 +198,7 @@ async fn wait_for_mesh_formation(
                 "Mesh formation successful: {} total peer connections",
                 total_peers
             );
-            return total_peers;
+            return true;
         }
 
         if start.elapsed() > timeout {
@@ -204,7 +206,7 @@ async fn wait_for_mesh_formation(
                 "Mesh formation timed out after {:?}, only {} peer connections",
                 timeout, total_peers
             );
-            return total_peers;
+            return false;
         }
 
         sleep(Duration::from_millis(500)).await;
