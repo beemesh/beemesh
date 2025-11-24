@@ -588,10 +588,19 @@ pub async fn start_libp2p_node(
                         let _ = peer_tx.send(all_peers);
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
+                        let peer_id = swarm.local_peer_id();
+                        let mut with_peer_id = address.clone();
+                        with_peer_id.push(Protocol::P2p((*peer_id).into()));
+
                         if let Some((host, port)) = extract_listen_endpoint(&address) {
-                            info!("libp2p: listening on {}:{}", host, port);
+                            info!(
+                                "libp2p: listening on {}:{} (bootstrap with {})",
+                                host, port, with_peer_id
+                            );
                         } else {
-                            info!("libp2p: listening on {address}");
+                            info!(
+                                "libp2p: listening on {address} (bootstrap with {with_peer_id})"
+                            );
                         }
                     }
                     _ => {}

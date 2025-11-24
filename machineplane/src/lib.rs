@@ -40,7 +40,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub ephemeral_keys: bool,
 
-    /// Bootstrap peer addresses for explicit peer discovery (can be specified multiple times)
+    /// Bootstrap peer addresses for explicit peer discovery (can be specified multiple times).
+    ///
+    /// Use a full multiaddr that includes the transport and peer ID, e.g.
+    /// `/ip4/127.0.0.1/udp/55493/quic-v1/p2p/<peer_id>`.
     #[arg(long)]
     pub bootstrap_peer: Vec<String>,
 
@@ -140,7 +143,11 @@ pub async fn start_machineplane(
                 Ok(_) => log::debug!("Dialing bootstrap peer: {}", addr),
                 Err(e) => log::warn!("Failed to dial bootstrap peer {}: {}", addr, e),
             },
-            Err(e) => log::warn!("Invalid bootstrap peer address {}: {}", addr, e),
+            Err(e) => log::warn!(
+                "Invalid bootstrap peer multiaddr '{}': {}. Example: /ip4/127.0.0.1/udp/55493/quic-v1/p2p/<peer_id>",
+                addr,
+                e
+            ),
         }
     }
 
