@@ -479,15 +479,33 @@ async fn start_test_nodes_for_podman() -> Vec<JoinHandle<()>> {
 }
 
 async fn is_podman_available() -> bool {
-    match podman_command(&["--version"])
+    // Podman CLI existing is not enough; the daemon must also be reachable for the
+    // apply flows to make progress. Use `podman info` to verify connectivity.
+    let version_ok = podman_command(&["--version"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .await
-    {
-        Ok(status) => status.success(),
-        Err(_) => false,
+        .map(|status| status.success())
+        .unwrap_or(false);
+
+    if !version_ok {
+        log::warn!("Podman CLI not available; skipping Podman-dependent apply tests");
+        return false;
     }
+
+    podman_command(&["info", "--format", "json"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|status| status.success())
+        .unwrap_or_else(|err| {
+            log::warn!(
+                "Podman daemon unreachable ({err}); skipping Podman-dependent apply tests"
+            );
+            false
+        })
 }
 
 async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> bool {
