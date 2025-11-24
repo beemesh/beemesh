@@ -258,10 +258,10 @@ async fn wait_for_rest_api_health(
 
         for &port in ports {
             let base = format!("http://127.0.0.1:{}", port);
-            match client.get(format!("{}/status", base)).send().await {
+            match client.get(format!("{}/health", base)).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(json) if json.get("ok").and_then(|v| v.as_bool()) == Some(true) => {
+                    match resp.text().await {
+                        Ok(body) if body.trim() == "ok" => {
                             healthy_ports.push(port);
                         }
                         _ => unhealthy_ports.push(port),
