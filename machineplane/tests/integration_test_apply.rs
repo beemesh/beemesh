@@ -66,7 +66,8 @@ async fn test_apply_functionality() {
     let mut handles = start_fabric_nodes().await;
 
     // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
-    let rest_api_timeout = timeout_from_env("BEEMESH_APPLY_HEALTH_TIMEOUT_SECS", 20);
+    // Give ample time for all REST endpoints to come up in slower CI environments.
+    let rest_api_timeout = timeout_from_env("BEEMESH_APPLY_HEALTH_TIMEOUT_SECS", 45);
     if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
         shutdown_nodes(&mut handles).await;
         panic!(
@@ -76,7 +77,7 @@ async fn test_apply_functionality() {
     }
 
     // Wait for libp2p mesh to form before proceeding
-    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 15);
+    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 30);
     let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
         shutdown_nodes(&mut handles).await;
@@ -154,7 +155,8 @@ async fn test_apply_with_real_podman() {
     // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
     // In slower environments the first node can take longer to start, which would cause the
     // manifest delivery to fail and the Podman verification to panic later.
-    let rest_api_timeout = timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 30);
+    // Podman-backed runs are slower because real containers have to initialize.
+    let rest_api_timeout = timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 60);
     if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
         shutdown_nodes(&mut handles).await;
         panic!(
@@ -163,7 +165,7 @@ async fn test_apply_with_real_podman() {
         );
     }
 
-    let mesh_timeout = timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 30);
+    let mesh_timeout = timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 60);
     let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_ready {
         shutdown_nodes(&mut handles).await;
@@ -342,7 +344,8 @@ async fn test_apply_nginx_with_replicas() {
     let mut handles = start_fabric_nodes().await;
 
     // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
-    let rest_api_timeout = timeout_from_env("BEEMESH_APPLY_HEALTH_TIMEOUT_SECS", 20);
+    // Allow additional startup time before verifying replica distribution.
+    let rest_api_timeout = timeout_from_env("BEEMESH_APPLY_HEALTH_TIMEOUT_SECS", 45);
     if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
         shutdown_nodes(&mut handles).await;
         panic!(
@@ -352,7 +355,7 @@ async fn test_apply_nginx_with_replicas() {
     }
 
     // Wait for libp2p mesh to form before proceeding
-    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 10);
+    let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 30);
     let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
         shutdown_nodes(&mut handles).await;
