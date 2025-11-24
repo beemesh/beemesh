@@ -14,10 +14,13 @@ use reqwest::Client;
 use std::time::Duration;
 use tokio::time::sleep;
 
+#[path = "apply_common.rs"]
+mod apply_common;
 #[path = "runtime_helpers.rs"]
 mod runtime_helpers;
 
-use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_local_multiaddr};
+use apply_common::{start_fabric_nodes_with_ports, wait_for_mesh_formation};
+use runtime_helpers::shutdown_nodes;
 
 /// Tests the full host application flow.
 ///
@@ -39,35 +42,7 @@ async fn test_run_host_application() {
     let rest_api_ports = [3000, 3100, 3200, 3300, 3400];
     let libp2p_ports = [4000, 4100, 4200, 4300, 4400];
 
-    // start a bootstrap node first
-    let daemon1 = make_test_daemon(rest_api_ports[0], vec![], libp2p_ports[0]);
-    let mut handles = start_nodes(vec![daemon1], Duration::from_secs(1)).await;
-
-    // discover the bootstrap node's peer id before connecting other nodes
-    let bootstrap_addr = wait_for_local_multiaddr(
-        "127.0.0.1",
-        rest_api_ports[0],
-        "127.0.0.1",
-        libp2p_ports[0],
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("bootstrap node did not expose a peer id in time");
-    let bootstrap_peers = vec![bootstrap_addr];
-
-    // subsequent nodes use the first node as their bootstrap peer
-    let daemon2 = make_test_daemon(rest_api_ports[1], bootstrap_peers.clone(), libp2p_ports[1]);
-    let daemon3 = make_test_daemon(rest_api_ports[2], bootstrap_peers.clone(), libp2p_ports[2]);
-    let daemon4 = make_test_daemon(rest_api_ports[3], bootstrap_peers.clone(), libp2p_ports[3]);
-    let daemon5 = make_test_daemon(rest_api_ports[4], bootstrap_peers, libp2p_ports[4]);
-
-    handles.append(
-        &mut start_nodes(
-            vec![daemon2, daemon3, daemon4, daemon5],
-            Duration::from_secs(1),
-        )
-        .await,
-    );
+    let mut handles = start_fabric_nodes_with_ports(&rest_api_ports, &libp2p_ports).await;
 
     // wait for REST APIs to become healthy before relying on endpoints
     assert!(
@@ -77,7 +52,7 @@ async fn test_run_host_application() {
 
     // wait for the mesh to form (poll until peers appear or timeout)
     let total_peers =
-        wait_for_mesh_formation(&client, &rest_api_ports, Duration::from_secs(30)).await;
+        wait_for_mesh_formation(&client, &rest_api_ports, Duration::from_secs(30), 4).await;
 
     // Test the pubkey endpoint
     let primary_rest_port = rest_api_ports[0];
@@ -88,10 +63,7 @@ async fn test_run_host_application() {
     shutdown_nodes(&mut handles).await;
 
     assert!(health, "Expected health endpoint to return ok");
-    assert!(
-        total_peers,
-        "Expected mesh to form successfully"
-    );
+    assert!(total_peers, "Expected mesh to form successfully");
     assert!(
         !kem_pubkey_result.is_empty(),
         "Expected kem_pubkey field in response, got: {}",
@@ -189,57 +161,6 @@ async fn wait_for_rest_api_health(client: &Client, ports: &[u16], timeout: Durat
                 healthy,
                 ports.len(),
                 unhealthy_ports
-            );
-            return false;
-        }
-
-        sleep(Duration::from_millis(500)).await;
-    }
-}
-
-async fn wait_for_mesh_formation(
-    client: &Client,
-    ports: &[u16],
-    timeout: Duration,
-) -> bool {
-    let start = tokio::time::Instant::now();
-    let min_total_peers = 4;
-    
-    loop {
-        let mut total_peers = 0usize;
-        for &port in ports {
-            let base = format!("http://127.0.0.1:{port}");
-            if let Ok(resp) = client.get(format!("{base}/debug/peers")).send().await {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(peers_array) = json.get("peers").and_then(|v| v.as_array()) {
-                        total_peers += peers_array.len();
-                    }
-                } else {
-                    info!("Failed to parse peers response for port {port}");
-                }
-            } else {
-                info!("Peer query for port {port} failed");
-            }
-        }
-
-        if total_peers >= min_total_peers {
-            info!(
-                "Mesh formation successful: {} total peer connections",
-                total_peers
-            );
-            return true;
-        }
-
-        info!(
-            "Mesh formation progress: {} total peer connections (target: {})",
-            total_peers,
-            min_total_peers
-        );
-
-        if start.elapsed() > timeout {
-            info!(
-                "Mesh formation timed out after {:?}, only {} peer connections",
-                timeout, total_peers
             );
             return false;
         }
