@@ -33,21 +33,22 @@ use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_lo
 #[ignore = "Full host flow requires local REST+QUIC ports; see test-spec.md"]
 async fn test_run_host_application() {
     // Initialize logger
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
     let client = Client::new();
     let rest_api_ports = [3000, 3100, 3200, 3300, 3400];
+    let libp2p_ports = [4000, 4100, 4200, 4300, 4400];
 
     // start a bootstrap node first
-    let daemon1 = make_test_daemon(3000, vec![], 4001);
+    let daemon1 = make_test_daemon(rest_api_ports[0], vec![], libp2p_ports[0]);
     let mut handles = start_nodes(vec![daemon1], Duration::from_secs(1)).await;
 
     // discover the bootstrap node's peer id before connecting other nodes
     let bootstrap_addr = wait_for_local_multiaddr(
         "127.0.0.1",
-        3000,
+        rest_api_ports[0],
         "127.0.0.1",
-        4001,
+        libp2p_ports[0],
         Duration::from_secs(10),
     )
     .await
@@ -55,10 +56,10 @@ async fn test_run_host_application() {
     let bootstrap_peers = vec![bootstrap_addr];
 
     // subsequent nodes use the first node as their bootstrap peer
-    let daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
-    let daemon3 = make_test_daemon(3200, bootstrap_peers.clone(), 4003);
-    let daemon4 = make_test_daemon(3300, bootstrap_peers.clone(), 4004);
-    let daemon5 = make_test_daemon(3400, bootstrap_peers, 4005);
+    let daemon2 = make_test_daemon(rest_api_ports[1], bootstrap_peers.clone(), libp2p_ports[1]);
+    let daemon3 = make_test_daemon(rest_api_ports[2], bootstrap_peers.clone(), libp2p_ports[2]);
+    let daemon4 = make_test_daemon(rest_api_ports[3], bootstrap_peers.clone(), libp2p_ports[3]);
+    let daemon5 = make_test_daemon(rest_api_ports[4], bootstrap_peers, libp2p_ports[4]);
 
     handles.append(
         &mut start_nodes(
@@ -79,9 +80,10 @@ async fn test_run_host_application() {
         wait_for_mesh_formation(&client, &rest_api_ports, Duration::from_secs(30)).await;
 
     // Test the pubkey endpoint
-    let health = check_health(&client, 3000).await;
-    let kem_pubkey_result = check_pubkey(3000, "kem_pubkey").await;
-    let signing_pubkey_result = check_pubkey(3000, "signing_pubkey").await;
+    let primary_rest_port = rest_api_ports[0];
+    let health = check_health(&client, primary_rest_port).await;
+    let kem_pubkey_result = check_pubkey(primary_rest_port, "kem_pubkey").await;
+    let signing_pubkey_result = check_pubkey(primary_rest_port, "signing_pubkey").await;
 
     shutdown_nodes(&mut handles).await;
 
@@ -142,10 +144,29 @@ async fn wait_for_rest_api_health(client: &Client, ports: &[u16], timeout: Durat
             let base = format!("http://127.0.0.1:{port}");
             match client.get(format!("{base}/health")).send().await {
                 Ok(resp) if resp.status().is_success() => match resp.text().await {
-                    Ok(text) if text.trim() == "ok" => healthy += 1,
-                    _ => unhealthy_ports.push(port),
+                    Ok(text) if text.trim() == "ok" => {
+                        healthy += 1;
+                    }
+                    Ok(text) => {
+                        info!("Health check for port {port} returned unexpected body: {text:?}");
+                        unhealthy_ports.push(port);
+                    }
+                    Err(err) => {
+                        info!("Failed to read health response body for port {port}: {err}");
+                        unhealthy_ports.push(port);
+                    }
                 },
-                _ => unhealthy_ports.push(port),
+                Ok(resp) => {
+                    info!(
+                        "Health check for port {port} returned non-success status: {}",
+                        resp.status()
+                    );
+                    unhealthy_ports.push(port);
+                }
+                Err(err) => {
+                    info!("Health check request for port {port} failed: {err}");
+                    unhealthy_ports.push(port);
+                }
             }
         }
 
@@ -153,6 +174,13 @@ async fn wait_for_rest_api_health(client: &Client, ports: &[u16], timeout: Durat
             info!("All REST APIs are healthy ({} ports)", healthy);
             return true;
         }
+
+        info!(
+            "REST API health check progress: {} / {} healthy; unhealthy ports: {:?}",
+            healthy,
+            ports.len(),
+            unhealthy_ports
+        );
 
         if start.elapsed() > timeout {
             info!(
@@ -186,7 +214,11 @@ async fn wait_for_mesh_formation(
                     if let Some(peers_array) = json.get("peers").and_then(|v| v.as_array()) {
                         total_peers += peers_array.len();
                     }
+                } else {
+                    info!("Failed to parse peers response for port {port}");
                 }
+            } else {
+                info!("Peer query for port {port} failed");
             }
         }
 
@@ -197,6 +229,12 @@ async fn wait_for_mesh_formation(
             );
             return true;
         }
+
+        info!(
+            "Mesh formation progress: {} total peer connections (target: {})",
+            total_peers,
+            min_total_peers
+        );
 
         if start.elapsed() > timeout {
             info!(
