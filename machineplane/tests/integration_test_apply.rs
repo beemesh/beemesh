@@ -69,7 +69,11 @@ async fn test_apply_functionality() {
     let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 15);
     let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
-        log::warn!("Mesh formation incomplete, but proceeding with test");
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path relative to this test crate's manifest dir so it's robust under cargo test
@@ -152,9 +156,11 @@ async fn test_apply_with_real_podman() {
     let mesh_timeout = timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 30);
     let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_ready {
-        log::warn!("Skipping Podman integration test - mesh formation did not complete in time");
         shutdown_nodes(&mut handles).await;
-        return;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path relative to this test crate's manifest dir
@@ -334,7 +340,11 @@ async fn test_apply_nginx_with_replicas() {
     let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 10);
     let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
-        log::warn!("Mesh formation incomplete, but proceeding with test");
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path for nginx with replicas

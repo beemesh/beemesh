@@ -11,7 +11,7 @@ use tokio::time::{Instant, sleep};
 
 #[path = "runtime_helpers.rs"]
 mod runtime_helpers;
-use runtime_helpers::{make_test_daemon, start_nodes};
+use runtime_helpers::{make_test_daemon, start_nodes, wait_for_local_multiaddr};
 use tokio::task::JoinHandle;
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
@@ -34,8 +34,20 @@ pub async fn start_fabric_nodes() -> Vec<JoinHandle<()>> {
     // Allow the bootstrap node to settle before connecting peers.
     sleep(Duration::from_secs(2)).await;
 
+    // Discover the bootstrap node's advertised libp2p address (with peer ID)
+    // so subsequent nodes can join the mesh successfully.
+    let bootstrap_peer = wait_for_local_multiaddr(
+        "127.0.0.1",
+        3000,
+        "127.0.0.1",
+        4001,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("bootstrap node did not expose a peer id in time");
+
     // Start additional nodes that exclusively use the first node as bootstrap.
-    let bootstrap_peers = vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()];
+    let bootstrap_peers = vec![bootstrap_peer];
     let daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
     let daemon3 = make_test_daemon(3200, bootstrap_peers, 4003);
 
