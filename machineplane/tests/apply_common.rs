@@ -72,9 +72,9 @@ pub async fn start_fabric_nodes_with_ports(
     let mut peer_daemons = Vec::new();
     for (&rest_port, &libp2p_port) in rest_ports.iter().zip(libp2p_ports.iter()).skip(1) {
         let mut daemon = make_test_daemon(rest_port, bootstrap_peers.clone(), libp2p_port);
-        // daemon.signing_ephemeral = false;
-        // daemon.kem_ephemeral = false;
-        // daemon.ephemeral_keys = false;
+        daemon.signing_ephemeral = true;
+        daemon.kem_ephemeral = true;
+        daemon.ephemeral_keys = true;
         peer_daemons.push(daemon);
     }
 
