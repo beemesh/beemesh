@@ -31,14 +31,14 @@ use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_lo
 /// - The mesh forms correctly (at least 4 peers discovered).
 /// - The health endpoint returns "ok".
 /// - The public key endpoints return valid keys.
+#[serial]
 #[tokio::test]
-#[ignore = "requires integration environment"]
 async fn test_run_host_application() {
     // Initialize logger
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
 
     let client = Client::new();
-    let rest_api_ports = [3000u16, 3100, 3200, 3300, 3400];
+    let rest_api_ports = [3000, 3100, 3200, 3300, 3400];
 
     // start a bootstrap node first
     let daemon1 = make_test_daemon(3000, vec![], 4001);
