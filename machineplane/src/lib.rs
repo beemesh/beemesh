@@ -107,7 +107,9 @@ pub async fn start_machineplane(
     cli: DaemonConfig,
 ) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     // initialize logger but don't panic if already initialized
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+    // Default to info-level logging so the local PeerId and other startup messages are visible
+    // without requiring RUST_LOG to be set explicitly.
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
     let podman_socket = resolve_and_configure_podman_socket(cli.podman_socket.clone())?;
     if let Some(socket) = &podman_socket {
