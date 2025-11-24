@@ -9,6 +9,7 @@
 //! - Testing replica distribution.
 
 use env_logger::Env;
+use machineplane::runtimes::podman::PodmanEngine;
 use serial_test::serial;
 
 use std::path::PathBuf;
@@ -479,6 +480,26 @@ async fn start_test_nodes_for_podman() -> Vec<JoinHandle<()>> {
 }
 
 async fn is_podman_available() -> bool {
+    // Require a configured Podman socket; without it the runtime-backed apply flow
+    // will be disabled inside machineplane, leaving no workloads to observe.
+    let configured_socket = std::env::var("CONTAINER_HOST")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(PodmanEngine::detect_podman_socket);
+
+    let Some(socket) = configured_socket else {
+        log::warn!("Podman socket not detected; skipping Podman-dependent apply tests");
+        return false;
+    };
+
+    let normalized_socket = PodmanEngine::normalize_socket(&socket);
+    // SAFETY: configuring the process environment for test child tasks is required so
+    // the Podman runtime can discover the socket. This mirrors the main binary's
+    // startup configuration path.
+    unsafe {
+        std::env::set_var("CONTAINER_HOST", &normalized_socket);
+    }
+
     // Podman CLI existing is not enough; the daemon must also be reachable for the
     // apply flows to make progress. Use `podman info` to verify connectivity.
     let version_ok = podman_command(&["--version"])

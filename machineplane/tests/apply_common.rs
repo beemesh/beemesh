@@ -28,7 +28,10 @@ pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
 /// Returns JoinHandles for the spawned tasks so tests can abort them when finished.
 pub async fn start_fabric_nodes() -> Vec<JoinHandle<()>> {
     // Start a single bootstrap node first to give it time to initialize.
-    let bootstrap_daemon = make_test_daemon(3000, vec![], 4001);
+    let mut bootstrap_daemon = make_test_daemon(3000, vec![], 4001);
+    bootstrap_daemon.signing_ephemeral = false;
+    bootstrap_daemon.kem_ephemeral = false;
+    bootstrap_daemon.ephemeral_keys = false;
     let mut handles = start_nodes(vec![bootstrap_daemon], Duration::from_secs(1)).await;
 
     // Allow the bootstrap node to settle before connecting peers.
@@ -48,8 +51,15 @@ pub async fn start_fabric_nodes() -> Vec<JoinHandle<()>> {
 
     // Start additional nodes that exclusively use the first node as bootstrap.
     let bootstrap_peers = vec![bootstrap_peer];
-    let daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
-    let daemon3 = make_test_daemon(3200, bootstrap_peers, 4003);
+    let mut daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
+    daemon2.signing_ephemeral = false;
+    daemon2.kem_ephemeral = false;
+    daemon2.ephemeral_keys = false;
+
+    let mut daemon3 = make_test_daemon(3200, bootstrap_peers, 4003);
+    daemon3.signing_ephemeral = false;
+    daemon3.kem_ephemeral = false;
+    daemon3.ephemeral_keys = false;
 
     handles.append(&mut start_nodes(vec![daemon2, daemon3], Duration::from_secs(1)).await);
     handles
