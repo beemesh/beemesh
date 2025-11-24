@@ -107,7 +107,9 @@ pub async fn start_machineplane(
     cli: DaemonConfig,
 ) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     // initialize logger but don't panic if already initialized
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+    // Default to info-level logging so the local PeerId and other startup messages are visible
+    // without requiring RUST_LOG to be set explicitly.
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 
     let podman_socket = resolve_and_configure_podman_socket(cli.podman_socket.clone())?;
     if let Some(socket) = &podman_socket {
@@ -118,9 +120,14 @@ pub async fn start_machineplane(
     // treats peer identities as transient and does not persist them between restarts.
     let keypair = libp2p::identity::Keypair::generate_ed25519();
 
+    // Compute and surface the local peer identity immediately so operators can see it
+    // even if the network stack has not fully started yet.
+    let local_peer_id = keypair.public().to_peer_id();
+    log::info!("Local PeerId: {}", local_peer_id);
+
     // Store keypair bytes for network module
     let keypair_bytes = keypair.to_protobuf_encoding()?;
-    let public_bytes = keypair.public().to_peer_id().to_bytes();
+    let public_bytes = local_peer_id.to_bytes();
     network::set_node_keypair(Some((public_bytes.clone(), keypair_bytes.clone())));
 
     let (mut swarm, topic, peer_rx, peer_tx) =
