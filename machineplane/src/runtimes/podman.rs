@@ -189,16 +189,14 @@ impl PodmanEngine {
             return Some(socket);
         }
 
-        std::env::var("CONTAINER_HOST")
-            .ok()
-            .and_then(|value| {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(Self::normalize_socket(trimmed))
-                }
-            })
+        std::env::var("CONTAINER_HOST").ok().and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(Self::normalize_socket(trimmed))
+            }
+        })
     }
 
     /// Execute a podman command and return the output

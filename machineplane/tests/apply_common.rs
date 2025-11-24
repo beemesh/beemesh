@@ -15,6 +15,7 @@ use runtime_helpers::{make_test_daemon, start_nodes, wait_for_local_multiaddr};
 use tokio::task::JoinHandle;
 
 pub const TEST_PORTS: [u16; 3] = [3000u16, 3100u16, 3200u16];
+pub const TEST_LIBP2P_PORTS: [u16; 3] = [4000u16, 4100u16, 4200u16];
 
 /// Prepare logging and environment for runtime tests.
 pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
@@ -27,8 +28,25 @@ pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
 /// Build standard three-node fabric configuration.
 /// Returns JoinHandles for the spawned tasks so tests can abort them when finished.
 pub async fn start_fabric_nodes() -> Vec<JoinHandle<()>> {
+    start_fabric_nodes_with_ports(&TEST_PORTS, &TEST_LIBP2P_PORTS).await
+}
+
+/// Start a fabric mesh using the provided REST and libp2p port lists.
+///
+/// The first entry in `rest_ports`/`libp2p_ports` is treated as the bootstrap node;
+/// all subsequent nodes will join using its advertised peer address. All nodes are
+/// configured with persistent key material to make debugging easier.
+pub async fn start_fabric_nodes_with_ports(
+    rest_ports: &[u16],
+    libp2p_ports: &[u16],
+) -> Vec<JoinHandle<()>> {
+    assert!(
+        !rest_ports.is_empty() && rest_ports.len() == libp2p_ports.len(),
+        "REST and libp2p port lists must be non-empty and the same length"
+    );
+
     // Start a single bootstrap node first to give it time to initialize.
-    let mut bootstrap_daemon = make_test_daemon(3000, vec![], 4001);
+    let mut bootstrap_daemon = make_test_daemon(rest_ports[0], vec![], libp2p_ports[0]);
     bootstrap_daemon.signing_ephemeral = false;
     bootstrap_daemon.kem_ephemeral = false;
     bootstrap_daemon.ephemeral_keys = false;
@@ -41,9 +59,9 @@ pub async fn start_fabric_nodes() -> Vec<JoinHandle<()>> {
     // so subsequent nodes can join the mesh successfully.
     let bootstrap_peer = wait_for_local_multiaddr(
         "127.0.0.1",
-        3000,
+        rest_ports[0],
         "127.0.0.1",
-        4001,
+        libp2p_ports[0],
         Duration::from_secs(10),
     )
     .await
@@ -51,17 +69,16 @@ pub async fn start_fabric_nodes() -> Vec<JoinHandle<()>> {
 
     // Start additional nodes that exclusively use the first node as bootstrap.
     let bootstrap_peers = vec![bootstrap_peer];
-    let mut daemon2 = make_test_daemon(3100, bootstrap_peers.clone(), 4002);
-    daemon2.signing_ephemeral = false;
-    daemon2.kem_ephemeral = false;
-    daemon2.ephemeral_keys = false;
+    let mut peer_daemons = Vec::new();
+    for (&rest_port, &libp2p_port) in rest_ports.iter().zip(libp2p_ports.iter()).skip(1) {
+        let mut daemon = make_test_daemon(rest_port, bootstrap_peers.clone(), libp2p_port);
+        daemon.signing_ephemeral = false;
+        daemon.kem_ephemeral = false;
+        daemon.ephemeral_keys = false;
+        peer_daemons.push(daemon);
+    }
 
-    let mut daemon3 = make_test_daemon(3200, bootstrap_peers, 4003);
-    daemon3.signing_ephemeral = false;
-    daemon3.kem_ephemeral = false;
-    daemon3.ephemeral_keys = false;
-
-    handles.append(&mut start_nodes(vec![daemon2, daemon3], Duration::from_secs(1)).await);
+    handles.append(&mut start_nodes(peer_daemons, Duration::from_secs(1)).await);
     handles
 }
 
@@ -105,6 +122,7 @@ pub async fn wait_for_mesh_formation(
     client: &reqwest::Client,
     ports: &[u16],
     timeout: Duration,
+    min_total_peers: usize,
 ) -> bool {
     let start = Instant::now();
     loop {
@@ -120,19 +138,21 @@ pub async fn wait_for_mesh_formation(
             }
         }
 
-        if total_peers >= 2 {
+        if total_peers >= min_total_peers {
             log::info!(
-                "Mesh formation successful: {} total peer connections",
-                total_peers
+                "Mesh formation successful: {} total peer connections (target: {})",
+                total_peers,
+                min_total_peers
             );
             return true;
         }
 
         if start.elapsed() > timeout {
             log::warn!(
-                "Mesh formation timed out after {:?}, only {} peer connections",
+                "Mesh formation timed out after {:?}, only {} peer connections (target: {})",
                 timeout,
-                total_peers
+                total_peers,
+                min_total_peers
             );
             return false;
         }
