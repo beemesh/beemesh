@@ -166,6 +166,7 @@ pub fn setup_libp2p_node(
         .with_quic()
         .with_dns()?
         .with_behaviour(|key| {
+            info!("Local PeerId: {}", key.public().to_peer_id());
             let message_id_fn = |message: &gossipsub::Message| {
                 let mut s = DefaultHasher::new();
                 message.data.hash(&mut s);
