@@ -183,32 +183,22 @@ impl PodmanEngine {
         }
     }
 
-    /// Detect a podman socket URL from configuration, environment, or common locations
+    /// Detect a podman socket URL from configuration or `CONTAINER_HOST`.
     pub fn detect_podman_socket() -> Option<String> {
         if let Some(socket) = Self::socket_override() {
             return Some(socket);
         }
 
-        if let Ok(value) = std::env::var("CONTAINER_HOST") {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(Self::normalize_socket(trimmed));
-            }
-        }
-
-        if let Some(xdg_runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-            let candidate = PathBuf::from(xdg_runtime_dir).join("podman/podman.sock");
-            if candidate.exists() {
-                return Some(Self::normalize_socket(&candidate.to_string_lossy()));
-            }
-        }
-
-        let default_socket = Path::new("/run/podman/podman.sock");
-        if default_socket.exists() {
-            return Some(Self::normalize_socket(&default_socket.to_string_lossy()));
-        }
-
-        None
+        std::env::var("CONTAINER_HOST")
+            .ok()
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(Self::normalize_socket(trimmed))
+                }
+            })
     }
 
     /// Execute a podman command and return the output
@@ -403,7 +393,7 @@ impl PodmanEngine {
         &self,
         manifest_content: &[u8],
         manifest_id: &str,
-    ) -> RuntimeResult<std::path::PathBuf> {
+    ) -> RuntimeResult<PathBuf> {
         use tokio::io::AsyncWriteExt;
 
         let temp_dir = std::env::temp_dir();
@@ -457,7 +447,7 @@ impl PodmanEngine {
     }
 
     /// Clean up temporary manifest file
-    async fn cleanup_temp_file(&self, path: &std::path::Path) {
+    async fn cleanup_temp_file(&self, path: &Path) {
         if let Err(e) = tokio::fs::remove_file(path).await {
             warn!("Failed to clean up temporary file {:?}: {}", path, e);
         } else {
@@ -1082,7 +1072,6 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::OsString;
-    use std::fs::{File, remove_dir_all};
 
     struct EnvGuard {
         key: &'static str,
@@ -1091,14 +1080,6 @@ mod tests {
 
     impl EnvGuard {
         fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var_os(key);
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, previous }
-        }
-
-        fn set_os(key: &'static str, value: &std::ffi::OsStr) -> Self {
             let previous = std::env::var_os(key);
             unsafe {
                 std::env::set_var(key, value);
@@ -1228,35 +1209,6 @@ spec:
             Some("unix:///tmp/env-podman.sock")
         );
 
-        PodmanEngine::configure_runtime(None, false);
-    }
-
-    #[serial]
-    #[tokio::test]
-    async fn detects_podman_socket_from_xdg_runtime_dir() {
-        PodmanEngine::configure_runtime(None, false);
-
-        let _podman_env_guard = EnvGuard::set("CONTAINER_HOST", "");
-        let _container_env_guard = EnvGuard::set("CONTAINER_HOST", "");
-
-        let unique_dir =
-            std::env::temp_dir().join(format!("beemesh-podman-test-{}", std::process::id()));
-        let podman_dir = unique_dir.join("podman");
-        std::fs::create_dir_all(&podman_dir).unwrap();
-
-        let socket_path = podman_dir.join("podman.sock");
-        File::create(&socket_path).unwrap();
-
-        let _guard = EnvGuard::set_os("XDG_RUNTIME_DIR", unique_dir.as_os_str());
-
-        let engine = PodmanEngine::new();
-        let expected_socket = format!("unix://{}", socket_path.to_string_lossy());
-        assert_eq!(
-            engine.podman_socket.as_deref(),
-            Some(expected_socket.as_str())
-        );
-
-        remove_dir_all(&unique_dir).unwrap();
         PodmanEngine::configure_runtime(None, false);
     }
 
