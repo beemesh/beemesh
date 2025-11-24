@@ -25,11 +25,11 @@ mod kube_helpers;
 mod runtime_helpers;
 
 use apply_common::{
-    check_workload_deployment, get_peer_ids, setup_test_environment, start_fabric_nodes,
-    wait_for_mesh_formation,
+    TEST_LIBP2P_PORTS, TEST_PORTS, check_workload_deployment, get_peer_ids, setup_test_environment,
+    start_fabric_nodes, wait_for_mesh_formation,
 };
 use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
-use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes};
+use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_local_multiaddr};
 use tokio::task::JoinHandle;
 
 /// Construct a Podman command that respects the CONTAINER_HOST environment
@@ -79,7 +79,7 @@ async fn test_apply_functionality() {
 
     // Wait for libp2p mesh to form before proceeding
     let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 30);
-    let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
+    let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout, 2).await;
     if !mesh_formed {
         shutdown_nodes(&mut handles).await;
         panic!(
@@ -167,7 +167,7 @@ async fn test_apply_with_real_podman() {
     }
 
     let mesh_timeout = timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 60);
-    let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
+    let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout, 2).await;
     if !mesh_ready {
         shutdown_nodes(&mut handles).await;
         panic!(
@@ -262,14 +262,12 @@ async fn wait_for_rest_api_health(
         for &port in ports {
             let base = format!("http://127.0.0.1:{}", port);
             match client.get(format!("{}/health", base)).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.text().await {
-                        Ok(body) if body.trim() == "ok" => {
-                            healthy_ports.push(port);
-                        }
-                        _ => unhealthy_ports.push(port),
+                Ok(resp) if resp.status().is_success() => match resp.text().await {
+                    Ok(body) if body.trim() == "ok" => {
+                        healthy_ports.push(port);
                     }
-                }
+                    _ => unhealthy_ports.push(port),
+                },
                 _ => unhealthy_ports.push(port),
             }
         }
@@ -357,7 +355,7 @@ async fn test_apply_nginx_with_replicas() {
 
     // Wait for libp2p mesh to form before proceeding
     let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 30);
-    let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
+    let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout, 2).await;
     if !mesh_formed {
         shutdown_nodes(&mut handles).await;
         panic!(
@@ -445,38 +443,51 @@ async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
 
     // DO NOT set BEEMESH_MOCK_ONLY_RUNTIME - we want real Podman
     let client = reqwest::Client::new();
-    let ports = vec![3000u16, 3100u16, 3200u16];
+    let ports = TEST_PORTS.to_vec();
 
     (client, ports)
 }
 
 async fn start_test_nodes_for_podman() -> Vec<JoinHandle<()>> {
-    let mut daemon1 = make_test_daemon(3000, vec![], 4001);
+    let rest_ports = TEST_PORTS;
+    let libp2p_ports = TEST_LIBP2P_PORTS;
+
+    let mut daemon1 = make_test_daemon(rest_ports[0], vec![], libp2p_ports[0]);
     daemon1.signing_ephemeral = false;
     daemon1.kem_ephemeral = false;
     daemon1.ephemeral_keys = false;
 
-    let mut daemon2 = make_test_daemon(
-        3100,
-        vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
-        4002,
-    );
+    // Start the bootstrap node first so we can discover its peer ID before
+    // launching additional nodes.
+    let mut handles = start_nodes(vec![daemon1], Duration::from_secs(1)).await;
+
+    // Allow the bootstrap node to report its peer ID
+    sleep(Duration::from_secs(2)).await;
+    let bootstrap_peer = wait_for_local_multiaddr(
+        "127.0.0.1",
+        rest_ports[0],
+        "127.0.0.1",
+        libp2p_ports[0],
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("bootstrap node did not expose a peer id in time for Podman test");
+
+    let bootstrap_peers = vec![bootstrap_peer];
+
+    let mut daemon2 = make_test_daemon(rest_ports[1], bootstrap_peers.clone(), libp2p_ports[1]);
     daemon2.signing_ephemeral = false;
     daemon2.kem_ephemeral = false;
     daemon2.ephemeral_keys = false;
 
-    let bootstrap_peers = vec![
-        "/ip4/127.0.0.1/udp/4001/quic-v1".to_string(),
-        "/ip4/127.0.0.1/udp/4002/quic-v1".to_string(),
-    ];
-
-    let mut daemon3 = make_test_daemon(3200, bootstrap_peers.clone(), 4003);
+    let mut daemon3 = make_test_daemon(rest_ports[2], bootstrap_peers, libp2p_ports[2]);
     daemon3.signing_ephemeral = false;
     daemon3.kem_ephemeral = false;
     daemon3.ephemeral_keys = false;
 
     // Start nodes in-process for better control
-    start_nodes(vec![daemon1, daemon2, daemon3], Duration::from_secs(1)).await
+    handles.append(&mut start_nodes(vec![daemon2, daemon3], Duration::from_secs(1)).await);
+    handles
 }
 
 async fn is_podman_available() -> bool {
@@ -522,9 +533,7 @@ async fn is_podman_available() -> bool {
         .await
         .map(|status| status.success())
         .unwrap_or_else(|err| {
-            log::warn!(
-                "Podman daemon unreachable ({err}); skipping Podman-dependent apply tests"
-            );
+            log::warn!("Podman daemon unreachable ({err}); skipping Podman-dependent apply tests");
             false
         })
 }
