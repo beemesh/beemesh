@@ -116,23 +116,6 @@ pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
     *slot = pair;
 }
 
-fn extract_listen_endpoint(addr: &Multiaddr) -> Option<(String, u16)> {
-    let mut host: Option<String> = None;
-    let mut port: Option<u16> = None;
-    for proto in addr.iter() {
-        match proto {
-            Protocol::Ip4(ipv4) => host = Some(ipv4.to_string()),
-            Protocol::Ip6(ipv6) => host = Some(ipv6.to_string()),
-            Protocol::Dns(dns) => host = Some(dns.to_string()),
-            Protocol::Dns4(dns) => host = Some(dns.to_string()),
-            Protocol::Dns6(dns) => host = Some(dns.to_string()),
-            Protocol::Tcp(value) | Protocol::Udp(value) => port = Some(value),
-            _ => {}
-        }
-    }
-    host.zip(port)
-}
-
 /// Set the global control sender for distributed operations
 pub fn set_control_sender(sender: mpsc::UnboundedSender<control::Libp2pControl>) {
     let _ = CONTROL_SENDER.set(sender);
@@ -588,11 +571,13 @@ pub async fn start_libp2p_node(
                         let _ = peer_tx.send(all_peers);
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        if let Some((host, port)) = extract_listen_endpoint(&address) {
-                            info!("libp2p: listening on {}:{}", host, port);
-                        } else {
-                            info!("libp2p: listening on {address}");
-                        }
+                        let peer_id = swarm.local_peer_id();
+                        let mut with_peer_id = address.clone();
+                        with_peer_id.push(Protocol::P2p((*peer_id).into()));
+
+                        info!(
+                            "libp2p: listening on {address} (bootstrap with {with_peer_id})"
+                        );
                     }
                     _ => {}
                 }
