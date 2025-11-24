@@ -120,9 +120,14 @@ pub async fn start_machineplane(
     // treats peer identities as transient and does not persist them between restarts.
     let keypair = libp2p::identity::Keypair::generate_ed25519();
 
+    // Compute and surface the local peer identity immediately so operators can see it
+    // even if the network stack has not fully started yet.
+    let local_peer_id = keypair.public().to_peer_id();
+    log::info!("Local PeerId: {}", local_peer_id);
+
     // Store keypair bytes for network module
     let keypair_bytes = keypair.to_protobuf_encoding()?;
-    let public_bytes = keypair.public().to_peer_id().to_bytes();
+    let public_bytes = local_peer_id.to_bytes();
     network::set_node_keypair(Some((public_bytes.clone(), keypair_bytes.clone())));
 
     let (mut swarm, topic, peer_rx, peer_tx) =
