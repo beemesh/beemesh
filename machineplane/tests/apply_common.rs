@@ -47,9 +47,9 @@ pub async fn start_fabric_nodes_with_ports(
 
     // Start a single bootstrap node first to give it time to initialize.
     let mut bootstrap_daemon = make_test_daemon(rest_ports[0], vec![], libp2p_ports[0]);
-    bootstrap_daemon.signing_ephemeral = false;
-    bootstrap_daemon.kem_ephemeral = false;
-    bootstrap_daemon.ephemeral_keys = false;
+    bootstrap_daemon.signing_ephemeral = true;
+    bootstrap_daemon.kem_ephemeral = true;
+    bootstrap_daemon.ephemeral_keys = true;
     let mut handles = start_nodes(vec![bootstrap_daemon], Duration::from_secs(1)).await;
 
     // Allow the bootstrap node to settle before connecting peers.
