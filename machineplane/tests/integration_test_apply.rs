@@ -65,11 +65,25 @@ async fn test_apply_functionality() {
     let (client, ports) = setup_test_environment().await;
     let mut handles = start_fabric_nodes().await;
 
+    // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
+    let rest_api_timeout = timeout_from_env("BEEMESH_APPLY_HEALTH_TIMEOUT_SECS", 20);
+    if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "REST APIs MUST become healthy before apply workflow verification (see test-spec.md); timeout: {:?}",
+            rest_api_timeout
+        );
+    }
+
     // Wait for libp2p mesh to form before proceeding
     let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 15);
     let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
-        log::warn!("Mesh formation incomplete, but proceeding with test");
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path relative to this test crate's manifest dir so it's robust under cargo test
@@ -101,14 +115,12 @@ async fn test_apply_functionality() {
     .await;
 
     // With peer ID filtering, we can now properly verify that only the intended node has the workload
-    if nodes_with_deployed_workloads.is_empty() {
-        log::warn!(
-            "No nodes reported deployed workloads for tender {} after extended retries",
-            tender_id
-        );
-        shutdown_nodes(&mut handles).await;
-        return;
-    }
+    assert_eq!(
+        nodes_with_deployed_workloads.len(),
+        1,
+        "Single replica apply MUST land on exactly one node; observed nodes: {:?}",
+        nodes_with_deployed_workloads
+    );
 
     // Verify that manifest content matches on the node that has the workload
     assert!(
@@ -144,17 +156,21 @@ async fn test_apply_with_real_podman() {
     // manifest delivery to fail and the Podman verification to panic later.
     let rest_api_timeout = timeout_from_env("BEEMESH_PODMAN_HEALTH_TIMEOUT_SECS", 30);
     if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
-        log::warn!("Skipping Podman integration test - REST APIs did not become healthy in time");
         shutdown_nodes(&mut handles).await;
-        return;
+        panic!(
+            "REST APIs MUST become healthy before Podman apply verification (see test-spec.md); timeout: {:?}",
+            rest_api_timeout
+        );
     }
 
     let mesh_timeout = timeout_from_env("BEEMESH_PODMAN_MESH_TIMEOUT_SECS", 30);
     let mesh_ready = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_ready {
-        log::warn!("Skipping Podman integration test - mesh formation did not complete in time");
         shutdown_nodes(&mut handles).await;
-        return;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path relative to this test crate's manifest dir
@@ -185,23 +201,18 @@ async fn test_apply_with_real_podman() {
     )
     .await;
 
-    if nodes_with_deployed_workloads.is_empty() {
-        log::warn!(
-            "Skipping Podman integration test - manifest delivery incomplete for tender {}",
-            tender_id
-        );
-        shutdown_nodes(&mut handles).await;
-        return;
-    }
+    assert_eq!(
+        nodes_with_deployed_workloads.len(),
+        1,
+        "Podman-backed apply MUST land single replica on exactly one node; observed nodes: {:?}",
+        nodes_with_deployed_workloads
+    );
 
-    if !nodes_with_content_mismatch.is_empty() {
-        log::warn!(
-            "Skipping Podman integration test - manifest content mismatch on nodes {:?}",
-            nodes_with_content_mismatch
-        );
-        shutdown_nodes(&mut handles).await;
-        return;
-    }
+    assert!(
+        nodes_with_content_mismatch.is_empty(),
+        "Podman-backed apply produced manifest content mismatch on nodes {:?}",
+        nodes_with_content_mismatch
+    );
 
     // Verify actual Podman deployment
     let podman_delivery_timeout = timeout_from_env("BEEMESH_PODMAN_VERIFY_TIMEOUT_SECS", 45);
@@ -330,11 +341,25 @@ async fn test_apply_nginx_with_replicas() {
     let (client, ports) = setup_test_environment().await;
     let mut handles = start_fabric_nodes().await;
 
+    // Wait for REST APIs to become responsive and the libp2p mesh to form before applying manifests.
+    let rest_api_timeout = timeout_from_env("BEEMESH_APPLY_HEALTH_TIMEOUT_SECS", 20);
+    if !wait_for_rest_api_health(&client, &ports, rest_api_timeout).await {
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "REST APIs MUST become healthy before apply workflow verification (see test-spec.md); timeout: {:?}",
+            rest_api_timeout
+        );
+    }
+
     // Wait for libp2p mesh to form before proceeding
     let mesh_timeout = timeout_from_env("BEEMESH_APPLY_MESH_TIMEOUT_SECS", 10);
     let mesh_formed = wait_for_mesh_formation(&client, &ports, mesh_timeout).await;
     if !mesh_formed {
-        log::warn!("Mesh formation incomplete, but proceeding with test");
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "Mesh formation MUST complete before verification (see test-spec.md); timeout: {:?}",
+            mesh_timeout
+        );
     }
 
     // Resolve manifest path for nginx with replicas
@@ -365,19 +390,11 @@ async fn test_apply_nginx_with_replicas() {
     )
     .await;
 
-    // For replicas=3 we still expect broad distribution, but in resource constrained or slow environments we
-    // allow tests to proceed as long as at least one node has taken the workload.
-    if nodes_with_deployed_workloads.len() < 3 {
-        log::warn!(
-            "Replica distribution incomplete: expected 3 nodes but saw {} nodes: {:?}",
-            nodes_with_deployed_workloads.len(),
-            nodes_with_deployed_workloads
+    if nodes_with_deployed_workloads.is_empty() {
+        shutdown_nodes(&mut handles).await;
+        panic!(
+            "Replica apply SHOULD distribute across nodes but MUST land on at least one; no nodes reported workloads"
         );
-
-        if nodes_with_deployed_workloads.is_empty() {
-            shutdown_nodes(&mut handles).await;
-            return;
-        }
     }
 
     if nodes_with_deployed_workloads.len() == ports.len() {
@@ -396,6 +413,13 @@ async fn test_apply_nginx_with_replicas() {
         assert!(
             nodes_with_content_mismatch.is_empty(),
             "Manifest content verification failed on nodes: {:?}. The deployed manifest content does not match the original manifest.",
+            nodes_with_content_mismatch
+        );
+    } else {
+        // Even when not all replicas spread, the deployed nodes must agree on manifest content.
+        assert!(
+            nodes_with_content_mismatch.is_empty(),
+            "Replica apply produced manifest content mismatch on nodes {:?}",
             nodes_with_content_mismatch
         );
     }
