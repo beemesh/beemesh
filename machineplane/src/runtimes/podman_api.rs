@@ -17,7 +17,8 @@
 //! - `GET /libpod/pods/json` - List pods
 //! - `GET /libpod/pods/{name}/json` - Inspect a specific pod
 //! - `DELETE /libpod/pods/{name}` - Remove a pod
-//! - `POST /libpod/generate/{name}/kube` - Generate Kubernetes manifest from running pod
+//! - `GET /libpod/generate/{name}/kube` - Generate Kubernetes manifest from running pod
+//! - `GET /libpod/pods/{name}/logs` - Get pod logs
 
 use crate::runtimes::RuntimeError;
 use http_body_util::{BodyExt, Full};
