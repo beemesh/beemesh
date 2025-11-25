@@ -952,9 +952,17 @@ mod runtime_integration {
             .get_engine(&engine_name)
             .ok_or(format!("Runtime engine '{}' not available", engine_name))?;
 
-        // Deploy the workload with modified manifest (replicas=1)
+        let local_peer_id = swarm.local_peer_id().clone();
+
+        // Deploy the workload with modified manifest (replicas=1) and track the
+        // local peer ID so debug endpoints can attribute workloads correctly.
         let workload_info = engine
-            .deploy_workload(&manifest_id, &modified_manifest_content, &deployment_config)
+            .deploy_workload_with_peer(
+                &manifest_id,
+                &modified_manifest_content,
+                &deployment_config,
+                local_peer_id,
+            )
             .await?;
 
         info!(
