@@ -69,6 +69,8 @@ pub struct RestState {
     pub peer_rx: watch::Receiver<Vec<String>>,
     pub control_tx: mpsc::UnboundedSender<crate::network::control::Libp2pControl>,
     tender_store: Arc<RwLock<HashMap<String, TenderRecord>>>,
+    /// Local peer ID for this node (used for keypair lookup in multi-node scenarios)
+    pub local_peer_id_bytes: Vec<u8>,
 }
 
 // Global in-memory store of decrypted manifests for debugging / tests.
@@ -123,11 +125,13 @@ pub async fn get_decrypted_manifests_map() -> serde_json::Value {
 pub fn build_router(
     peer_rx: watch::Receiver<Vec<String>>,
     control_tx: mpsc::UnboundedSender<crate::network::control::Libp2pControl>,
+    local_peer_id_bytes: Vec<u8>,
 ) -> Router {
     let state = RestState {
         peer_rx,
         control_tx,
         tender_store: Arc::new(RwLock::new(HashMap::new())),
+        local_peer_id_bytes,
     };
     let kube_routes = Router::new()
         .route("/version", get(kube::version))
@@ -375,7 +379,8 @@ pub async fn create_tender(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .as_millis() as u64;
 
-    let keypair = crate::network::get_node_keypair()
+    // Use the state's local_peer_id to get the correct keypair for this node
+    let keypair = crate::network::get_node_keypair_for_peer(Some(&state.local_peer_id_bytes))
         .and_then(|(_, sk)| Keypair::from_protobuf_encoding(&sk).ok())
         .ok_or_else(|| {
             error!(

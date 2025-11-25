@@ -31,7 +31,10 @@ use control::Libp2pControl;
 
 // Global control sender for distributed operations
 static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
-static NODE_KEYPAIR: Lazy<Mutex<Option<(Vec<u8>, Vec<u8>)>>> = Lazy::new(|| Mutex::new(None));
+// Map from peer_id bytes to (public_key_bytes, private_key_bytes)
+// This allows multiple nodes in the same process (for testing) to have distinct keypairs.
+static NODE_KEYPAIRS: Lazy<Mutex<std::collections::HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 #[derive(Clone, Copy)]
 pub struct ByteProtocol(&'static str);
@@ -107,13 +110,31 @@ impl request_response::Codec for ByteCodec {
 // Protocol definitions
 pub type ManifestTransferCodec = ByteCodec;
 
-pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
-    NODE_KEYPAIR.lock().unwrap().clone()
+/// Get the node keypair for the given peer_id.
+/// If peer_id is None, returns the first available keypair (for backward compatibility).
+pub fn get_node_keypair_for_peer(peer_id: Option<&[u8]>) -> Option<(Vec<u8>, Vec<u8>)> {
+    let keypairs = NODE_KEYPAIRS.lock().unwrap();
+    if let Some(pid) = peer_id {
+        keypairs.get(pid).cloned()
+    } else {
+        // Backward compatibility: return first available keypair
+        keypairs.values().next().cloned()
+    }
 }
 
+/// Get the node keypair (for backward compatibility, returns first available).
+pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
+    get_node_keypair_for_peer(None)
+}
+
+/// Set the node keypair for a specific peer_id.
+/// The first element of the tuple is the peer_id (public key bytes),
+/// the second is the private key encoding.
 pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
-    let mut slot = NODE_KEYPAIR.lock().unwrap();
-    *slot = pair;
+    let mut keypairs = NODE_KEYPAIRS.lock().unwrap();
+    if let Some((peer_id_bytes, keypair_bytes)) = pair {
+        keypairs.insert(peer_id_bytes.clone(), (peer_id_bytes, keypair_bytes));
+    }
 }
 
 /// Set the global control sender for distributed operations
@@ -129,18 +150,19 @@ pub fn get_control_sender() -> Option<&'static mpsc::UnboundedSender<control::Li
 pub fn setup_libp2p_node(
     quic_port: u16,
     host: &str,
+    local_peer_id_bytes: &[u8],
 ) -> Result<(
     Swarm<MyBehaviour>,
     gossipsub::IdentTopic,
     watch::Receiver<Vec<String>>,
     watch::Sender<Vec<String>>,
 )> {
-    // Load the node keypair (set by lib.rs startup)
+    // Load the node keypair for this specific peer_id (set by lib.rs startup)
     let keypair = {
-        let slot = NODE_KEYPAIR.lock().unwrap();
-        let (_, sk) = slot
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("machine peer identity not initialized"))?;
+        let keypairs = NODE_KEYPAIRS.lock().unwrap();
+        let (_, sk) = keypairs
+            .get(local_peer_id_bytes)
+            .ok_or_else(|| anyhow::anyhow!("machine peer identity not initialized for this peer_id"))?;
         libp2p::identity::Keypair::from_protobuf_encoding(sk)?
     };
 
@@ -267,7 +289,8 @@ pub async fn start_libp2p_node(
 
     // Spawn Scheduler
     let local_node_id = swarm.local_peer_id().to_string();
-    let scheduler_keypair = get_node_keypair()
+    let local_peer_id_bytes = swarm.local_peer_id().to_bytes();
+    let scheduler_keypair = get_node_keypair_for_peer(Some(&local_peer_id_bytes))
         .and_then(|(_, sk)| Keypair::from_protobuf_encoding(&sk).ok())
         .ok_or_else(|| anyhow::anyhow!("machine peer identity not initialized"))?;
 
