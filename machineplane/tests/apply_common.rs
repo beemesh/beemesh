@@ -5,7 +5,6 @@
 
 use env_logger::Env;
 use futures::future::join_all;
-use log::LevelFilter;
 use std::collections::HashMap as StdHashMap;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
