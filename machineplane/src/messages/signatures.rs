@@ -1,6 +1,9 @@
 use crate::messages::types::{ApplyRequest, ApplyResponse, Award, Bid, SchedulerEvent, Tender};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use bincode::Options;
 use libp2p::identity::{Keypair, PublicKey};
+use log::warn;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -35,13 +38,30 @@ macro_rules! define_sign_verify {
                     Ok(d) => d,
                     Err(_) => return false,
                 };
-                public_key.verify(&digest, &message.signature)
+                let verified = public_key.verify(&digest, &message.signature);
+
+                if !verified {
+                    let digest_b64 = BASE64.encode(digest);
+                    let signature_b64 = BASE64.encode(&message.signature);
+                    let public_key_peer_id = public_key.to_peer_id();
+
+                    warn!(
+                        "signature verification failed for {}: digest_b64={}, signature_b64={}, public_key_peer_id={}, view={:?}",
+                        stringify!($typ),
+                        digest_b64,
+                        signature_b64,
+                        public_key_peer_id,
+                        view,
+                    );
+                }
+
+                verified
             }
         }
     };
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct TenderView {
     id: String,
     manifest_digest: String,
@@ -50,7 +70,7 @@ struct TenderView {
     nonce: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct BidView {
     tender_id: String,
     node_id: String,
@@ -61,7 +81,7 @@ struct BidView {
     nonce: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SchedulerEventView {
     tender_id: String,
     node_id: String,
@@ -71,7 +91,7 @@ struct SchedulerEventView {
     nonce: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct AwardView {
     tender_id: String,
     winners: Vec<String>,
@@ -80,7 +100,7 @@ struct AwardView {
     nonce: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct ApplyRequestView {
     replicas: u32,
     operation_id: String,
@@ -89,7 +109,7 @@ struct ApplyRequestView {
     manifest_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct ApplyResponseView {
     ok: bool,
     operation_id: String,
