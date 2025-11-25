@@ -1,6 +1,6 @@
 use crate::messages::types::{ApplyRequest, ApplyResponse, Award, Bid, SchedulerEvent, Tender};
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use bincode::Options;
 use libp2p::identity::{Keypair, PublicKey};
 use log::warn;
@@ -31,12 +31,25 @@ macro_rules! define_sign_verify {
         paste::paste! {
             pub fn [<verify_ $name>](message: &$typ, public_key: &PublicKey) -> bool {
                 if message.signature.is_empty() {
+                    let view: $view = $builder(message);
+                    warn!(
+                        "signature verification failed for {}: missing signature; view={:?}",
+                        stringify!($typ),
+                        view,
+                    );
                     return false;
                 }
                 let view: $view = $builder(message);
                 let digest = match digest_message(&view) {
                     Ok(d) => d,
-                    Err(_) => return false,
+                    Err(err) => {
+                        warn!(
+                            "signature verification failed for {}: digest error: {err}; view={:?}",
+                            stringify!($typ),
+                            view,
+                        );
+                        return false;
+                    },
                 };
                 let verified = public_key.verify(&digest, &message.signature);
 
