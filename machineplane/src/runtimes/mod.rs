@@ -62,6 +62,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 pub mod podman;
+pub mod podman_api;
 
 /// Configure the Podman runtime using CLI-provided settings.
 pub fn configure_podman_runtime(socket: Option<String>) {
