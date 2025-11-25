@@ -16,7 +16,7 @@ use libp2p::identity::Keypair;
 use log::{debug, error, info};
 use once_cell::sync::Lazy;
 use rand::RngCore;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -512,17 +512,117 @@ async fn debug_workloads_by_peer(
     Path(peer_id): Path<String>,
     State(_state): State<RestState>,
 ) -> axum::Json<serde_json::Value> {
-    log::info!(
-        "Debug workload query for peer {} received, but mock runtime support has been removed",
-        peer_id
-    );
+    let registry_guard = match crate::scheduler::get_global_runtime_registry().await {
+        Some(guard) => guard,
+        None => {
+            return axum::Json(serde_json::json!({
+                "ok": false,
+                "error": "Runtime registry not initialized",
+                "peer_id": peer_id,
+                "workload_count": 0,
+                "workloads": {}
+            }));
+        }
+    };
+
+    let Some(registry) = registry_guard.as_ref() else {
+        return axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "Runtime registry not initialized",
+            "peer_id": peer_id,
+            "workload_count": 0,
+            "workloads": {}
+        }));
+    };
+
+    let Some(engine) = registry.get_default_engine() else {
+        return axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "No runtime engine available",
+            "peer_id": peer_id,
+            "workload_count": 0,
+            "workloads": {}
+        }));
+    };
+
+    let workloads = match engine.list_workloads_by_peer(&peer_id).await {
+        Ok(list) => list,
+        Err(err) => {
+            log::warn!("Failed to list workloads for peer {}: {}", peer_id, err);
+            return axum::Json(serde_json::json!({
+                "ok": false,
+                "error": format!("Failed to list workloads: {}", err),
+                "peer_id": peer_id,
+                "workload_count": 0,
+                "workloads": {}
+            }));
+        }
+    };
+
+    let mut workloads_map = Map::new();
+
+    for workload in workloads {
+        let exported_manifest = match engine.export_manifest(&workload.id).await {
+            Ok(bytes) => Some(String::from_utf8_lossy(&bytes).to_string()),
+            Err(err) => {
+                log::debug!(
+                    "Failed to export manifest for workload {}: {}",
+                    workload.id,
+                    err
+                );
+                None
+            }
+        };
+
+        let status = match &workload.status {
+            crate::runtimes::WorkloadStatus::Starting => "Starting".to_string(),
+            crate::runtimes::WorkloadStatus::Running => "Running".to_string(),
+            crate::runtimes::WorkloadStatus::Stopped => "Stopped".to_string(),
+            crate::runtimes::WorkloadStatus::Failed(reason) => {
+                format!("Failed: {}", reason)
+            }
+            crate::runtimes::WorkloadStatus::Unknown => "Unknown".to_string(),
+        };
+
+        let ports: Vec<Value> = workload
+            .ports
+            .iter()
+            .map(|port| {
+                serde_json::json!({
+                    "container_port": port.container_port,
+                    "host_port": port.host_port,
+                    "protocol": port.protocol
+                })
+            })
+            .collect();
+
+        let workload_json = serde_json::json!({
+            "id": workload.id,
+            "manifest_id": workload.manifest_id,
+            "status": status,
+            "metadata": workload.metadata,
+            "created_at": workload
+                .created_at
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs_f64()),
+            "updated_at": workload
+                .updated_at
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs_f64()),
+            "ports": ports,
+            "exported_manifest": exported_manifest,
+        });
+
+        workloads_map.insert(workload.id, workload_json);
+    }
 
     axum::Json(serde_json::json!({
-        "ok": false,
-        "error": "Mock runtime has been removed; workload inspection is unavailable",
+        "ok": true,
         "peer_id": peer_id,
-        "workload_count": 0,
-        "workloads": {}
+        "workload_count": workloads_map.len(),
+        "workloads": workloads_map
     }))
 }
 
