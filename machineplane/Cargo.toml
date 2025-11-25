@@ -31,6 +31,11 @@ sha2 = "0.10"
 paste = "1.0"
 multihash = "0.18"
 ulid = "1"
+# Podman REST API over Unix socket support
+hyper = { version = "1.8", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
+hyperlocal = "0.9"
+http-body-util = "0.1"
 
 [dev-dependencies]
 serial_test = "3.0"
