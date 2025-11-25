@@ -8,7 +8,7 @@
 //! - Basic peer discovery.
 
 use env_logger::Env;
-use log::{LevelFilter, info};
+use log::info;
 use reqwest::Client;
 
 use std::time::Duration;
