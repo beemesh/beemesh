@@ -27,6 +27,37 @@ const REPLAY_WINDOW_MS: u64 = 300_000;
 static LOCAL_MANIFEST_CACHE: Lazy<Mutex<HashMap<String, String>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Global mapping from workload_id to the peer_id that deployed it.
+/// This allows multi-node in-process tests to track which node deployed which workload.
+static WORKLOAD_PEER_MAP: Lazy<tokio::sync::RwLock<HashMap<String, String>>> =
+    Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
+
+/// Record which peer deployed a workload (for multi-node test scenarios)
+pub async fn record_workload_peer(workload_id: &str, peer_id: &str) {
+    let mut map = WORKLOAD_PEER_MAP.write().await;
+    map.insert(workload_id.to_string(), peer_id.to_string());
+}
+
+/// Get the peer that deployed a workload (for multi-node test scenarios)
+pub async fn get_workload_peer(workload_id: &str) -> Option<String> {
+    let map = WORKLOAD_PEER_MAP.read().await;
+    map.get(workload_id).cloned()
+}
+
+/// Get all workloads deployed by a specific peer
+pub async fn get_workloads_by_peer(peer_id: &str) -> Vec<String> {
+    let map = WORKLOAD_PEER_MAP.read().await;
+    map.iter()
+        .filter_map(|(wid, pid)| {
+            if pid == peer_id {
+                Some(wid.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Scheduler manages the bidding lifecycle
 pub struct Scheduler {
     /// Local node ID (PeerId string)
@@ -964,6 +995,9 @@ mod runtime_integration {
                 local_peer_id,
             )
             .await?;
+
+        // Record the workload-peer mapping for multi-node test scenarios
+        super::record_workload_peer(&workload_info.id, &local_peer_id.to_string()).await;
 
         info!(
             "Workload deployed successfully: {} using engine '{}', status: {:?}",
