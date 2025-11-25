@@ -439,7 +439,8 @@ async fn test_apply_nginx_with_replicas() {
 
 async fn setup_test_environment_for_podman() -> (reqwest::Client, Vec<u16>) {
     // Initialize logger
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+    // Use a verbose default filter to capture debug signing/verification logs in CI output.
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("debug")).try_init();
 
     // DO NOT set BEEMESH_MOCK_ONLY_RUNTIME - we want real Podman
     let client = reqwest::Client::new();
