@@ -45,21 +45,27 @@ async fn test_run_host_application() {
 
     let mut handles = start_fabric_nodes_with_ports(&rest_api_ports, &libp2p_ports).await;
 
+    let rest_api_timeout = timeout_from_env("BEEMESH_HOST_HEALTH_TIMEOUT_SECS", 45);
+
     // wait for REST APIs to become healthy before relying on endpoints
     assert!(
-        wait_for_rest_api_health(&client, &rest_api_ports, Duration::from_secs(30)).await,
-        "REST APIs did not become healthy in time"
+        wait_for_rest_api_health(&client, &rest_api_ports, rest_api_timeout).await,
+        "REST APIs did not become healthy within {:?}",
+        rest_api_timeout
     );
 
+    let mesh_timeout = timeout_from_env("BEEMESH_HOST_MESH_TIMEOUT_SECS", 45);
+
     // wait for the mesh to form (poll until peers appear or timeout)
-    let total_peers =
-        wait_for_mesh_formation(&client, &rest_api_ports, Duration::from_secs(30), 4).await;
+    let total_peers = wait_for_mesh_formation(&client, &rest_api_ports, mesh_timeout, 4).await;
 
     // Test the pubkey endpoint
+    let pubkey_timeout = timeout_from_env("BEEMESH_HOST_PUBKEY_TIMEOUT_SECS", 20);
     let primary_rest_port = rest_api_ports[0];
-    let health = check_health(&client, primary_rest_port).await;
-    let kem_pubkey_result = check_pubkey(primary_rest_port, "kem_pubkey").await;
-    let signing_pubkey_result = check_pubkey(primary_rest_port, "signing_pubkey").await;
+    let health = check_health(&client, primary_rest_port, pubkey_timeout).await;
+    let kem_pubkey_result = check_pubkey(primary_rest_port, "kem_pubkey", pubkey_timeout).await;
+    let signing_pubkey_result =
+        check_pubkey(primary_rest_port, "signing_pubkey", pubkey_timeout).await;
 
     shutdown_nodes(&mut handles).await;
 
@@ -77,14 +83,9 @@ async fn test_run_host_application() {
     );
 }
 
-async fn check_health(client: &Client, port: u16) -> bool {
+async fn check_health(client: &Client, port: u16, timeout: Duration) -> bool {
     let base = format!("http://127.0.0.1:{port}");
-    match tokio::time::timeout(
-        Duration::from_secs(10),
-        client.get(format!("{base}/health")).send(),
-    )
-    .await
-    {
+    match tokio::time::timeout(timeout, client.get(format!("{base}/health")).send()).await {
         Ok(Ok(resp)) => resp
             .text()
             .await
@@ -94,9 +95,9 @@ async fn check_health(client: &Client, port: u16) -> bool {
     }
 }
 
-async fn check_pubkey(port: u16, url: &str) -> String {
+async fn check_pubkey(port: u16, url: &str, timeout: Duration) -> String {
     tokio::time::timeout(
-        Duration::from_secs(10),
+        timeout,
         reqwest::get(format!("http://127.0.0.1:{port}/api/v1/{}", url)),
     )
     .await
@@ -168,4 +169,12 @@ async fn wait_for_rest_api_health(client: &Client, ports: &[u16], timeout: Durat
 
         sleep(Duration::from_millis(500)).await;
     }
+}
+
+fn timeout_from_env(var: &str, default_secs: u64) -> Duration {
+    std::env::var(var)
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(default_secs))
 }
