@@ -1,10 +1,19 @@
 use crate::messages::types::{ApplyRequest, ApplyResponse, Award, Bid, SchedulerEvent, Tender};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use bincode::Options;
 use libp2p::identity::{Keypair, PublicKey};
+use log::warn;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 fn digest_message<T: Serialize>(value: &T) -> anyhow::Result<[u8; 32]> {
-    let bytes = bincode::serialize(value)?;
+    // Use an explicit, deterministic bincode configuration to avoid platform or
+    // version-dependent encoding differences.
+    let bytes = bincode::DefaultOptions::new()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .serialize(value)?;
     Ok(Sha256::digest(bytes).into())
 }
 
@@ -29,13 +38,30 @@ macro_rules! define_sign_verify {
                     Ok(d) => d,
                     Err(_) => return false,
                 };
-                public_key.verify(&digest, &message.signature)
+                let verified = public_key.verify(&digest, &message.signature);
+
+                if !verified {
+                    let digest_b64 = BASE64.encode(digest);
+                    let signature_b64 = BASE64.encode(&message.signature);
+                    let public_key_peer_id = public_key.to_peer_id();
+
+                    warn!(
+                        "signature verification failed for {}: digest_b64={}, signature_b64={}, public_key_peer_id={}, view={:?}",
+                        stringify!($typ),
+                        digest_b64,
+                        signature_b64,
+                        public_key_peer_id,
+                        view,
+                    );
+                }
+
+                verified
             }
         }
     };
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct TenderView {
     id: String,
     manifest_digest: String,
@@ -44,7 +70,7 @@ struct TenderView {
     nonce: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct BidView {
     tender_id: String,
     node_id: String,
@@ -55,7 +81,7 @@ struct BidView {
     nonce: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SchedulerEventView {
     tender_id: String,
     node_id: String,
@@ -65,7 +91,7 @@ struct SchedulerEventView {
     nonce: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct AwardView {
     tender_id: String,
     winners: Vec<String>,
@@ -74,7 +100,7 @@ struct AwardView {
     nonce: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct ApplyRequestView {
     replicas: u32,
     operation_id: String,
@@ -83,7 +109,7 @@ struct ApplyRequestView {
     manifest_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct ApplyResponseView {
     ok: bool,
     operation_id: String,
@@ -170,3 +196,35 @@ define_sign_verify!(
         message: r.message.clone(),
     })
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages::types::Tender;
+
+    #[test]
+    fn tender_signatures_verify_and_detect_tampering() {
+        let keypair = Keypair::generate_ed25519();
+        let public_key = keypair.public();
+
+        let mut tender = Tender {
+            id: "test-tender".to_string(),
+            manifest_digest: "digest".to_string(),
+            qos_preemptible: false,
+            timestamp: 123,
+            nonce: 42,
+            signature: Vec::new(),
+        };
+
+        sign_tender(&mut tender, &keypair).expect("signing should succeed");
+        assert!(verify_sign_tender(&tender, &public_key));
+
+        let mut tampered = tender.clone();
+        tampered.nonce += 1;
+        assert!(!verify_sign_tender(&tampered, &public_key));
+
+        let mut missing_sig = tender.clone();
+        missing_sig.signature.clear();
+        assert!(!verify_sign_tender(&missing_sig, &public_key));
+    }
+}
