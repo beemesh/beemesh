@@ -7,40 +7,42 @@ use log::{debug, warn};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-fn digest_message<T: Serialize>(value: &T) -> anyhow::Result<[u8; 32]> {
+fn serialize_view<T: Serialize>(value: &T) -> anyhow::Result<Vec<u8>> {
     // Use an explicit, deterministic bincode configuration to avoid platform or
     // version-dependent encoding differences.
-    let bytes = bincode::DefaultOptions::new()
+    Ok(bincode::DefaultOptions::new()
         .with_little_endian()
         .with_fixint_encoding()
-        .serialize(value)?;
-    Ok(Sha256::digest(bytes).into())
+        .serialize(value)?)
 }
 
 macro_rules! define_sign_verify {
     ($name:ident, $typ:ty, $view:ty, $builder:expr) => {
         pub fn $name(message: &mut $typ, keypair: &Keypair) -> anyhow::Result<()> {
             let view: $view = $builder(message);
-            let digest = digest_message(&view).map_err(|err| {
+            let view_bytes = serialize_view(&view).map_err(|err| {
                 anyhow::anyhow!(
                     "failed to compute digest for {}: {err}; view={:?}",
                     stringify!($typ),
                     view,
                 )
             })?;
+            let digest: [u8; 32] = Sha256::digest(&view_bytes).into();
             let signature = keypair
                 .sign(&digest)
                 .map_err(|e| anyhow::anyhow!("failed to sign {}: {}", stringify!($typ), e))?;
 
             let digest_b64 = BASE64.encode(digest);
             let signature_b64 = BASE64.encode(&signature);
+            let view_bytes_b64 = BASE64.encode(&view_bytes);
             let public_key_peer_id = keypair.public().to_peer_id();
 
             debug!(
-                "signature created for {}: digest_b64={}, signature_b64={}, public_key_peer_id={}, view={:?}",
+                "signature created for {}: digest_b64={}, signature_b64={}, view_bytes_b64={}, public_key_peer_id={}, view={:?}",
                 stringify!($typ),
                 digest_b64,
                 signature_b64,
+                view_bytes_b64,
                 public_key_peer_id,
                 view,
             );
@@ -61,8 +63,8 @@ macro_rules! define_sign_verify {
                     return false;
                 }
                 let view: $view = $builder(message);
-                let digest = match digest_message(&view) {
-                    Ok(d) => d,
+                let view_bytes = match serialize_view(&view) {
+                    Ok(bytes) => bytes,
                     Err(err) => {
                         warn!(
                             "signature verification failed for {}: digest error: {err}; view={:?}",
@@ -72,18 +74,21 @@ macro_rules! define_sign_verify {
                         return false;
                     },
                 };
+                let digest: [u8; 32] = Sha256::digest(&view_bytes).into();
                 let verified = public_key.verify(&digest, &message.signature);
 
                 if !verified {
                     let digest_b64 = BASE64.encode(digest);
                     let signature_b64 = BASE64.encode(&message.signature);
+                    let view_bytes_b64 = BASE64.encode(&view_bytes);
                     let public_key_peer_id = public_key.to_peer_id();
 
                     warn!(
-                        "signature verification failed for {}: digest_b64={}, signature_b64={}, public_key_peer_id={}, view={:?}",
+                        "signature verification failed for {}: digest_b64={}, signature_b64={}, view_bytes_b64={}, public_key_peer_id={}, view={:?}",
                         stringify!($typ),
                         digest_b64,
                         signature_b64,
+                        view_bytes_b64,
                         public_key_peer_id,
                         view,
                     );
