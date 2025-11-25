@@ -1,10 +1,16 @@
 use crate::messages::types::{ApplyRequest, ApplyResponse, Award, Bid, SchedulerEvent, Tender};
+use bincode::Options;
 use libp2p::identity::{Keypair, PublicKey};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 fn digest_message<T: Serialize>(value: &T) -> anyhow::Result<[u8; 32]> {
-    let bytes = bincode::serialize(value)?;
+    // Use an explicit, deterministic bincode configuration to avoid platform or
+    // version-dependent encoding differences.
+    let bytes = bincode::DefaultOptions::new()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .serialize(value)?;
     Ok(Sha256::digest(bytes).into())
 }
 
@@ -170,3 +176,35 @@ define_sign_verify!(
         message: r.message.clone(),
     })
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages::types::Tender;
+
+    #[test]
+    fn tender_signatures_verify_and_detect_tampering() {
+        let keypair = Keypair::generate_ed25519();
+        let public_key = keypair.public();
+
+        let mut tender = Tender {
+            id: "test-tender".to_string(),
+            manifest_digest: "digest".to_string(),
+            qos_preemptible: false,
+            timestamp: 123,
+            nonce: 42,
+            signature: Vec::new(),
+        };
+
+        sign_tender(&mut tender, &keypair).expect("signing should succeed");
+        assert!(verify_sign_tender(&tender, &public_key));
+
+        let mut tampered = tender.clone();
+        tampered.nonce += 1;
+        assert!(!verify_sign_tender(&tampered, &public_key));
+
+        let mut missing_sig = tender.clone();
+        missing_sig.signature.clear();
+        assert!(!verify_sign_tender(&missing_sig, &public_key));
+    }
+}
