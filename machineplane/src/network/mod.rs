@@ -284,7 +284,12 @@ pub async fn start_libp2p_node(
         mpsc::unbounded_channel::<(gossipsub::TopicHash, gossipsub::Message)>();
     let (sched_output_tx, mut sched_output_rx) = mpsc::unbounded_channel::<SchedulerCommand>();
 
-    // Initialize global input sender for gossipsub_message.rs
+    // Initialize scheduler input sender for this specific peer
+    // This allows multiple nodes in the same process to have separate schedulers
+    let local_peer_id = *swarm.local_peer_id();
+    behaviour::set_scheduler_input_for_peer(local_peer_id, sched_input_tx.clone());
+    
+    // Also set legacy global for backward compatibility (first node wins)
     behaviour::SCHEDULER_INPUT_TX.set(sched_input_tx).ok();
 
     // Spawn Scheduler
@@ -390,13 +395,14 @@ pub async fn start_libp2p_node(
                 }
             }
             event = swarm.select_next_some() => {
+                let local_peer_id = *swarm.local_peer_id();
                 match event {
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                         propagation_source: peer_id,
                         message_id: _id,
                         message,
                     })) => {
-                        behaviour::gossipsub_message(peer_id, message, topic.hash().clone());
+                        behaviour::gossipsub_message(peer_id, local_peer_id, message, topic.hash().clone());
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
                         behaviour::gossipsub_subscribed(peer_id, topic);

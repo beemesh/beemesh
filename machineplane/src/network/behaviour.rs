@@ -17,10 +17,37 @@ pub struct MyBehaviour {
 // Gossipsub Handlers
 // ============================================================================
 
-// Global channel for scheduler messages
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+// Map from local peer ID to scheduler input channel
+// This allows multiple nodes in the same process (for testing) to have distinct schedulers.
+static SCHEDULER_INPUT_CHANNELS: Lazy<
+    Mutex<HashMap<PeerId, mpsc::UnboundedSender<(gossipsub::TopicHash, gossipsub::Message)>>>,
+> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Legacy global channel for backward compatibility (single-node mode)
 pub static SCHEDULER_INPUT_TX: OnceLock<
     mpsc::UnboundedSender<(libp2p::gossipsub::TopicHash, libp2p::gossipsub::Message)>,
 > = OnceLock::new();
+
+/// Set the scheduler input channel for a specific peer ID
+pub fn set_scheduler_input_for_peer(
+    peer_id: PeerId,
+    tx: mpsc::UnboundedSender<(gossipsub::TopicHash, gossipsub::Message)>,
+) {
+    let mut channels = SCHEDULER_INPUT_CHANNELS.lock().unwrap();
+    channels.insert(peer_id, tx);
+}
+
+/// Get the scheduler input channel for a specific peer ID
+pub fn get_scheduler_input_for_peer(
+    peer_id: &PeerId,
+) -> Option<mpsc::UnboundedSender<(gossipsub::TopicHash, gossipsub::Message)>> {
+    let channels = SCHEDULER_INPUT_CHANNELS.lock().unwrap();
+    channels.get(peer_id).cloned()
+}
 
 pub fn set_scheduler_input(
     tx: mpsc::UnboundedSender<(libp2p::gossipsub::TopicHash, libp2p::gossipsub::Message)>,
@@ -30,6 +57,7 @@ pub fn set_scheduler_input(
 
 pub fn gossipsub_message(
     peer_id: libp2p::PeerId,
+    local_peer_id: libp2p::PeerId,
     message: gossipsub::Message,
     topic: gossipsub::TopicHash,
 ) {
@@ -43,17 +71,28 @@ pub fn gossipsub_message(
 
     if topic == *scheduler_topic {
         debug!(
-            "gossipsub: Forwarding scheduler message on topic {} from peer {} ({} bytes)",
+            "gossipsub: Forwarding scheduler message on topic {} from peer {} ({} bytes) to local scheduler {}",
             topic,
             peer_id,
-            payload.len()
+            payload.len(),
+            local_peer_id
         );
+        
+        // First try to find the scheduler for this specific local peer
+        if let Some(tx) = get_scheduler_input_for_peer(&local_peer_id) {
+            if let Err(e) = tx.send((topic, message)) {
+                error!("Failed to forward scheduler message: {}", e);
+            }
+            return;
+        }
+        
+        // Fall back to legacy global channel for backward compatibility
         if let Some(tx) = SCHEDULER_INPUT_TX.get() {
             if let Err(e) = tx.send((topic, message)) {
                 error!("Failed to forward scheduler message: {}", e);
             }
         } else {
-            warn!("Scheduler input channel not initialized, dropping message");
+            warn!("Scheduler input channel not initialized for peer {}, dropping message", local_peer_id);
         }
         return;
     }

@@ -35,17 +35,22 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
     match msg {
         Libp2pControl::PublishTender { payload, reply_tx } => {
             let topic = gossipsub::IdentTopic::new(BEEMESH_FABRIC);
+            let local_peer_id = *swarm.local_peer_id();
             match swarm
                 .behaviour_mut()
                 .gossipsub
                 .publish(topic.clone(), payload.clone())
             {
                 Ok(_) => {
-                    if let Some(tx) = SCHEDULER_INPUT_TX.get() {
+                    // Use per-node scheduler channel if available, otherwise fall back to global
+                    let tx = crate::network::behaviour::get_scheduler_input_for_peer(&local_peer_id)
+                        .or_else(|| SCHEDULER_INPUT_TX.get().cloned());
+                    
+                    if let Some(tx) = tx {
                         let _ = tx.send((
                             topic.hash(),
                             gossipsub::Message {
-                                source: Some(*swarm.local_peer_id()),
+                                source: Some(local_peer_id),
                                 data: payload,
                                 sequence_number: None,
                                 topic: topic.hash(),
