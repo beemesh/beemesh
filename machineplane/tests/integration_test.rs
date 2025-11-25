@@ -36,8 +36,9 @@ use runtime_helpers::shutdown_nodes;
 #[tokio::test]
 #[ignore = "Full host flow requires local REST+QUIC ports; see test-spec.md"]
 async fn test_run_host_application() {
-    // Initialize logger
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
+    // Initialize logger with a debug baseline to surface signing/verification diagnostics
+    // during integration runs, regardless of external RUST_LOG defaults.
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("debug")).try_init();
 
     let client = Client::new();
     let rest_api_ports = [3000, 3100, 3200, 3300, 3400];

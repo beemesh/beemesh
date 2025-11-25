@@ -19,7 +19,9 @@ pub const TEST_LIBP2P_PORTS: [u16; 3] = [4000u16, 4100u16, 4200u16];
 
 /// Prepare logging and environment for runtime tests.
 pub async fn setup_test_environment() -> (reqwest::Client, Vec<u16>) {
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("warn")).try_init();
+    // Force debug logging (even if CI sets a lower RUST_LOG default) so signing/verification
+    // diagnostics appear in the integration test output.
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("debug")).try_init();
 
     let client = reqwest::Client::new();
     (client, TEST_PORTS.to_vec())
