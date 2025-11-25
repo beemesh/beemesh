@@ -3,7 +3,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bincode::Options;
 use libp2p::identity::{Keypair, PublicKey};
-use log::warn;
+use log::{debug, warn};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -21,10 +21,31 @@ macro_rules! define_sign_verify {
     ($name:ident, $typ:ty, $view:ty, $builder:expr) => {
         pub fn $name(message: &mut $typ, keypair: &Keypair) -> anyhow::Result<()> {
             let view: $view = $builder(message);
-            let digest = digest_message(&view)?;
-            message.signature = keypair
+            let digest = digest_message(&view).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to compute digest for {}: {err}; view={:?}",
+                    stringify!($typ),
+                    view,
+                )
+            })?;
+            let signature = keypair
                 .sign(&digest)
                 .map_err(|e| anyhow::anyhow!("failed to sign {}: {}", stringify!($typ), e))?;
+
+            let digest_b64 = BASE64.encode(digest);
+            let signature_b64 = BASE64.encode(&signature);
+            let public_key_peer_id = keypair.public().to_peer_id();
+
+            debug!(
+                "signature created for {}: digest_b64={}, signature_b64={}, public_key_peer_id={}, view={:?}",
+                stringify!($typ),
+                digest_b64,
+                signature_b64,
+                public_key_peer_id,
+                view,
+            );
+
+            message.signature = signature;
             Ok(())
         }
 
