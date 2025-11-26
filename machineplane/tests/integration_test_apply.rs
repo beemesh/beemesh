@@ -8,13 +8,20 @@
 //! - Testing with the Podman runtime (if available).
 //! - Testing replica distribution.
 
+use dirs::runtime_dir;
 use env_logger::Env;
 use machineplane::runtimes::podman::PodmanEngine;
 use machineplane::runtimes::podman_api::{PodListEntry, PodmanApiClient};
+use once_cell::sync::Lazy;
 use serial_test::serial;
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 #[path = "apply_common.rs"]
@@ -32,10 +39,20 @@ use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_local_multiaddr};
 use tokio::task::JoinHandle;
 
+static EMBEDDED_PODMAN_SERVICE: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
+
 fn configure_podman_client() -> Option<PodmanApiClient> {
-    let socket = PodmanEngine::detect_podman_socket()?;
+    let socket = detect_or_bootstrap_podman_socket()?;
     PodmanEngine::configure_runtime(Some(socket.clone()));
     Some(PodmanApiClient::new(&socket))
+}
+
+fn detect_or_bootstrap_podman_socket() -> Option<String> {
+    if let Some(socket) = PodmanEngine::detect_podman_socket() {
+        return Some(socket);
+    }
+
+    start_embedded_podman_service()
 }
 
 const MANIFEST_ID_LABEL_KEY: &str = "beemesh.manifest_id";
@@ -239,6 +256,7 @@ async fn test_apply_with_real_podman() {
 
     // Clean up nodes
     shutdown_nodes(&mut handles).await;
+    stop_embedded_podman_service();
 }
 
 /// Wait for the REST API on each port to return an OK status.
@@ -646,4 +664,93 @@ fn describe_pod(pod: &PodListEntry) -> String {
 
 fn summarize_pods(pods: &[PodListEntry]) -> String {
     pods.iter().map(describe_pod).collect::<Vec<_>>().join(", ")
+}
+
+fn start_embedded_podman_service() -> Option<String> {
+    let socket_path = default_podman_socket_path();
+    if let Some(parent) = socket_path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            log::warn!(
+                "Failed to create Podman runtime directory {}: {}",
+                parent.display(),
+                err
+            );
+            return None;
+        }
+    }
+
+    let socket_url = format!("unix://{}", socket_path.display());
+    let mut handle_guard = EMBEDDED_PODMAN_SERVICE
+        .lock()
+        .expect("embedded podman service mutex poisoned");
+
+    let needs_start = handle_guard.is_none();
+    if needs_start {
+        let mut cmd = Command::new("podman");
+        cmd.arg("system")
+            .arg("service")
+            .arg("--time=0")
+            .arg(&socket_url)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        match cmd.spawn() {
+            Ok(child) => {
+                *handle_guard = Some(child);
+            }
+            Err(err) => {
+                log::warn!("Failed to launch embedded Podman service: {}", err);
+                return None;
+            }
+        }
+    }
+    drop(handle_guard);
+
+    if !wait_for_socket(&socket_path, Duration::from_secs(3)) {
+        log::warn!(
+            "Embedded Podman socket did not appear at {}; giving up",
+            socket_path.display()
+        );
+        return None;
+    }
+
+    unsafe {
+        env::set_var("CONTAINER_HOST", &socket_url);
+    }
+
+    Some(socket_url)
+}
+
+fn stop_embedded_podman_service() {
+    let mut handle_guard = EMBEDDED_PODMAN_SERVICE
+        .lock()
+        .expect("embedded podman service mutex poisoned");
+    if let Some(mut child) = handle_guard.take() {
+        if let Err(err) = child.kill() {
+            log::debug!("Failed to kill embedded Podman service: {}", err);
+        }
+        let _ = child.wait();
+    }
+}
+
+fn default_podman_socket_path() -> PathBuf {
+    let base = env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(runtime_dir)
+        .unwrap_or_else(|| env::temp_dir());
+
+    base.join("podman").join("podman.sock")
+}
+
+fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if path.exists() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
 }
