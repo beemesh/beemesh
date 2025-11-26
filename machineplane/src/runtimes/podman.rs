@@ -281,25 +281,21 @@ impl PodmanEngine {
     fn modify_manifest_for_deployment(
         &self,
         manifest_content: &[u8],
-        manifest_id: &str,
+        workload_id: &str,
     ) -> RuntimeResult<Vec<u8>> {
         let manifest_str = String::from_utf8_lossy(manifest_content);
         let mut doc: serde_yaml::Value = serde_yaml::from_str(&manifest_str)
             .map_err(|e| RuntimeError::InvalidManifest(format!("YAML parse error: {}", e)))?;
 
-        // Generate pod name based on manifest_id and timestamp for uniqueness
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let pod_name = format!("beemesh-{}-{}", manifest_id, timestamp);
+        // Use the workload_id as the pod name (already includes beemesh-{manifest_id}-{timestamp})
+        let pod_name = workload_id;
 
         // Update metadata name to use our generated pod name
         if let Some(metadata) = doc.get_mut("metadata") {
             if let Some(metadata_map) = metadata.as_mapping_mut() {
                 metadata_map.insert(
                     serde_yaml::Value::String("name".to_string()),
-                    serde_yaml::Value::String(pod_name.clone()),
+                    serde_yaml::Value::String(pod_name.to_string()),
                 );
             }
         }
@@ -858,8 +854,8 @@ impl RuntimeEngine for PodmanEngine {
         // Generate unique workload ID
         let workload_id = self.generate_workload_id(manifest_id, manifest_content);
 
-        // Modify manifest for deployment
-        let modified_manifest = self.modify_manifest_for_deployment(manifest_content, manifest_id)?;
+        // Modify manifest for deployment - pass the workload_id so pod name matches
+        let modified_manifest = self.modify_manifest_for_deployment(manifest_content, &workload_id)?;
 
         // Try REST API first if socket is configured
         if let Some(client) = self.create_api_client() {
