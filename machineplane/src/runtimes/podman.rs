@@ -226,12 +226,14 @@ impl PodmanEngine {
 
     /// Generate a unique workload ID based on manifest ID and timestamp
     fn generate_workload_id(&self, manifest_id: &str, _manifest_content: &[u8]) -> String {
-        // Use naming with timestamp for uniqueness: beemesh-{manifest_id}-{timestamp}
+        // Include timestamp with millisecond precision and a random suffix so concurrent
+        // winners sharing the same manifest_id don't collide on pod names.
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_millis())
             .unwrap_or(0);
-        format!("beemesh-{}-{}", manifest_id, timestamp)
+        let entropy: u32 = rand::random();
+        format!("beemesh-{}-{}-{:08x}", manifest_id, timestamp, entropy)
     }
 
     /// Modify the manifest to set the pod name to our workload ID and optional peer labels
@@ -246,7 +248,7 @@ impl PodmanEngine {
         let mut doc: serde_yaml::Value = serde_yaml::from_str(&manifest_str)
             .map_err(|e| RuntimeError::InvalidManifest(format!("YAML parse error: {}", e)))?;
 
-        // Use the workload_id as the pod name (already includes beemesh-{manifest_id}-{timestamp})
+        // Use the workload_id as the pod name (already includes beemesh-{manifest_id}-{timestamp}-{entropy})
         let pod_name = workload_id;
 
         // Update metadata name to use our generated pod name
@@ -431,7 +433,7 @@ impl PodmanEngine {
 
             if let Some(pod_name) = &pod_name {
                 let manifest_id = manifest_id_label.clone().unwrap_or_else(|| {
-                    // Extract manifest_id from pod name (format: beemesh-{manifest_id}-{timestamp})
+                    // Extract manifest_id from pod name (format: beemesh-{manifest_id}-{timestamp}[-entropy])
                     // First strip the "beemesh-" prefix, then handle optional "-pod" suffix
                     let name_without_prefix = pod_name.strip_prefix("beemesh-").unwrap_or(pod_name);
                     let name_without_suffix = if name_without_prefix.ends_with("-pod") {
@@ -442,19 +444,24 @@ impl PodmanEngine {
                         name_without_prefix
                     };
 
-                    // The manifest_id is everything except the last segment (timestamp)
-                    // Format: {manifest_id}-{timestamp}
-                    if let Some(last_hyphen) = name_without_suffix.rfind('-') {
-                        // Check if the part after the last hyphen looks like a timestamp (all digits)
-                        let potential_timestamp = &name_without_suffix[last_hyphen + 1..];
-                        if potential_timestamp.chars().all(|c| c.is_ascii_digit()) {
-                            name_without_suffix[..last_hyphen].to_string()
-                        } else {
-                            name_without_suffix.to_string()
+                    // Modern workload IDs include an extra entropy suffix after the timestamp.
+                    // Prefer removing the trailing random segment (if any) and then the numeric timestamp.
+                    let mut candidate = name_without_suffix;
+                    if let Some(last_idx) = name_without_suffix.rfind('-') {
+                        let last_segment = &name_without_suffix[last_idx + 1..];
+                        let remainder = &name_without_suffix[..last_idx];
+
+                        if last_segment.chars().all(|c| c.is_ascii_digit()) {
+                            candidate = remainder;
+                        } else if let Some(prev_idx) = remainder.rfind('-') {
+                            let maybe_timestamp = &remainder[prev_idx + 1..];
+                            if maybe_timestamp.chars().all(|c| c.is_ascii_digit()) {
+                                candidate = &remainder[..prev_idx];
+                            }
                         }
-                    } else {
-                        name_without_suffix.to_string()
                     }
+
+                    candidate.to_string()
                 });
 
                 // Parse pod status

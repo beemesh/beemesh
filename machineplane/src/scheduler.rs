@@ -818,11 +818,7 @@ pub fn record_tender_manifest_id(tender_id: &str, manifest_id: &str) {
 
 /// Fetch and retain the manifest identifier for a tender without removing it.
 pub fn get_tender_manifest_id(tender_id: &str) -> Option<String> {
-    TENDER_MANIFEST_IDS
-        .lock()
-        .unwrap()
-        .get(tender_id)
-        .cloned()
+    TENDER_MANIFEST_IDS.lock().unwrap().get(tender_id).cloned()
 }
 
 /// Remove and return the manifest identifier for a tender when it is no longer needed.
