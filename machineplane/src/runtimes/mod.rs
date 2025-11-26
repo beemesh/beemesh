@@ -64,10 +64,9 @@ use thiserror::Error;
 pub mod podman;
 pub mod podman_api;
 
-/// Configure the Podman runtime using CLI-provided settings.
+/// Configure the Podman runtime socket used for Libpod API calls.
 pub fn configure_podman_runtime(socket: Option<String>) {
-    let force_remote = socket.is_some();
-    podman::PodmanEngine::configure_runtime(socket, force_remote);
+    podman::PodmanEngine::configure_runtime(socket);
 }
 
 /// Errors that can occur during runtime operations

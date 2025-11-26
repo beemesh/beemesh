@@ -528,20 +528,6 @@ impl PodmanApiClient {
         }
     }
 
-    /// Check if an error indicates a socket connection problem
-    pub fn is_connection_error(error: &RuntimeError) -> bool {
-        if let RuntimeError::CommandFailed(msg) = error {
-            let lower = msg.to_ascii_lowercase();
-            lower.contains("connection refused")
-                || lower.contains("no such file")
-                || lower.contains("connection reset")
-                || lower.contains("broken pipe")
-                || lower.contains("unix socket")
-                || lower.contains("hyper")
-        } else {
-            false
-        }
-    }
 }
 
 #[cfg(test)]
@@ -611,16 +597,4 @@ mod tests {
         assert_eq!(pods[0].status, Some("Running".to_string()));
     }
 
-    #[test]
-    fn test_is_connection_error() {
-        assert!(PodmanApiClient::is_connection_error(&RuntimeError::CommandFailed(
-            "connection refused".to_string()
-        )));
-        assert!(PodmanApiClient::is_connection_error(&RuntimeError::CommandFailed(
-            "No such file or directory".to_string()
-        )));
-        assert!(!PodmanApiClient::is_connection_error(&RuntimeError::CommandFailed(
-            "Pod not found".to_string()
-        )));
-    }
 }

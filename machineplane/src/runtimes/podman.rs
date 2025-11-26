@@ -28,7 +28,6 @@
 //! ## Remote API Support
 //!
 //! - Uses the Podman REST API over Unix domain sockets for efficient communication
-//! - Falls back to CLI commands when API is unavailable
 //! - Enables distributed workload execution across nodes
 //!
 //! # Implementation Details
@@ -48,9 +47,8 @@
 //!
 //! ## API Communication
 //!
-//! - **Primary mode**: Uses Podman REST API over Unix socket for efficient async operations
-//! - **Fallback mode**: Uses CLI commands when REST API is unavailable
-//! - **Auto-fallback**: Switches to CLI if socket connection fails
+//! - Uses the Podman REST API over Unix sockets for all operations
+//! - Propagates API errors directly so callers can surface actionable diagnostics
 //!
 //! # Why Not Docker?
 //!
@@ -107,39 +105,26 @@ use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use serde_yaml::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::RwLock;
 
 /// Podman runtime engine
 pub struct PodmanEngine {
-    podman_binary: String,
     podman_socket: Option<String>,
-    force_remote: bool,
 }
 
 static PODMAN_SOCKET_OVERRIDE: Lazy<RwLock<Option<String>>> = Lazy::new(|| RwLock::new(None));
-static PODMAN_FORCE_REMOTE: Lazy<RwLock<bool>> = Lazy::new(|| RwLock::new(false));
 
 impl PodmanEngine {
     /// Create a new Podman engine instance
     pub fn new() -> Self {
         Self {
-            podman_binary: "podman".to_string(),
             podman_socket: Self::detect_podman_socket(),
-            force_remote: Self::is_force_remote(),
         }
     }
 
-    /// Create a new Podman engine with custom binary path
-    pub fn with_binary(binary_path: String) -> Self {
-        Self {
-            podman_binary: binary_path,
-            podman_socket: Self::detect_podman_socket(),
-            force_remote: Self::is_force_remote(),
-        }
-    }
-
-    /// Configure the Podman runtime using CLI-provided parameters.
-    pub fn configure_runtime(socket: Option<String>, force_remote: bool) {
+    /// Configure the Podman runtime socket used for Libpod API interactions.
+    pub fn configure_runtime(socket: Option<String>) {
         let normalized = socket.and_then(|value| {
             let trimmed = value.trim();
             if trimmed.is_empty() {
@@ -153,11 +138,6 @@ impl PodmanEngine {
             .write()
             .expect("podman socket override rwlock poisoned");
         *socket_guard = normalized;
-
-        let mut remote_guard = PODMAN_FORCE_REMOTE
-            .write()
-            .expect("podman force remote rwlock poisoned");
-        *remote_guard = force_remote;
     }
 
     fn socket_override() -> Option<String> {
@@ -165,12 +145,6 @@ impl PodmanEngine {
             .read()
             .expect("podman socket override rwlock poisoned")
             .clone()
-    }
-
-    fn is_force_remote() -> bool {
-        *PODMAN_FORCE_REMOTE
-            .read()
-            .expect("podman force remote rwlock poisoned")
     }
 
     pub fn normalize_socket(value: &str) -> String {
@@ -187,14 +161,34 @@ impl PodmanEngine {
             return Some(socket);
         }
 
-        std::env::var("CONTAINER_HOST").ok().and_then(|value| {
+        if let Ok(value) = std::env::var("CONTAINER_HOST") {
             let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(Self::normalize_socket(trimmed))
+            if !trimmed.is_empty() {
+                return Some(Self::normalize_socket(trimmed));
             }
-        })
+        }
+
+        Self::detect_local_socket()
+    }
+
+    fn detect_local_socket() -> Option<String> {
+        let mut candidates = Vec::new();
+
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            if !runtime_dir.trim().is_empty() {
+                candidates.push(format!("{}/podman/podman.sock", runtime_dir.trim_end_matches('/')));
+            }
+        }
+
+        candidates.push("/run/podman/podman.sock".to_string());
+
+        for candidate in candidates {
+            if Path::new(&candidate).exists() {
+                return Some(Self::normalize_socket(&candidate));
+            }
+        }
+
+        None
     }
 
     /// Create a REST API client for the configured socket
@@ -202,33 +196,12 @@ impl PodmanEngine {
         self.podman_socket.as_ref().map(|socket| PodmanApiClient::new(socket))
     }
 
-    /// Execute a CLI command as fallback when REST API is not available
-    async fn execute_cli_command(&self, args: &[&str]) -> RuntimeResult<String> {
-        use std::process::Stdio;
-        use tokio::process::Command;
-
-        debug!(
-            "Executing podman CLI command: {} {}",
-            self.podman_binary,
-            args.join(" ")
-        );
-
-        let output = Command::new(&self.podman_binary)
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            debug!("Podman CLI command succeeded: {}", stdout.trim());
-            Ok(stdout)
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            error!("Podman CLI command failed: {}", stderr);
-            Err(RuntimeError::CommandFailed(stderr))
-        }
+    fn require_api_client(&self) -> RuntimeResult<PodmanApiClient> {
+        self.create_api_client().ok_or_else(|| {
+            RuntimeError::EngineNotAvailable(
+                "Podman socket not configured; cannot reach Libpod API".to_string(),
+            )
+        })
     }
 
     /// Parse Kubernetes manifest to extract metadata
@@ -349,34 +322,6 @@ impl PodmanEngine {
         Ok(())
     }
 
-    /// Deploy using CLI as fallback
-    async fn deploy_via_cli(&self, manifest_content: &[u8]) -> RuntimeResult<()> {
-        use tokio::io::AsyncWriteExt;
-
-        debug!("Deploying workload via Podman CLI");
-
-        // Create temporary manifest file
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join(format!("beemesh-manifest-{}.yaml", uuid::Uuid::new_v4()));
-
-        let mut file = tokio::fs::File::create(&temp_file).await?;
-        file.write_all(manifest_content).await?;
-        file.flush().await?;
-
-        let temp_file_path = temp_file.to_str().ok_or_else(|| {
-            RuntimeError::InvalidManifest("Invalid temporary file path".to_string())
-        })?;
-
-        let result = self
-            .execute_cli_command(&["kube", "play", "--replace", temp_file_path])
-            .await;
-
-        // Clean up temp file
-        let _ = tokio::fs::remove_file(&temp_file).await;
-
-        result.map(|_| ())
-    }
-
     /// List pods using REST API
     async fn list_pods_via_api(
         &self,
@@ -453,109 +398,6 @@ impl PodmanEngine {
         Ok(workloads)
     }
 
-    /// List pods using CLI as fallback
-    async fn list_pods_via_cli(&self) -> RuntimeResult<Vec<WorkloadInfo>> {
-        debug!("Listing pods via Podman CLI");
-        
-        let output = self
-            .execute_cli_command(&["pod", "ls", "--format", "json"])
-            .await?;
-
-        let mut workloads = Vec::new();
-
-        if !output.trim().is_empty() {
-            match serde_json::from_str::<serde_json::Value>(&output) {
-                Ok(json) => {
-                    if let Some(pods_array) = json.as_array() {
-                        for pod in pods_array {
-                            if let Some(pod_name) = pod.get("Name").and_then(|n| n.as_str()) {
-                                if pod_name.starts_with("beemesh-") {
-                                    // Extract manifest_id from pod name (format: beemesh-{manifest_id}-{timestamp})
-                                    let name_without_prefix = pod_name.strip_prefix("beemesh-").unwrap_or(pod_name);
-                                    let name_without_suffix = if name_without_prefix.ends_with("-pod") {
-                                        name_without_prefix.strip_suffix("-pod").unwrap_or(name_without_prefix)
-                                    } else {
-                                        name_without_prefix
-                                    };
-                                    
-                                    // The manifest_id is everything except the last segment (timestamp)
-                                    let manifest_id = if let Some(last_hyphen) = name_without_suffix.rfind('-') {
-                                        let potential_timestamp = &name_without_suffix[last_hyphen + 1..];
-                                        if potential_timestamp.chars().all(|c| c.is_ascii_digit()) {
-                                            name_without_suffix[..last_hyphen].to_string()
-                                        } else {
-                                            name_without_suffix.to_string()
-                                        }
-                                    } else {
-                                        name_without_suffix.to_string()
-                                    };
-
-                                    let status = match pod.get("Status").and_then(|s| s.as_str()) {
-                                        Some("Running") => WorkloadStatus::Running,
-                                        Some("Stopped") | Some("Exited") => WorkloadStatus::Stopped,
-                                        Some("Error") => {
-                                            WorkloadStatus::Failed("Pod in error state".to_string())
-                                        }
-                                        Some("Failed") => {
-                                            WorkloadStatus::Failed("Pod failed".to_string())
-                                        }
-                                        _ => WorkloadStatus::Unknown,
-                                    };
-
-                                    let mut metadata = HashMap::new();
-                                    if let Some(labels) = pod.get("Labels") {
-                                        if let Some(labels_obj) = labels.as_object() {
-                                            for (key, value) in labels_obj {
-                                                if let Some(value_str) = value.as_str() {
-                                                    metadata.insert(key.clone(), value_str.to_string());
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    let created_at = pod
-                                        .get("Created")
-                                        .and_then(|c| c.as_str())
-                                        .and_then(|created_str| {
-                                            std::time::SystemTime::UNIX_EPOCH.checked_add(
-                                                std::time::Duration::from_secs(
-                                                    created_str.parse::<u64>().unwrap_or(0),
-                                                ),
-                                            )
-                                        })
-                                        .unwrap_or_else(std::time::SystemTime::now);
-
-                                    // Use the full pod name (without -pod suffix) as the workload id
-                                    let workload_id = if pod_name.ends_with("-pod") {
-                                        pod_name.strip_suffix("-pod").unwrap_or(pod_name).to_string()
-                                    } else {
-                                        pod_name.to_string()
-                                    };
-
-                                    workloads.push(WorkloadInfo {
-                                        id: workload_id,
-                                        manifest_id,
-                                        status,
-                                        metadata,
-                                        created_at,
-                                        updated_at: std::time::SystemTime::now(),
-                                        ports: Vec::new(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    debug!("Failed to parse JSON output: {}", e);
-                }
-            }
-        }
-
-        debug!("Found {} workloads via CLI", workloads.len());
-        Ok(workloads)
-    }
-
     /// Remove pod using REST API
     async fn remove_pod_via_api(
         &self,
@@ -587,51 +429,6 @@ impl PodmanEngine {
                     } else {
                         info!("Successfully removed pod: {}", name);
                     }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Remove pod using CLI as fallback
-    async fn remove_pod_via_cli(&self, workload_id: &str) -> RuntimeResult<()> {
-        debug!("Removing pod via Podman CLI: {}", workload_id);
-
-        let pod_name_with_suffix = format!("{}-pod", workload_id);
-
-        // Try with suffix first
-        if self
-            .execute_cli_command(&["pod", "rm", "-f", &pod_name_with_suffix])
-            .await
-            .is_ok()
-        {
-            info!("Successfully removed pod: {}", pod_name_with_suffix);
-            return Ok(());
-        }
-
-        // Try exact name
-        if self
-            .execute_cli_command(&["pod", "rm", "-f", workload_id])
-            .await
-            .is_ok()
-        {
-            info!("Successfully removed pod: {}", workload_id);
-            return Ok(());
-        }
-
-        // List and remove by pattern
-        let output = self
-            .execute_cli_command(&["pod", "ls", "-q", "--filter", &format!("name={}", workload_id)])
-            .await?;
-
-        for line in output.lines() {
-            let pod_id = line.trim();
-            if !pod_id.is_empty() {
-                if let Err(e) = self.execute_cli_command(&["pod", "rm", "-f", pod_id]).await {
-                    warn!("Failed to remove pod {}: {}", pod_id, e);
-                } else {
-                    info!("Successfully removed pod: {}", pod_id);
                 }
             }
         }
@@ -679,46 +476,6 @@ impl PodmanEngine {
         )))
     }
 
-    /// Generate kube manifest using CLI as fallback
-    async fn generate_kube_via_cli(&self, workload_id: &str) -> RuntimeResult<Vec<u8>> {
-        debug!("Generating kube manifest via CLI for: {}", workload_id);
-
-        let pod_name_variations = vec![
-            format!("{}-pod", workload_id),
-            workload_id.to_string(),
-        ];
-
-        for pod_name in &pod_name_variations {
-            if let Ok(manifest) = self.execute_cli_command(&["generate", "kube", pod_name]).await {
-                info!("Successfully generated manifest for pod: {}", pod_name);
-                return Ok(manifest.into_bytes());
-            }
-        }
-
-        // Try listing pods to find matches
-        if let Ok(output) = self
-            .execute_cli_command(&[
-                "pod", "ls", "--format", "{{.Name}}", "--filter", &format!("name={}", workload_id),
-            ])
-            .await
-        {
-            for line in output.lines() {
-                let pod_name = line.trim();
-                if !pod_name.is_empty() && pod_name.contains(workload_id) {
-                    if let Ok(manifest) = self.execute_cli_command(&["generate", "kube", pod_name]).await {
-                        info!("Successfully generated manifest for pod: {}", pod_name);
-                        return Ok(manifest.into_bytes());
-                    }
-                }
-            }
-        }
-
-        Err(RuntimeError::WorkloadNotFound(format!(
-            "No running pod found for workload {}",
-            workload_id
-        )))
-    }
-
     /// Get pod logs using REST API
     async fn get_logs_via_api(
         &self,
@@ -728,42 +485,23 @@ impl PodmanEngine {
     ) -> RuntimeResult<String> {
         debug!("Getting logs via REST API for: {}", workload_id);
 
-        // Try with -pod suffix first
         let pod_name_with_suffix = format!("{}-pod", workload_id);
-        if let Ok(logs) = client.get_pod_logs(&pod_name_with_suffix, tail).await {
-            return Ok(logs);
+        let candidates = [pod_name_with_suffix.as_str(), workload_id];
+        let mut last_error: Option<RuntimeError> = None;
+
+        for candidate in candidates {
+            match client.get_pod_logs(candidate, tail).await {
+                Ok(logs) => return Ok(logs),
+                Err(err) => last_error = Some(err),
+            }
         }
 
-        // Try exact name
-        if let Ok(logs) = client.get_pod_logs(workload_id, tail).await {
-            return Ok(logs);
-        }
-
-        Ok(format!("Failed to retrieve logs for workload: {}", workload_id))
-    }
-
-    /// Get pod logs using CLI as fallback
-    async fn get_logs_via_cli(
-        &self,
-        workload_id: &str,
-        tail: Option<usize>,
-    ) -> RuntimeResult<String> {
-        debug!("Getting logs via CLI for: {}", workload_id);
-
-        let mut args = vec!["pod", "logs"];
-
-        let tail_str;
-        if let Some(tail_lines) = tail {
-            tail_str = tail_lines.to_string();
-            args.extend(&["--tail", &tail_str]);
-        }
-
-        args.push(workload_id);
-
-        match self.execute_cli_command(&args).await {
-            Ok(logs) => Ok(logs),
-            Err(e) => Ok(format!("Failed to retrieve logs: {}", e)),
-        }
+        Err(last_error.unwrap_or_else(|| {
+            RuntimeError::WorkloadNotFound(format!(
+                "No logs available for workload {}",
+                workload_id
+            ))
+        }))
     }
 }
 
@@ -780,32 +518,23 @@ impl RuntimeEngine for PodmanEngine {
     }
 
     async fn is_available(&self) -> bool {
-        // Try REST API first if socket is configured
-        if let Some(client) = self.create_api_client() {
-            match client.check_availability().await {
-                Ok(info) => {
-                    if let Some(version) = info.version {
-                        debug!("Podman API available, version: {:?}", version.version);
-                    }
-                    return true;
+        let Some(client) = self.create_api_client() else {
+            debug!("Podman socket not configured; runtime unavailable");
+            return false;
+        };
+
+        match client.check_availability().await {
+            Ok(info) => {
+                if let Some(version) = info.version {
+                    debug!("Podman API available, version: {:?}", version.version);
                 }
-                Err(e) => {
-                    if self.force_remote {
-                        debug!("Podman REST API unavailable and force_remote=true: {}", e);
-                        return false;
-                    }
-                    debug!("Podman REST API unavailable, trying CLI: {}", e);
-                }
+                true
+            }
+            Err(e) => {
+                error!("Podman REST API unavailable: {}", e);
+                false
             }
         }
-
-        if self.force_remote {
-            debug!("Podman socket forced but not configured; marking unavailable");
-            return false;
-        }
-
-        // Fall back to CLI check
-        self.execute_cli_command(&["--version"]).await.is_ok()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -857,27 +586,12 @@ impl RuntimeEngine for PodmanEngine {
         // Modify manifest for deployment - pass the workload_id so pod name matches
         let modified_manifest = self.modify_manifest_for_deployment(manifest_content, &workload_id)?;
 
-        // Try REST API first if socket is configured
-        if let Some(client) = self.create_api_client() {
-            match self.deploy_via_api(&client, &modified_manifest).await {
-                Ok(()) => {
-                    info!("Workload deployed via REST API: {}", workload_id);
-                }
-                Err(e) => {
-                    if self.force_remote || !PodmanApiClient::is_connection_error(&e) {
-                        error!("Podman REST API deployment failed: {}", e);
-                        return Err(e);
-                    }
-                    warn!("REST API deployment failed, falling back to CLI: {}", e);
-                    self.deploy_via_cli(&modified_manifest).await?;
-                    info!("Workload deployed via CLI fallback: {}", workload_id);
-                }
-            }
-        } else {
-            // No socket configured, use CLI
-            self.deploy_via_cli(&modified_manifest).await?;
-            info!("Workload deployed via CLI: {}", workload_id);
+        let client = self.require_api_client()?;
+        if let Err(e) = self.deploy_via_api(&client, &modified_manifest).await {
+            error!("Podman REST API deployment failed: {}", e);
+            return Err(e);
         }
+        info!("Workload deployed via REST API: {}", workload_id);
 
         // Parse manifest metadata
         let metadata = self
@@ -947,42 +661,14 @@ impl RuntimeEngine for PodmanEngine {
 
     async fn list_workloads(&self) -> RuntimeResult<Vec<WorkloadInfo>> {
         debug!("Listing all workloads");
-
-        // Try REST API first if socket is configured
-        if let Some(client) = self.create_api_client() {
-            match self.list_pods_via_api(&client).await {
-                Ok(workloads) => return Ok(workloads),
-                Err(e) => {
-                    if self.force_remote || !PodmanApiClient::is_connection_error(&e) {
-                        return Err(e);
-                    }
-                    warn!("REST API list failed, falling back to CLI: {}", e);
-                }
-            }
-        }
-
-        // Fall back to CLI
-        self.list_pods_via_cli().await
+        let client = self.require_api_client()?;
+        self.list_pods_via_api(&client).await
     }
 
     async fn remove_workload(&self, workload_id: &str) -> RuntimeResult<()> {
         info!("Removing workload: {}", workload_id);
-
-        // Try REST API first if socket is configured
-        if let Some(client) = self.create_api_client() {
-            match self.remove_pod_via_api(&client, workload_id).await {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    if self.force_remote || !PodmanApiClient::is_connection_error(&e) {
-                        return Err(e);
-                    }
-                    warn!("REST API remove failed, falling back to CLI: {}", e);
-                }
-            }
-        }
-
-        // Fall back to CLI
-        self.remove_pod_via_cli(workload_id).await
+        let client = self.require_api_client()?;
+        self.remove_pod_via_api(&client, workload_id).await
     }
 
     async fn get_workload_logs(
@@ -991,44 +677,14 @@ impl RuntimeEngine for PodmanEngine {
         tail: Option<usize>,
     ) -> RuntimeResult<String> {
         debug!("Getting logs for workload: {}", workload_id);
-
-        // Try REST API first if socket is configured
-        if let Some(client) = self.create_api_client() {
-            match self.get_logs_via_api(&client, workload_id, tail).await {
-                Ok(logs) => return Ok(logs),
-                Err(e) => {
-                    if self.force_remote || !PodmanApiClient::is_connection_error(&e) {
-                        warn!("Failed to get logs via API: {}", e);
-                        return Ok(format!("Failed to retrieve logs: {}", e));
-                    }
-                    debug!("REST API logs failed, falling back to CLI: {}", e);
-                }
-            }
-        }
-
-        // Fall back to CLI
-        self.get_logs_via_cli(workload_id, tail).await
+        let client = self.require_api_client()?;
+        self.get_logs_via_api(&client, workload_id, tail).await
     }
 
     async fn export_manifest(&self, workload_id: &str) -> RuntimeResult<Vec<u8>> {
         info!("Exporting manifest for workload: {}", workload_id);
-
-        // Try REST API first if socket is configured
-        if let Some(client) = self.create_api_client() {
-            match self.generate_kube_via_api(&client, workload_id).await {
-                Ok(manifest) => return Ok(manifest),
-                Err(e) => {
-                    if self.force_remote || !PodmanApiClient::is_connection_error(&e) {
-                        error!("Failed to export manifest via API: {}", e);
-                        return Err(e);
-                    }
-                    warn!("REST API export failed, falling back to CLI: {}", e);
-                }
-            }
-        }
-
-        // Fall back to CLI
-        self.generate_kube_via_cli(workload_id).await
+        let client = self.require_api_client()?;
+        self.generate_kube_via_api(&client, workload_id).await
     }
 }
 
@@ -1070,7 +726,7 @@ mod tests {
     #[serial]
     #[tokio::test]
     async fn test_podman_engine_creation() {
-        PodmanEngine::configure_runtime(None, false);
+        PodmanEngine::configure_runtime(None);
         let engine = PodmanEngine::new();
         assert_eq!(engine.name(), "podman");
     }
@@ -1078,7 +734,7 @@ mod tests {
     #[serial]
     #[tokio::test]
     async fn test_manifest_validation() {
-        PodmanEngine::configure_runtime(None, false);
+        PodmanEngine::configure_runtime(None);
         let engine = PodmanEngine::new();
 
         // Valid manifest
@@ -1112,7 +768,7 @@ spec:
     #[serial]
     #[tokio::test]
     async fn test_parse_manifest_metadata() {
-        PodmanEngine::configure_runtime(None, false);
+        PodmanEngine::configure_runtime(None);
         let engine = PodmanEngine::new();
 
         let manifest = br#"
@@ -1137,7 +793,7 @@ spec:
     #[serial]
     #[tokio::test]
     async fn test_workload_id_generation() {
-        PodmanEngine::configure_runtime(None, false);
+        PodmanEngine::configure_runtime(None);
         let engine = PodmanEngine::new();
 
         let manifest1 = b"apiVersion: v1\nkind: Pod\nmetadata:\n  name: test-pod";
@@ -1164,7 +820,7 @@ spec:
     #[serial]
     #[tokio::test]
     async fn detects_podman_socket_from_env() {
-        PodmanEngine::configure_runtime(None, false);
+        PodmanEngine::configure_runtime(None);
 
         let _guard = EnvGuard::set("CONTAINER_HOST", "/tmp/env-podman.sock");
 
@@ -1174,20 +830,6 @@ spec:
             Some("unix:///tmp/env-podman.sock")
         );
 
-        PodmanEngine::configure_runtime(None, false);
-    }
-
-    #[serial]
-    #[tokio::test]
-    async fn test_force_remote_configuration() {
-        PodmanEngine::configure_runtime(None, false);
-        PodmanEngine::configure_runtime(Some("/run/podman/podman.sock".to_string()), true);
-        let engine = PodmanEngine::new();
-        assert!(engine.force_remote);
-        assert_eq!(
-            engine.podman_socket.as_deref(),
-            Some("unix:///run/podman/podman.sock")
-        );
-        PodmanEngine::configure_runtime(None, false);
+        PodmanEngine::configure_runtime(None);
     }
 }
