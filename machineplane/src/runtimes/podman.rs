@@ -545,6 +545,45 @@ impl PodmanEngine {
     ) -> RuntimeResult<()> {
         debug!("Removing pod via Podman REST API: {}", workload_id);
 
+        // Prefer precise deletion using label filters so we don't depend on guessed names.
+        let mut removed_by_label = 0usize;
+        match client
+            .list_pods_by_label(WORKLOAD_ID_LABEL_KEY, workload_id)
+            .await
+        {
+            Ok(pods) => {
+                for pod in pods {
+                    if let Some(name) = pod.name.as_deref() {
+                        match client.remove_pod(name, true).await {
+                            Ok(_) => {
+                                info!(
+                                    "Successfully removed labeled pod {} for workload {}",
+                                    name, workload_id
+                                );
+                                removed_by_label += 1;
+                            }
+                            Err(err) => {
+                                warn!(
+                                    "Failed to remove labeled pod {} for workload {}: {}",
+                                    name, workload_id, err
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "Failed to list pods for workload {} using labels: {}",
+                    workload_id, err
+                );
+            }
+        }
+
+        if removed_by_label > 0 {
+            return Ok(());
+        }
+
         // Try with -pod suffix first (most common)
         let pod_name_with_suffix = format!("{}-pod", workload_id);
         if client.remove_pod(&pod_name_with_suffix, true).await.is_ok() {
