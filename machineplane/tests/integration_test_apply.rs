@@ -10,11 +10,11 @@
 
 use env_logger::Env;
 use machineplane::runtimes::podman::PodmanEngine;
+use machineplane::runtimes::podman_api::PodmanApiClient;
 use serial_test::serial;
 
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::process::Command;
 use tokio::time::sleep;
 
 #[path = "apply_common.rs"]
@@ -32,20 +32,20 @@ use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_local_multiaddr};
 use tokio::task::JoinHandle;
 
-/// Construct a Podman command that respects the CONTAINER_HOST environment
-/// variables so the tests work with both local Podman daemons and remote Podman sockets.
-fn podman_command(args: &[&str]) -> Command {
-    let mut cmd =
-        Command::new(std::env::var("PODMAN_CMD").unwrap_or_else(|_| "podman".to_string()));
-    cmd.args(args);
+fn podman_client_from_env() -> Option<PodmanApiClient> {
+    let configured_socket = std::env::var("CONTAINER_HOST")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(PodmanEngine::detect_podman_socket)?;
 
-    if let Ok(host) = std::env::var("CONTAINER_HOST") {
-        if !host.trim().is_empty() {
-            cmd.env("CONTAINER_HOST", host);
-        }
+    let normalized_socket = PodmanEngine::normalize_socket(&configured_socket);
+
+    // SAFETY: tests may spawn child tasks that also need to see the configured socket
+    unsafe {
+        std::env::set_var("CONTAINER_HOST", &normalized_socket);
     }
 
-    cmd
+    Some(PodmanApiClient::new(&normalized_socket))
 }
 
 /// Tests the basic apply functionality with the Podman runtime.
@@ -493,121 +493,44 @@ async fn start_test_nodes_for_podman() -> Vec<JoinHandle<()>> {
 }
 
 async fn is_podman_available() -> bool {
-    // Require a configured Podman socket; without it the runtime-backed apply flow
-    // will be disabled inside machineplane, leaving no workloads to observe.
-    let configured_socket = std::env::var("CONTAINER_HOST")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(PodmanEngine::detect_podman_socket);
-
-    let Some(socket) = configured_socket else {
+    let Some(client) = podman_client_from_env() else {
         log::warn!("Podman socket not detected; skipping Podman-dependent apply tests");
         return false;
     };
 
-    let normalized_socket = PodmanEngine::normalize_socket(&socket);
-    // SAFETY: configuring the process environment for test child tasks is required so
-    // the Podman runtime can discover the socket. This mirrors the main binary's
-    // startup configuration path.
-    unsafe {
-        std::env::set_var("CONTAINER_HOST", &normalized_socket);
-    }
-
-    // Podman CLI existing is not enough; the daemon must also be reachable for the
-    // apply flows to make progress. Use `podman info` to verify connectivity.
-    let version_ok = podman_command(&["--version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|status| status.success())
-        .unwrap_or(false);
-
-    if !version_ok {
-        log::warn!("Podman CLI not available; skipping Podman-dependent apply tests");
-        return false;
-    }
-
-    podman_command(&["info", "--format", "json"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|status| status.success())
-        .unwrap_or_else(|err| {
-            log::warn!("Podman daemon unreachable ({err}); skipping Podman-dependent apply tests");
+    match client.check_availability().await {
+        Ok(info) => {
+            if let Some(version) = info
+                .version
+                .as_ref()
+                .and_then(|details| details.version.as_deref())
+            {
+                log::info!("Podman REST API reachable, version: {}", version);
+            }
+            true
+        }
+        Err(err) => {
+            log::warn!("Podman REST API unavailable: {}", err);
             false
-        })
+        }
+    }
 }
 
 async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> bool {
-    // The pod name should now be in the format "beemesh-{manifest_id}-pod"
-    // Podman adds "-pod" suffix when creating pods from Kubernetes Deployment manifests
-    let expected_pod_name = format!("beemesh-{}-pod", tender_id);
+    let Some(client) = podman_client_from_env() else {
+        log::warn!("Podman socket not configured; skipping Podman verification");
+        return false;
+    };
 
-    // Check if the pod was created by Podman
-    let output = podman_command(&["pod", "ls", "--format", "json"])
-        .output()
-        .await;
+    let expected_fragment = format!("beemesh-{}", tender_id);
 
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-
-            // Parse JSON output to find our pod
-            if let Ok(pods) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                if let Some(pods_array) = pods.as_array() {
-                    for pod in pods_array {
-                        if let Some(name) = pod.get("Name").and_then(|n| n.as_str()) {
-                            // Check if this pod name matches our expected pattern
-                            if name == expected_pod_name {
-                                log::info!("Found matching Podman pod: {}", name);
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Also try to list containers if pod listing didn't work
-            let container_output = podman_command(&["ps", "-a", "--format", "json"])
-                .output()
-                .await;
-
-            if let Ok(container_output) = container_output {
-                if container_output.status.success() {
-                    let container_stdout = String::from_utf8_lossy(&container_output.stdout);
-                    if let Ok(containers) =
-                        serde_json::from_str::<serde_json::Value>(&container_stdout)
-                    {
-                        if let Some(containers_array) = containers.as_array() {
-                            for container in containers_array {
-                                if let Some(names) =
-                                    container.get("Names").and_then(|n| n.as_array())
-                                {
-                                    for name in names {
-                                        if let Some(name_str) = name.as_str() {
-                                            if name_str.contains(&format!("beemesh-{}", tender_id))
-                                            {
-                                                log::info!(
-                                                    "Found matching Podman container: {}",
-                                                    name_str
-                                                );
-                                                return true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            false
-        }
-        _ => {
-            log::warn!("Failed to execute 'podman pod ls' command");
+    match client.list_pods().await {
+        Ok(pods) => pods
+            .into_iter()
+            .filter_map(|pod| pod.name)
+            .any(|name| name.contains(&expected_fragment)),
+        Err(err) => {
+            log::warn!("Failed to list pods via Podman REST API: {}", err);
             false
         }
     }
@@ -616,56 +539,28 @@ async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> b
 async fn cleanup_podman_resources(tender_id: &str) {
     log::info!("Cleaning up Podman resources for task: {}", tender_id);
 
-    // Try to remove the specific pod by the expected name (with -pod suffix)
-    let expected_pod_name = format!("beemesh-{}-pod", tender_id);
-    let _ = podman_command(&["pod", "rm", "-f", &expected_pod_name])
-        .output()
-        .await;
-    log::info!("Attempted to clean up Podman pod: {}", expected_pod_name);
+    let Some(client) = podman_client_from_env() else {
+        log::warn!("Podman socket not configured; nothing to clean up");
+        return;
+    };
 
-    // Also try the name without -pod suffix (fallback)
-    let expected_pod_name_alt = format!("beemesh-{}", tender_id);
-    let _ = podman_command(&["pod", "rm", "-f", &expected_pod_name_alt])
-        .output()
-        .await;
-    log::info!(
-        "Attempted to clean up Podman pod: {}",
-        expected_pod_name_alt
-    );
+    let expected_fragment = format!("beemesh-{}", tender_id);
 
-    // Also try to remove pods by name pattern (fallback)
-    let output = podman_command(&["pod", "ls", "-q", "--filter", &format!("name=beemesh")])
-        .output()
-        .await;
-
-    if let Ok(output) = output {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let pod_id = line.trim();
-                if !pod_id.is_empty() {
-                    let _ = podman_command(&["pod", "rm", "-f", pod_id]).output().await;
-                    log::info!("Cleaned up Podman pod: {}", pod_id);
+    match client.list_pods().await {
+        Ok(pods) => {
+            for pod in pods.into_iter().filter_map(|pod| pod.name) {
+                if pod.contains(&expected_fragment) {
+                    match client.remove_pod(&pod, true).await {
+                        Ok(_) => log::info!("Removed Podman pod via REST API: {}", pod),
+                        Err(err) => {
+                            log::warn!("Failed to remove Podman pod {} via REST API: {}", pod, err)
+                        }
+                    }
                 }
             }
         }
-    }
-
-    // Also clean up any containers that might be running
-    let container_output = podman_command(&["ps", "-aq", "--filter", "name=beemesh"])
-        .output()
-        .await;
-
-    if let Ok(container_output) = container_output {
-        if container_output.status.success() {
-            let stdout = String::from_utf8_lossy(&container_output.stdout);
-            for line in stdout.lines() {
-                let container_id = line.trim();
-                if !container_id.is_empty() {
-                    let _ = podman_command(&["rm", "-f", container_id]).output().await;
-                    log::info!("Cleaned up Podman container: {}", container_id);
-                }
-            }
+        Err(err) => {
+            log::warn!("Failed to list pods for cleanup via REST API: {}", err);
         }
     }
 }
