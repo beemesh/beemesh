@@ -49,6 +49,13 @@ jobs:
           echo "Podman did not become ready in time"
           exit 1
       
+      - name: Cargo specific Podman tests
+        env:
+          RUST_BACKTRACE: full
+          RUST_LOG: debug
+          CONTAINER_HOST: ${{ env.CONTAINER_HOST }}
+        run: cargo test -p machineplane --test integration_test_apply test_apply_with_real_podman -- --nocapture --test-threads=1
+
       - name: Cargo tests with Podman
         env:
           RUST_BACKTRACE: full
