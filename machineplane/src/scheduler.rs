@@ -27,6 +27,10 @@ const REPLAY_WINDOW_MS: u64 = 300_000;
 static LOCAL_MANIFEST_CACHE: Lazy<Mutex<HashMap<String, String>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Tracks the user-facing manifest identifier (Kube manifest hash) for each tender ULID.
+static TENDER_MANIFEST_IDS: Lazy<Mutex<HashMap<String, String>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 /// Global mapping from workload_id to the peer_id that deployed it.
 /// This allows multi-node in-process tests to track which node deployed which workload.
 static WORKLOAD_PEER_MAP: Lazy<tokio::sync::RwLock<HashMap<String, String>>> =
@@ -225,9 +229,12 @@ impl Scheduler {
                 return;
             }
 
+            let manifest_key =
+                take_tender_manifest_id(&tender_id).unwrap_or_else(|| tender_id.clone());
+
             self.initialize_owned_tender(
                 &tender_id,
-                &tender_id,
+                &manifest_key,
                 &tender.manifest_digest,
                 manifest_json.clone(),
             );
@@ -801,6 +808,26 @@ pub fn register_local_manifest(tender_id: &str, manifest_json: &str) {
 
 fn get_local_manifest(tender_id: &str) -> Option<String> {
     LOCAL_MANIFEST_CACHE.lock().unwrap().get(tender_id).cloned()
+}
+
+/// Remember the user-facing manifest identifier associated with a tender.
+pub fn record_tender_manifest_id(tender_id: &str, manifest_id: &str) {
+    let mut map = TENDER_MANIFEST_IDS.lock().unwrap();
+    map.insert(tender_id.to_string(), manifest_id.to_string());
+}
+
+/// Fetch and retain the manifest identifier for a tender without removing it.
+pub fn get_tender_manifest_id(tender_id: &str) -> Option<String> {
+    TENDER_MANIFEST_IDS
+        .lock()
+        .unwrap()
+        .get(tender_id)
+        .cloned()
+}
+
+/// Remove and return the manifest identifier for a tender when it is no longer needed.
+pub fn take_tender_manifest_id(tender_id: &str) -> Option<String> {
+    TENDER_MANIFEST_IDS.lock().unwrap().remove(tender_id)
 }
 
 fn now_ms() -> u64 {

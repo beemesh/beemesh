@@ -442,6 +442,10 @@ pub async fn start_libp2p_node(
                                                 &transfer.tender_id,
                                                 &transfer.manifest_json,
                                             );
+                                            crate::scheduler::record_tender_manifest_id(
+                                                &transfer.tender_id,
+                                                &transfer.manifest_id,
+                                            );
 
                                             if !transfer.owner_pubkey.is_empty() {
                                                 crate::scheduler::record_manifest_owner(

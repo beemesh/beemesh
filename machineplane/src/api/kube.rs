@@ -250,6 +250,7 @@ async fn publish_tender(
     let manifest_digest = machine::compute_manifest_id_from_content(manifest_str.as_bytes());
     let tender_id = Ulid::new().to_string();
     register_local_manifest(&tender_id, manifest_str);
+    crate::scheduler::record_tender_manifest_id(&tender_id, manifest_id);
 
     // Use the state's local_peer_id to get the correct keypair for this node
     let keypair = crate::network::get_node_keypair_for_peer(Some(&state.local_peer_id_bytes))
