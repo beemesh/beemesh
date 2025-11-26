@@ -27,7 +27,9 @@ use hyper::{Method, Request, StatusCode};
 use hyper_util::client::legacy::Client;
 use hyperlocal::{UnixClientExt, UnixConnector, Uri};
 use log::{debug, warn};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 
 /// Default API version for Podman Libpod API
@@ -366,7 +368,33 @@ impl PodmanApiClient {
 
     /// List all pods
     pub async fn list_pods(&self) -> Result<Vec<PodListEntry>, RuntimeError> {
-        let uri = self.build_uri("/pods/json");
+        self.list_pods_with_query(None).await
+    }
+
+    /// List pods filtered by label equality (key=value)
+    pub async fn list_pods_by_label(
+        &self,
+        label_key: &str,
+        label_value: &str,
+    ) -> Result<Vec<PodListEntry>, RuntimeError> {
+        let filters = json!({
+            "label": [format!("{}={}", label_key, label_value)],
+        });
+        let encoded =
+            utf8_percent_encode(filters.to_string().as_str(), NON_ALPHANUMERIC).to_string();
+        self.list_pods_with_query(Some(format!("filters={}", encoded)))
+            .await
+    }
+
+    async fn list_pods_with_query(
+        &self,
+        query: Option<String>,
+    ) -> Result<Vec<PodListEntry>, RuntimeError> {
+        let uri = if let Some(query) = query {
+            self.build_uri_with_query("/pods/json", &query)
+        } else {
+            self.build_uri("/pods/json")
+        };
         debug!("Listing pods: {:?}", uri);
 
         let request = Request::builder()

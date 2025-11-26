@@ -114,6 +114,7 @@ pub struct PodmanEngine {
 
 const LOCAL_PEER_LABEL_KEY: &str = "beemesh.local_peer_id";
 const MANIFEST_ID_LABEL_KEY: &str = "beemesh.manifest_id";
+const WORKLOAD_ID_LABEL_KEY: &str = "beemesh.workload_id";
 
 static PODMAN_SOCKET_OVERRIDE: Lazy<RwLock<Option<String>>> = Lazy::new(|| RwLock::new(None));
 
@@ -258,6 +259,7 @@ impl PodmanEngine {
                     serde_yaml::Value::String("name".to_string()),
                     serde_yaml::Value::String(pod_name.to_string()),
                 );
+                Self::insert_workload_label(metadata_map, workload_id);
                 Self::insert_manifest_label(metadata_map, manifest_id);
                 if let Some(peer_id) = local_peer_id {
                     Self::insert_peer_label(metadata_map, peer_id);
@@ -274,6 +276,7 @@ impl PodmanEngine {
                             serde_yaml::Value::String("name".to_string()),
                             serde_yaml::Value::String(format!("{}-pod", pod_name)),
                         );
+                        Self::insert_workload_label(template_metadata_map, workload_id);
                         Self::insert_manifest_label(template_metadata_map, manifest_id);
                         if let Some(peer_id) = local_peer_id {
                             Self::insert_peer_label(template_metadata_map, peer_id);
@@ -320,6 +323,48 @@ impl PodmanEngine {
 
     fn insert_peer_label(target: &mut Mapping, peer_id: &str) {
         Self::insert_label(target, LOCAL_PEER_LABEL_KEY, peer_id);
+    }
+
+    fn insert_workload_label(target: &mut Mapping, workload_id: &str) {
+        Self::insert_label(target, WORKLOAD_ID_LABEL_KEY, workload_id);
+    }
+
+    fn normalize_workload_id_from_pod_name(pod_name: &str) -> String {
+        if pod_name.ends_with("-pod") {
+            pod_name
+                .strip_suffix("-pod")
+                .unwrap_or(pod_name)
+                .to_string()
+        } else {
+            pod_name.to_string()
+        }
+    }
+
+    fn infer_manifest_id_from_workload_id(workload_id: &str) -> String {
+        let name_without_prefix = workload_id.strip_prefix("beemesh-").unwrap_or(workload_id);
+        let mut candidate = name_without_prefix;
+
+        if let Some(last_idx) = name_without_prefix.rfind('-') {
+            let last_segment = &name_without_prefix[last_idx + 1..];
+            let remainder = &name_without_prefix[..last_idx];
+
+            if last_segment.chars().all(|c| c.is_ascii_digit()) {
+                candidate = remainder;
+            } else if let Some(prev_idx) = remainder.rfind('-') {
+                let maybe_timestamp = &remainder[prev_idx + 1..];
+                if maybe_timestamp.chars().all(|c| c.is_ascii_digit()) {
+                    candidate = &remainder[..prev_idx];
+                }
+            }
+        }
+
+        candidate.to_string()
+    }
+
+    fn pod_status_is_running(status: Option<&str>) -> bool {
+        status
+            .map(|value| value.to_ascii_lowercase().contains("running"))
+            .unwrap_or(false)
     }
 
     async fn deploy_with_peer_label(
@@ -419,9 +464,14 @@ impl PodmanEngine {
                 .labels
                 .as_ref()
                 .and_then(|labels| labels.get(MANIFEST_ID_LABEL_KEY).cloned());
+            let workload_id_label = pod
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get(WORKLOAD_ID_LABEL_KEY).cloned());
             let pod_name = pod.name.clone();
 
             let include_pod = manifest_id_label.is_some()
+                || workload_id_label.is_some()
                 || pod_name
                     .as_deref()
                     .map(|name| name.starts_with("beemesh-"))
@@ -432,36 +482,11 @@ impl PodmanEngine {
             }
 
             if let Some(pod_name) = &pod_name {
+                let normalized_workload_id = workload_id_label
+                    .clone()
+                    .unwrap_or_else(|| Self::normalize_workload_id_from_pod_name(pod_name));
                 let manifest_id = manifest_id_label.clone().unwrap_or_else(|| {
-                    // Extract manifest_id from pod name (format: beemesh-{manifest_id}-{timestamp}[-entropy])
-                    // First strip the "beemesh-" prefix, then handle optional "-pod" suffix
-                    let name_without_prefix = pod_name.strip_prefix("beemesh-").unwrap_or(pod_name);
-                    let name_without_suffix = if name_without_prefix.ends_with("-pod") {
-                        name_without_prefix
-                            .strip_suffix("-pod")
-                            .unwrap_or(name_without_prefix)
-                    } else {
-                        name_without_prefix
-                    };
-
-                    // Modern workload IDs include an extra entropy suffix after the timestamp.
-                    // Prefer removing the trailing random segment (if any) and then the numeric timestamp.
-                    let mut candidate = name_without_suffix;
-                    if let Some(last_idx) = name_without_suffix.rfind('-') {
-                        let last_segment = &name_without_suffix[last_idx + 1..];
-                        let remainder = &name_without_suffix[..last_idx];
-
-                        if last_segment.chars().all(|c| c.is_ascii_digit()) {
-                            candidate = remainder;
-                        } else if let Some(prev_idx) = remainder.rfind('-') {
-                            let maybe_timestamp = &remainder[prev_idx + 1..];
-                            if maybe_timestamp.chars().all(|c| c.is_ascii_digit()) {
-                                candidate = &remainder[..prev_idx];
-                            }
-                        }
-                    }
-
-                    candidate.to_string()
+                    Self::infer_manifest_id_from_workload_id(&normalized_workload_id)
                 });
 
                 // Parse pod status
@@ -481,16 +506,14 @@ impl PodmanEngine {
                 metadata
                     .entry("manifest_id".to_string())
                     .or_insert_with(|| manifest_id.clone());
+                metadata
+                    .entry("workload_id".to_string())
+                    .or_insert_with(|| normalized_workload_id.clone());
+                metadata
+                    .entry(WORKLOAD_ID_LABEL_KEY.to_string())
+                    .or_insert_with(|| normalized_workload_id.clone());
 
-                // Use the full pod name (without -pod suffix) as the workload id
-                let workload_id = if pod_name.ends_with("-pod") {
-                    pod_name
-                        .strip_suffix("-pod")
-                        .unwrap_or(pod_name)
-                        .to_string()
-                } else {
-                    pod_name.to_string()
-                };
+                let workload_id = normalized_workload_id.clone();
 
                 let workload_info = WorkloadInfo {
                     id: workload_id,
@@ -559,39 +582,54 @@ impl PodmanEngine {
         workload_id: &str,
     ) -> RuntimeResult<Vec<u8>> {
         debug!("Generating kube manifest via REST API for: {}", workload_id);
+        let pods = client
+            .list_pods_by_label(WORKLOAD_ID_LABEL_KEY, workload_id)
+            .await?;
 
-        // Try with -pod suffix first
-        let pod_name_with_suffix = format!("{}-pod", workload_id);
-        if let Ok(manifest) = client.generate_kube(&pod_name_with_suffix).await {
-            info!(
-                "Successfully generated manifest for pod: {}",
-                pod_name_with_suffix
-            );
-            return Ok(manifest.into_bytes());
+        if pods.is_empty() {
+            return Err(RuntimeError::WorkloadNotFound(format!(
+                "No Podman pod found with label {}={}",
+                WORKLOAD_ID_LABEL_KEY, workload_id
+            )));
         }
 
-        // Try exact name
-        if let Ok(manifest) = client.generate_kube(workload_id).await {
-            info!("Successfully generated manifest for pod: {}", workload_id);
-            return Ok(manifest.into_bytes());
-        }
+        let mut last_status: Option<String> = None;
+        let mut generation_error: Option<RuntimeError> = None;
 
-        // List pods to find matches
-        let pods = client.list_pods().await?;
         for pod in pods {
-            if let Some(name) = &pod.name {
-                if name.contains(workload_id) {
-                    if let Ok(manifest) = client.generate_kube(name).await {
-                        info!("Successfully generated manifest for pod: {}", name);
+            if let Some(status) = pod.status.clone() {
+                last_status = Some(status);
+            }
+
+            if !Self::pod_status_is_running(pod.status.as_deref()) {
+                continue;
+            }
+
+            if let Some(name) = pod.name.as_deref() {
+                match client.generate_kube(name).await {
+                    Ok(manifest) => {
+                        info!("Generated manifest for running pod {}", name);
                         return Ok(manifest.into_bytes());
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Failed to generate manifest from pod {} for workload {}: {}",
+                            name, workload_id, err
+                        );
+                        generation_error = Some(err);
                     }
                 }
             }
         }
 
-        Err(RuntimeError::WorkloadNotFound(format!(
-            "No running pod found for workload {}",
-            workload_id
+        if let Some(err) = generation_error {
+            return Err(err);
+        }
+
+        Err(RuntimeError::WorkloadNotReady(format!(
+            "Workload {} has Podman pods but none are running yet (last status: {})",
+            workload_id,
+            last_status.unwrap_or_else(|| "unknown".to_string())
         )))
     }
 
@@ -877,6 +915,68 @@ spec:
         assert_eq!(metadata.get("apiVersion"), Some(&"v1".to_string()));
         assert_eq!(metadata.get("name"), Some(&"test-pod".to_string()));
         assert_eq!(metadata.get("namespace"), Some(&"default".to_string()));
+    }
+
+    #[test]
+    fn test_manifest_modification_inserts_workload_label() {
+        let engine = PodmanEngine::new();
+        let manifest = include_bytes!("../../tests/sample_manifests/nginx.yml");
+
+        let workload_id = "beemesh-manifest-123-1";
+        let modified = engine
+            .modify_manifest_for_deployment(manifest, workload_id, "manifest-123", None)
+            .expect("manifest modification must succeed");
+
+        let doc: serde_yaml::Value = serde_yaml::from_slice(&modified).unwrap();
+        let labels = doc["metadata"]["labels"].as_mapping().unwrap();
+        assert_eq!(
+            labels
+                .get(&serde_yaml::Value::String(
+                    WORKLOAD_ID_LABEL_KEY.to_string()
+                ))
+                .and_then(|value| value.as_str()),
+            Some(workload_id)
+        );
+        assert_eq!(
+            labels
+                .get(&serde_yaml::Value::String(
+                    MANIFEST_ID_LABEL_KEY.to_string()
+                ))
+                .and_then(|value| value.as_str()),
+            Some("manifest-123")
+        );
+    }
+
+    #[test]
+    fn test_deployment_template_receives_workload_label() {
+        let engine = PodmanEngine::new();
+        let manifest = include_bytes!("../../tests/sample_manifests/nginx.yml");
+
+        let workload_id = "beemesh-manifest-abc-1";
+        let modified = engine
+            .modify_manifest_for_deployment(manifest, workload_id, "manifest-abc", None)
+            .expect("manifest modification must succeed");
+
+        let doc: serde_yaml::Value = serde_yaml::from_slice(&modified).unwrap();
+        let labels = doc["spec"]["template"]["metadata"]["labels"]
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            labels
+                .get(&serde_yaml::Value::String(
+                    WORKLOAD_ID_LABEL_KEY.to_string()
+                ))
+                .and_then(|value| value.as_str()),
+            Some(workload_id)
+        );
+        assert_eq!(
+            labels
+                .get(&serde_yaml::Value::String(
+                    MANIFEST_ID_LABEL_KEY.to_string()
+                ))
+                .and_then(|value| value.as_str()),
+            Some("manifest-abc")
+        );
     }
 
     #[serial]

@@ -36,6 +36,7 @@ hyper = { version = "1.8", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 hyperlocal = "0.9"
 http-body-util = "0.1"
+percent-encoding = "2.3"
 
 [dev-dependencies]
 serial_test = "3.0"

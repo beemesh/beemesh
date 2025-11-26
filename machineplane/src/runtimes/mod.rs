@@ -84,6 +84,9 @@ pub enum RuntimeError {
     #[error("Workload not found: {0}")]
     WorkloadNotFound(String),
 
+    #[error("Workload not ready: {0}")]
+    WorkloadNotReady(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
