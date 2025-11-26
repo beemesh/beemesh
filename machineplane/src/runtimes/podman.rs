@@ -105,7 +105,6 @@ use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use serde_yaml::Value;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::RwLock;
 
 /// Podman runtime engine
@@ -165,26 +164,6 @@ impl PodmanEngine {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
                 return Some(Self::normalize_socket(trimmed));
-            }
-        }
-
-        Self::detect_local_socket()
-    }
-
-    fn detect_local_socket() -> Option<String> {
-        let mut candidates = Vec::new();
-
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            if !runtime_dir.trim().is_empty() {
-                candidates.push(format!("{}/podman/podman.sock", runtime_dir.trim_end_matches('/')));
-            }
-        }
-
-        candidates.push("/run/podman/podman.sock".to_string());
-
-        for candidate in candidates {
-            if Path::new(&candidate).exists() {
-                return Some(Self::normalize_socket(&candidate));
             }
         }
 
