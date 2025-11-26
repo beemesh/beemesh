@@ -31,18 +31,22 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::env;
+use tokio::sync::OnceCell;
 
 /// Default API version for Podman Libpod API
 const DEFAULT_API_VERSION: &str = "v5.0.0";
+const FALLBACK_API_VERSIONS: &[&str] = &[DEFAULT_API_VERSION, "v4.0.0"];
+const PODMAN_API_VERSION_ENV: &str = "PODMAN_API_VERSION";
 
 /// Podman REST API client for Unix socket communication
 pub struct PodmanApiClient {
     /// Unix socket path (without unix:// prefix)
     socket_path: String,
-    /// API version to use
-    api_version: String,
     /// HTTP client for Unix socket connections
     client: Client<UnixConnector, Full<Bytes>>,
+    /// Cached API version negotiated with the daemon (or env override)
+    negotiated_version: OnceCell<String>,
 }
 
 /// Response from /libpod/info endpoint
@@ -194,11 +198,23 @@ impl PodmanApiClient {
         let socket_path = Self::normalize_socket_path(socket_url);
         debug!("Creating PodmanApiClient with socket: {}", socket_path);
 
+        let negotiated_version = OnceCell::new();
+        if let Some(version) = Self::version_override_from_env() {
+            let _ = negotiated_version.set(version);
+        }
+
         Self {
             socket_path,
-            api_version: DEFAULT_API_VERSION.to_string(),
             client: Client::unix(),
+            negotiated_version,
         }
+    }
+
+    fn version_override_from_env() -> Option<String> {
+        env::var(PODMAN_API_VERSION_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
     }
 
     /// Normalize a socket URL to a bare path
@@ -211,15 +227,91 @@ impl PodmanApiClient {
     }
 
     /// Build a URI for the given API path
-    fn build_uri(&self, path: &str) -> hyper::Uri {
-        let full_path = format!("/{}/libpod{}", self.api_version, path);
+    fn build_uri_for_version(&self, version: &str, path: &str) -> hyper::Uri {
+        let full_path = format!("/{}/libpod{}", version, path);
         Uri::new(&self.socket_path, &full_path).into()
     }
 
     /// Build a URI with query parameters
-    fn build_uri_with_query(&self, path: &str, query: &str) -> hyper::Uri {
-        let full_path = format!("/{}/libpod{}?{}", self.api_version, path, query);
+    fn build_uri_with_query_for_version(
+        &self,
+        version: &str,
+        path: &str,
+        query: &str,
+    ) -> hyper::Uri {
+        let full_path = format!("/{}/libpod{}?{}", version, path, query);
         Uri::new(&self.socket_path, &full_path).into()
+    }
+
+    async fn ensure_api_version(&self) -> Result<String, RuntimeError> {
+        if let Some(version) = self.negotiated_version.get() {
+            return Ok(version.clone());
+        }
+
+        let (version, _) = self.try_versions_for_info().await?;
+        let _ = self.negotiated_version.set(version.clone());
+        Ok(version)
+    }
+
+    async fn fetch_info_with_version(&self, version: &str) -> Result<InfoResponse, RuntimeError> {
+        let uri = self.build_uri_for_version(version, "/info");
+        debug!(
+            "Checking Podman API availability at: {:?} (version {})",
+            uri, version
+        );
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| RuntimeError::CommandFailed(format!("Failed to build request: {}", e)))?;
+
+        let (status, body) = self.execute_request(request).await?;
+
+        if !status.is_success() {
+            let error_msg = self.parse_error_response(&body, status);
+            return Err(RuntimeError::CommandFailed(error_msg));
+        }
+
+        serde_json::from_slice(&body).map_err(|e| {
+            RuntimeError::CommandFailed(format!("Failed to parse info response: {}", e))
+        })
+    }
+
+    async fn try_versions_for_info(&self) -> Result<(String, InfoResponse), RuntimeError> {
+        if let Some(version) = self.negotiated_version.get() {
+            let info = self.fetch_info_with_version(version).await?;
+            return Ok((version.clone(), info));
+        }
+
+        if let Some(env_version) = Self::version_override_from_env() {
+            let info = self.fetch_info_with_version(&env_version).await?;
+            return Ok((env_version, info));
+        }
+
+        let mut attempt_errors: Vec<String> = Vec::new();
+        for candidate in FALLBACK_API_VERSIONS {
+            match self.fetch_info_with_version(candidate).await {
+                Ok(info) => {
+                    debug!("Negotiated Podman API version: {}", candidate);
+                    return Ok((candidate.to_string(), info));
+                }
+                Err(err) => {
+                    attempt_errors.push(format!("{}: {}", candidate, err));
+                }
+            }
+        }
+
+        let details = if attempt_errors.is_empty() {
+            "no API versions attempted".to_string()
+        } else {
+            attempt_errors.join(" | ")
+        };
+
+        Err(RuntimeError::CommandFailed(format!(
+            "Podman API negotiation failed - {}",
+            details
+        )))
     }
 
     /// Execute an HTTP request and return the response body as bytes
@@ -248,25 +340,13 @@ impl PodmanApiClient {
 
     /// Check if the Podman API is available
     pub async fn check_availability(&self) -> Result<InfoResponse, RuntimeError> {
-        let uri = self.build_uri("/info");
-        debug!("Checking Podman API availability at: {:?}", uri);
-
-        let request = Request::builder()
-            .method(Method::GET)
-            .uri(uri)
-            .body(Full::new(Bytes::new()))
-            .map_err(|e| RuntimeError::CommandFailed(format!("Failed to build request: {}", e)))?;
-
-        let (status, body) = self.execute_request(request).await?;
-
-        if !status.is_success() {
-            let error_msg = self.parse_error_response(&body, status);
-            return Err(RuntimeError::CommandFailed(error_msg));
+        if let Some(version) = self.negotiated_version.get() {
+            return self.fetch_info_with_version(version).await;
         }
 
-        serde_json::from_slice(&body).map_err(|e| {
-            RuntimeError::CommandFailed(format!("Failed to parse info response: {}", e))
-        })
+        let (version, info) = self.try_versions_for_info().await?;
+        let _ = self.negotiated_version.set(version);
+        Ok(info)
     }
 
     /// Deploy a Kubernetes manifest using the kube play endpoint
@@ -282,10 +362,15 @@ impl PodmanApiClient {
             query_params.push("replace=true");
         }
 
+        let api_version = self.ensure_api_version().await?;
         let uri = if query_params.is_empty() {
-            self.build_uri("/play/kube")
+            self.build_uri_for_version(&api_version, "/play/kube")
         } else {
-            self.build_uri_with_query("/play/kube", &query_params.join("&"))
+            self.build_uri_with_query_for_version(
+                &api_version,
+                "/play/kube",
+                &query_params.join("&"),
+            )
         };
 
         debug!("Deploying Kubernetes manifest via kube play: {:?}", uri);
@@ -336,10 +421,15 @@ impl PodmanApiClient {
             query_params.push("force=true");
         }
 
+        let api_version = self.ensure_api_version().await?;
         let uri = if query_params.is_empty() {
-            self.build_uri("/play/kube")
+            self.build_uri_for_version(&api_version, "/play/kube")
         } else {
-            self.build_uri_with_query("/play/kube", &query_params.join("&"))
+            self.build_uri_with_query_for_version(
+                &api_version,
+                "/play/kube",
+                &query_params.join("&"),
+            )
         };
 
         debug!(
@@ -390,10 +480,11 @@ impl PodmanApiClient {
         &self,
         query: Option<String>,
     ) -> Result<Vec<PodListEntry>, RuntimeError> {
+        let api_version = self.ensure_api_version().await?;
         let uri = if let Some(query) = query {
-            self.build_uri_with_query("/pods/json", &query)
+            self.build_uri_with_query_for_version(&api_version, "/pods/json", &query)
         } else {
-            self.build_uri("/pods/json")
+            self.build_uri_for_version(&api_version, "/pods/json")
         };
         debug!("Listing pods: {:?}", uri);
 
@@ -426,7 +517,8 @@ impl PodmanApiClient {
 
     /// Inspect a specific pod by name
     pub async fn inspect_pod(&self, pod_name: &str) -> Result<PodInspectResponse, RuntimeError> {
-        let uri = self.build_uri(&format!("/pods/{}/json", pod_name));
+        let api_version = self.ensure_api_version().await?;
+        let uri = self.build_uri_for_version(&api_version, &format!("/pods/{}/json", pod_name));
         debug!("Inspecting pod: {:?}", uri);
 
         let request = Request::builder()
@@ -456,10 +548,15 @@ impl PodmanApiClient {
 
     /// Remove a pod by name
     pub async fn remove_pod(&self, pod_name: &str, force: bool) -> Result<(), RuntimeError> {
+        let api_version = self.ensure_api_version().await?;
         let uri = if force {
-            self.build_uri_with_query(&format!("/pods/{}", pod_name), "force=true")
+            self.build_uri_with_query_for_version(
+                &api_version,
+                &format!("/pods/{}", pod_name),
+                "force=true",
+            )
         } else {
-            self.build_uri(&format!("/pods/{}", pod_name))
+            self.build_uri_for_version(&api_version, &format!("/pods/{}", pod_name))
         };
         debug!("Removing pod: {:?}", uri);
 
@@ -493,7 +590,8 @@ impl PodmanApiClient {
     ///
     /// This is equivalent to `podman generate kube pod_name`
     pub async fn generate_kube(&self, pod_name: &str) -> Result<String, RuntimeError> {
-        let uri = self.build_uri(&format!("/generate/{}/kube", pod_name));
+        let api_version = self.ensure_api_version().await?;
+        let uri = self.build_uri_for_version(&api_version, &format!("/generate/{}/kube", pod_name));
         debug!("Generating Kubernetes manifest for pod: {:?}", uri);
 
         let request = Request::builder()
@@ -535,10 +633,11 @@ impl PodmanApiClient {
         query_params.push("follow=false".to_string());
 
         let path = format!("/pods/{}/logs", pod_name);
+        let api_version = self.ensure_api_version().await?;
         let uri = if query_params.is_empty() {
-            self.build_uri(&path)
+            self.build_uri_for_version(&api_version, &path)
         } else {
-            self.build_uri_with_query(&path, &query_params.join("&"))
+            self.build_uri_with_query_for_version(&api_version, &path, &query_params.join("&"))
         };
 
         debug!("Getting pod logs: {:?}", uri);
@@ -595,6 +694,7 @@ impl PodmanApiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_normalize_socket_path() {
@@ -611,7 +711,7 @@ mod tests {
     #[test]
     fn test_build_uri() {
         let client = PodmanApiClient::new("/run/podman/podman.sock");
-        let uri = client.build_uri("/pods/json");
+        let uri = client.build_uri_for_version(DEFAULT_API_VERSION, "/pods/json");
         let uri_str = uri.to_string();
         // The URI should contain the path
         assert!(
@@ -624,9 +724,39 @@ mod tests {
     #[test]
     fn test_build_uri_with_query() {
         let client = PodmanApiClient::new("/run/podman/podman.sock");
-        let uri = client.build_uri_with_query("/play/kube", "replace=true");
+        let uri = client.build_uri_with_query_for_version(
+            DEFAULT_API_VERSION,
+            "/play/kube",
+            "replace=true",
+        );
         let uri_str = uri.to_string();
         assert!(uri_str.contains("replace=true"), "URI was: {}", uri_str);
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_override_sets_version() {
+        let original = std::env::var(PODMAN_API_VERSION_ENV).ok();
+        unsafe {
+            std::env::set_var(PODMAN_API_VERSION_ENV, "v9.9.9");
+        }
+        let client = PodmanApiClient::new("/run/podman/podman.sock");
+        assert_eq!(
+            client
+                .negotiated_version
+                .get()
+                .map(|value| value.as_str())
+                .unwrap(),
+            "v9.9.9"
+        );
+        match original {
+            Some(value) => unsafe {
+                std::env::set_var(PODMAN_API_VERSION_ENV, value);
+            },
+            None => unsafe {
+                std::env::remove_var(PODMAN_API_VERSION_ENV);
+            },
+        }
     }
 
     #[test]
