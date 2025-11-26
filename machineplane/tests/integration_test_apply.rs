@@ -15,6 +15,7 @@ use machineplane::runtimes::podman_api::{PodListEntry, PodmanApiClient};
 use once_cell::sync::Lazy;
 use serial_test::serial;
 
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -531,13 +532,9 @@ fn podman_resource_matches_tender(resource_name: &str, tender_id: &str) -> bool 
         return false;
     }
 
-    let base = format!("beemesh-{}", tender_id);
-    if resource_name == base {
-        return true;
-    }
-
-    let prefixed = format!("{}-", base);
-    resource_name.starts_with(&prefixed)
+    let trimmed = resource_name.trim();
+    let without_suffix = trimmed.strip_suffix("-pod").unwrap_or(trimmed);
+    workload_name_matches_manifest(without_suffix, tender_id)
 }
 
 async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> bool {
@@ -588,11 +585,34 @@ async fn cleanup_podman_resources(tender_id: &str) {
         return;
     };
 
+    let mut removed_pods: HashSet<String> = HashSet::new();
+
+    if let Ok(pods) = client
+        .list_pods_by_label(MANIFEST_ID_LABEL_KEY, tender_id)
+        .await
+    {
+        for pod in pods {
+            if let Some(pod_name) = pod.name.as_deref() {
+                match client.remove_pod(pod_name, true).await {
+                    Ok(_) => log::info!("Removed Podman pod via label lookup: {}", pod_name),
+                    Err(err) => log::warn!(
+                        "Failed to remove Podman pod {} via label lookup: {}",
+                        pod_name, err
+                    ),
+                }
+                removed_pods.insert(pod_name.to_string());
+            }
+        }
+    }
+
     match client.list_pods().await {
         Ok(pods) => {
             for pod in pods {
                 if pod_matches_manifest(&pod, tender_id) {
                     let pod_name = pod.name.as_deref().unwrap_or("<unknown>");
+                    if removed_pods.contains(pod_name) {
+                        continue;
+                    }
                     match client.remove_pod(pod_name, true).await {
                         Ok(_) => log::info!("Removed Podman pod via REST API: {}", pod_name),
                         Err(err) => log::warn!(
@@ -609,23 +629,8 @@ async fn cleanup_podman_resources(tender_id: &str) {
         }
     }
 
-    // Attempt fallback removals for canonical names even if the pod list missed them.
-    let fallback_names = [
-        format!("beemesh-{}", tender_id),
-        format!("beemesh-{}-pod", tender_id),
-    ];
-
-    for name in fallback_names {
-        if let Err(err) = client.remove_pod(&name, true).await {
-            log::debug!(
-                "Fallback removal of pod {} failed (may already be gone): {}",
-                name,
-                err
-            );
-        } else {
-            log::info!("Removed Podman pod via REST API: {}", name);
-        }
-    }
+    // Fallback removals are no longer attempted because workload IDs carry entropy and cannot
+    // be predicted reliably without querying Podman first.
 }
 
 fn pod_matches_manifest(pod: &PodListEntry, manifest_id: &str) -> bool {
@@ -647,6 +652,17 @@ fn pod_matches_manifest(pod: &PodListEntry, manifest_id: &str) -> bool {
         .as_deref()
         .map(|name| podman_resource_matches_tender(name, manifest_id))
         .unwrap_or(false)
+}
+
+fn workload_name_matches_manifest(candidate: &str, manifest_id: &str) -> bool {
+    if let Some((prefix, entropy)) = candidate.rsplit_once('-') {
+        return prefix == manifest_id && entropy_segment_is_valid(entropy);
+    }
+    false
+}
+
+fn entropy_segment_is_valid(segment: &str) -> bool {
+    segment.len() == 8 && segment.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn describe_pod(pod: &PodListEntry) -> String {

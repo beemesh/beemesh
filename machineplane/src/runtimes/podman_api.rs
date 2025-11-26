@@ -781,7 +781,7 @@ mod tests {
         let json = r#"[
             {
                 "Id": "pod123",
-                "Name": "beemesh-test-pod",
+                "Name": "demo-12345678-pod",
                 "Status": "Running",
                 "Created": "2024-01-01T00:00:00Z"
             }
@@ -789,7 +789,7 @@ mod tests {
 
         let pods: Vec<PodListEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(pods.len(), 1);
-        assert_eq!(pods[0].name, Some("beemesh-test-pod".to_string()));
+        assert_eq!(pods[0].name, Some("demo-12345678-pod".to_string()));
         assert_eq!(pods[0].status, Some("Running".to_string()));
     }
 }

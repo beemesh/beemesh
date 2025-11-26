@@ -233,6 +233,7 @@ but are encoded directly with bincode without an envelope wrapper.
 * **MUST** support: pull image, load manifest, create network namespace (as configured by Workplane), start container(s), stream logs, report status.
 * **MUST** return a **DeploymentID** and current cgroup allocations.
 * **MUST** enforce requested resource limits (e.g., `cpu.shares`, `memory.limit_in_bytes`).
+* **MUST** name every workload/pod using `{manifest_id}-{entropy}` where `entropy` is an 8 character hexadecimal slug unique per deployment. Podman **MAY** append `-pod` internally, but Machineplane labels must continue to reference the base `{manifest_id}-{entropy}` identifier.
 
 ### **7.2 Example Invocation**
 

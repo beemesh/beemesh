@@ -34,14 +34,14 @@
 //!
 //! ## Pod Naming Convention
 //!
-//! - Workload ID: `beemesh-{manifest_id}-{timestamp}`
-//! - Pod name: `beemesh-{manifest_id}-{timestamp}` (Podman may add `-pod` suffix)
-//! - Timestamp ensures unique pod names for each deployment
+//! - Workload ID: `{manifest_id}-{entropy}` where `entropy` is an 8-character hex slug
+//! - Pod name: `{manifest_id}-{entropy}` (Podman may add `-pod` suffix)
+//! - Entropy ensures unique pod names for each deployment
 //!
 //! ## Manifest Modification
 //!
 //! The engine modifies incoming Kubernetes manifests to:
-//! - Set pod name to `beemesh-{manifest_id}-{timestamp}` for tracking
+//! - Set pod name to `{manifest_id}-{entropy}` for tracking
 //! - Ensure unique naming across deployments
 //! - Enable workload identification and cleanup
 //!
@@ -225,16 +225,12 @@ impl PodmanEngine {
         Ok(Vec::new())
     }
 
-    /// Generate a unique workload ID based on manifest ID and timestamp
+    /// Generate a unique workload ID based on manifest ID and entropy
     fn generate_workload_id(&self, manifest_id: &str, _manifest_content: &[u8]) -> String {
-        // Include timestamp with millisecond precision and a random suffix so concurrent
-        // winners sharing the same manifest_id don't collide on pod names.
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
+        // Include a random suffix so concurrent winners sharing the same manifest_id don't
+        // collide on pod names. Eight hex digits balances readability and uniqueness.
         let entropy: u32 = rand::random();
-        format!("beemesh-{}-{}-{:08x}", manifest_id, timestamp, entropy)
+        format!("{}-{:08x}", manifest_id, entropy)
     }
 
     /// Modify the manifest to set the pod name to our workload ID and optional peer labels
@@ -249,7 +245,7 @@ impl PodmanEngine {
         let mut doc: serde_yaml::Value = serde_yaml::from_str(&manifest_str)
             .map_err(|e| RuntimeError::InvalidManifest(format!("YAML parse error: {}", e)))?;
 
-        // Use the workload_id as the pod name (already includes beemesh-{manifest_id}-{timestamp}-{entropy})
+        // Use the workload_id as the pod name (already includes {manifest_id}-{entropy})
         let pod_name = workload_id;
 
         // Update metadata name to use our generated pod name
@@ -341,24 +337,26 @@ impl PodmanEngine {
     }
 
     fn infer_manifest_id_from_workload_id(workload_id: &str) -> String {
-        let name_without_prefix = workload_id.strip_prefix("beemesh-").unwrap_or(workload_id);
-        let mut candidate = name_without_prefix;
-
-        if let Some(last_idx) = name_without_prefix.rfind('-') {
-            let last_segment = &name_without_prefix[last_idx + 1..];
-            let remainder = &name_without_prefix[..last_idx];
-
-            if last_segment.chars().all(|c| c.is_ascii_digit()) {
-                candidate = remainder;
-            } else if let Some(prev_idx) = remainder.rfind('-') {
-                let maybe_timestamp = &remainder[prev_idx + 1..];
-                if maybe_timestamp.chars().all(|c| c.is_ascii_digit()) {
-                    candidate = &remainder[..prev_idx];
-                }
+        if let Some((candidate, entropy)) = workload_id.rsplit_once('-') {
+            if Self::entropy_segment_is_valid(entropy) {
+                return candidate.to_string();
             }
         }
 
-        candidate.to_string()
+        workload_id.to_string()
+    }
+
+    fn entropy_segment_is_valid(segment: &str) -> bool {
+        segment.len() == 8 && segment.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    fn workload_id_looks_valid(name: &str) -> bool {
+        let normalized = Self::normalize_workload_id_from_pod_name(name);
+        if let Some((_, entropy)) = normalized.rsplit_once('-') {
+            Self::entropy_segment_is_valid(entropy)
+        } else {
+            false
+        }
     }
 
     fn pod_status_is_running(status: Option<&str>) -> bool {
@@ -474,7 +472,7 @@ impl PodmanEngine {
                 || workload_id_label.is_some()
                 || pod_name
                     .as_deref()
-                    .map(|name| name.starts_with("beemesh-"))
+                    .map(Self::workload_id_looks_valid)
                     .unwrap_or(false);
 
             if !include_pod {
@@ -961,7 +959,7 @@ spec:
         let engine = PodmanEngine::new();
         let manifest = include_bytes!("../../tests/sample_manifests/nginx.yml");
 
-        let workload_id = "beemesh-manifest-123-1";
+        let workload_id = "manifest-123-deadbeef";
         let modified = engine
             .modify_manifest_for_deployment(manifest, workload_id, "manifest-123", None)
             .expect("manifest modification must succeed");
@@ -991,7 +989,7 @@ spec:
         let engine = PodmanEngine::new();
         let manifest = include_bytes!("../../tests/sample_manifests/nginx.yml");
 
-        let workload_id = "beemesh-manifest-abc-1";
+        let workload_id = "manifest-abc-cafebabe";
         let modified = engine
             .modify_manifest_for_deployment(manifest, workload_id, "manifest-abc", None)
             .expect("manifest modification must succeed");
@@ -1032,10 +1030,10 @@ spec:
         let id3 = engine.generate_workload_id("manifest-456", manifest2);
         let id4 = engine.generate_workload_id("manifest-789", manifest_without_name);
 
-        // IDs should follow the format beemesh-{manifest_id}-{timestamp}
-        assert!(id1.starts_with("beemesh-manifest-123-"));
-        assert!(id3.starts_with("beemesh-manifest-456-"));
-        assert!(id4.starts_with("beemesh-manifest-789-"));
+        // IDs should follow the format {manifest_id}-{entropy}
+        assert!(id1.starts_with("manifest-123-"));
+        assert!(id3.starts_with("manifest-456-"));
+        assert!(id4.starts_with("manifest-789-"));
 
         // Different manifest IDs should produce different workload IDs (different prefix)
         assert_ne!(
@@ -1043,11 +1041,11 @@ spec:
             id3[..id3.rfind('-').unwrap()]
         );
 
-        // IDs should end with "{timestamp}-{entropy}"; timestamp is digits, entropy is hex
-        let mut segments = id1.rsplit('-');
-        let entropy_segment = segments.next().expect("entropy segment present");
-        let timestamp_segment = segments.next().expect("timestamp segment present");
-        assert!(timestamp_segment.chars().all(|c| c.is_ascii_digit()));
+        // IDs should end with "{entropy}" where entropy is 8 hex chars
+        let entropy_segment = id1
+            .rsplit('-')
+            .next()
+            .expect("entropy segment present");
         assert_eq!(entropy_segment.len(), 8);
         assert!(entropy_segment.chars().all(|c| c.is_ascii_hexdigit()));
     }
