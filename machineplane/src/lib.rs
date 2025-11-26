@@ -134,7 +134,7 @@ pub async fn start_machineplane(
     network::set_node_keypair(Some((public_bytes.clone(), keypair_bytes.clone())));
 
     let (mut swarm, topic, peer_rx, peer_tx) =
-        network::setup_libp2p_node(cli.libp2p_quic_port, &cli.libp2p_host)?;
+        network::setup_libp2p_node(cli.libp2p_quic_port, &cli.libp2p_host, &public_bytes)?;
 
     // If bootstrap peers are provided, dial them explicitly (for in-process tests)
     for addr in &cli.bootstrap_peer {
@@ -183,7 +183,7 @@ pub async fn start_machineplane(
 
     let mut handles = Vec::new();
 
-    let app = api::build_router(peer_rx, control_tx.clone());
+    let app = api::build_router(peer_rx, control_tx.clone(), public_bytes.clone());
 
     // Public TCP server
     let bind_addr = format!("{}:{}", cli.rest_api_host, cli.rest_api_port);

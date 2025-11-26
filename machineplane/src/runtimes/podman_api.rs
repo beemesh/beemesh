@@ -73,13 +73,13 @@ pub struct VersionInfo {
 #[serde(rename_all = "PascalCase")]
 pub struct PlayKubeResponse {
     /// List of pod IDs created
-    #[serde(default)]
+    #[serde(default, alias = "Pods")]
     pub pods: Vec<PlayKubePod>,
     /// Volumes created (if any)
-    #[serde(default)]
+    #[serde(default, alias = "Volumes")]
     pub volumes: Vec<PlayKubeVolume>,
     /// Errors encountered during play
-    #[serde(default)]
+    #[serde(default, alias = "Errors")]
     pub errors: Option<Vec<String>>,
     /// rm_report - only present in delete response
     #[serde(default, rename = "RmReport")]
@@ -94,9 +94,14 @@ pub struct PlayKubeResponse {
 pub struct PlayKubePod {
     #[serde(rename = "ID")]
     pub id: Option<String>,
+    #[serde(default)]
     pub containers: Option<Vec<String>>,
+    #[serde(default)]
     pub init_containers: Option<Vec<String>>,
+    #[serde(default)]
     pub logs: Option<Vec<String>>,
+    #[serde(default)]
+    pub container_errors: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

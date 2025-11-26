@@ -251,12 +251,14 @@ async fn publish_tender(
     let tender_id = Ulid::new().to_string();
     register_local_manifest(&tender_id, manifest_str);
 
-    let keypair = crate::network::get_node_keypair()
+    // Use the state's local_peer_id to get the correct keypair for this node
+    let keypair = crate::network::get_node_keypair_for_peer(Some(&state.local_peer_id_bytes))
         .and_then(|(_, sk)| Keypair::from_protobuf_encoding(&sk).ok())
         .ok_or_else(|| {
             warn!(
-                "Tender publication aborted for {}: missing node keypair",
-                manifest_id
+                "Tender publication aborted for {}: missing node keypair for peer {:?}",
+                manifest_id,
+                state.local_peer_id_bytes
             );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;

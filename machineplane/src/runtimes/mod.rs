@@ -273,15 +273,23 @@ pub trait RuntimeEngine: Send + Sync {
         &self,
         local_peer_id: &str,
     ) -> RuntimeResult<Vec<WorkloadInfo>> {
+        // Get workload IDs associated with this peer from the global mapping
+        let peer_workloads = crate::scheduler::get_workloads_by_peer(local_peer_id).await;
+        
         let all_workloads = self.list_workloads().await?;
         let filtered_workloads = all_workloads
             .into_iter()
             .filter(|workload| {
-                workload
+                // Check both: in-memory metadata and global workload-peer mapping
+                let in_metadata = workload
                     .metadata
                     .get("local_peer_id")
                     .map(|peer_id| peer_id == local_peer_id)
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                    
+                let in_global_map = peer_workloads.contains(&workload.id);
+                
+                in_metadata || in_global_map
             })
             .collect();
         Ok(filtered_workloads)

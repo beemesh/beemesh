@@ -35,15 +35,15 @@
 //!
 //! ## Pod Naming Convention
 //!
-//! - Workload ID: `beemesh-{manifest_id}`
-//! - Pod name: `beemesh-{manifest_id}` (Podman may add `-pod` suffix)
-//! - Ensures consistent identification
+//! - Workload ID: `beemesh-{manifest_id}-{timestamp}`
+//! - Pod name: `beemesh-{manifest_id}-{timestamp}` (Podman may add `-pod` suffix)
+//! - Timestamp ensures unique pod names for each deployment
 //!
 //! ## Manifest Modification
 //!
 //! The engine modifies incoming Kubernetes manifests to:
-//! - Set pod name to `beemesh-{manifest_id}` for tracking
-//! - Ensure consistent naming across deployments
+//! - Set pod name to `beemesh-{manifest_id}-{timestamp}` for tracking
+//! - Ensure unique naming across deployments
 //! - Enable workload identification and cleanup
 //!
 //! ## API Communication
@@ -267,31 +267,35 @@ impl PodmanEngine {
         Ok(Vec::new())
     }
 
-    /// Generate a unique workload ID based on manifest ID only
+    /// Generate a unique workload ID based on manifest ID and timestamp
     fn generate_workload_id(&self, manifest_id: &str, _manifest_content: &[u8]) -> String {
-        // Use consistent naming with pod name - just manifest_id based
-        format!("beemesh-{}", manifest_id)
+        // Use naming with timestamp for uniqueness: beemesh-{manifest_id}-{timestamp}
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("beemesh-{}-{}", manifest_id, timestamp)
     }
 
     /// Modify the manifest to set the pod name to our workload ID
     fn modify_manifest_for_deployment(
         &self,
         manifest_content: &[u8],
-        manifest_id: &str,
+        workload_id: &str,
     ) -> RuntimeResult<Vec<u8>> {
         let manifest_str = String::from_utf8_lossy(manifest_content);
         let mut doc: serde_yaml::Value = serde_yaml::from_str(&manifest_str)
             .map_err(|e| RuntimeError::InvalidManifest(format!("YAML parse error: {}", e)))?;
 
-        // Generate pod name based on manifest_id
-        let pod_name = format!("beemesh-{}", manifest_id);
+        // Use the workload_id as the pod name (already includes beemesh-{manifest_id}-{timestamp})
+        let pod_name = workload_id;
 
         // Update metadata name to use our generated pod name
         if let Some(metadata) = doc.get_mut("metadata") {
             if let Some(metadata_map) = metadata.as_mapping_mut() {
                 metadata_map.insert(
                     serde_yaml::Value::String("name".to_string()),
-                    serde_yaml::Value::String(pod_name.clone()),
+                    serde_yaml::Value::String(pod_name.to_string()),
                 );
             }
         }
@@ -387,19 +391,27 @@ impl PodmanEngine {
             if let Some(pod_name) = &pod.name {
                 // Only include pods that match our naming convention "beemesh-*"
                 if pod_name.starts_with("beemesh-") {
-                    // Extract manifest_id from pod name
-                    let manifest_id = if pod_name.ends_with("-pod") {
-                        pod_name
-                            .strip_prefix("beemesh-")
-                            .unwrap_or(pod_name)
-                            .strip_suffix("-pod")
-                            .unwrap_or(pod_name)
-                            .to_string()
+                    // Extract manifest_id from pod name (format: beemesh-{manifest_id}-{timestamp})
+                    // First strip the "beemesh-" prefix, then handle optional "-pod" suffix
+                    let name_without_prefix = pod_name.strip_prefix("beemesh-").unwrap_or(pod_name);
+                    let name_without_suffix = if name_without_prefix.ends_with("-pod") {
+                        name_without_prefix.strip_suffix("-pod").unwrap_or(name_without_prefix)
                     } else {
-                        pod_name
-                            .strip_prefix("beemesh-")
-                            .unwrap_or(pod_name)
-                            .to_string()
+                        name_without_prefix
+                    };
+                    
+                    // The manifest_id is everything except the last segment (timestamp)
+                    // Format: {manifest_id}-{timestamp}
+                    let manifest_id = if let Some(last_hyphen) = name_without_suffix.rfind('-') {
+                        // Check if the part after the last hyphen looks like a timestamp (all digits)
+                        let potential_timestamp = &name_without_suffix[last_hyphen + 1..];
+                        if potential_timestamp.chars().all(|c| c.is_ascii_digit()) {
+                            name_without_suffix[..last_hyphen].to_string()
+                        } else {
+                            name_without_suffix.to_string()
+                        }
+                    } else {
+                        name_without_suffix.to_string()
                     };
 
                     // Parse pod status
@@ -414,8 +426,15 @@ impl PodmanEngine {
                     // Extract metadata from pod labels if available
                     let metadata = pod.labels.clone().unwrap_or_default();
 
+                    // Use the full pod name (without -pod suffix) as the workload id
+                    let workload_id = if pod_name.ends_with("-pod") {
+                        pod_name.strip_suffix("-pod").unwrap_or(pod_name).to_string()
+                    } else {
+                        pod_name.to_string()
+                    };
+
                     let workload_info = WorkloadInfo {
-                        id: format!("beemesh-{}", manifest_id),
+                        id: workload_id,
                         manifest_id,
                         status,
                         metadata,
@@ -451,18 +470,24 @@ impl PodmanEngine {
                         for pod in pods_array {
                             if let Some(pod_name) = pod.get("Name").and_then(|n| n.as_str()) {
                                 if pod_name.starts_with("beemesh-") {
-                                    let manifest_id = if pod_name.ends_with("-pod") {
-                                        pod_name
-                                            .strip_prefix("beemesh-")
-                                            .unwrap_or(pod_name)
-                                            .strip_suffix("-pod")
-                                            .unwrap_or(pod_name)
-                                            .to_string()
+                                    // Extract manifest_id from pod name (format: beemesh-{manifest_id}-{timestamp})
+                                    let name_without_prefix = pod_name.strip_prefix("beemesh-").unwrap_or(pod_name);
+                                    let name_without_suffix = if name_without_prefix.ends_with("-pod") {
+                                        name_without_prefix.strip_suffix("-pod").unwrap_or(name_without_prefix)
                                     } else {
-                                        pod_name
-                                            .strip_prefix("beemesh-")
-                                            .unwrap_or(pod_name)
-                                            .to_string()
+                                        name_without_prefix
+                                    };
+                                    
+                                    // The manifest_id is everything except the last segment (timestamp)
+                                    let manifest_id = if let Some(last_hyphen) = name_without_suffix.rfind('-') {
+                                        let potential_timestamp = &name_without_suffix[last_hyphen + 1..];
+                                        if potential_timestamp.chars().all(|c| c.is_ascii_digit()) {
+                                            name_without_suffix[..last_hyphen].to_string()
+                                        } else {
+                                            name_without_suffix.to_string()
+                                        }
+                                    } else {
+                                        name_without_suffix.to_string()
                                     };
 
                                     let status = match pod.get("Status").and_then(|s| s.as_str()) {
@@ -500,8 +525,15 @@ impl PodmanEngine {
                                         })
                                         .unwrap_or_else(std::time::SystemTime::now);
 
+                                    // Use the full pod name (without -pod suffix) as the workload id
+                                    let workload_id = if pod_name.ends_with("-pod") {
+                                        pod_name.strip_suffix("-pod").unwrap_or(pod_name).to_string()
+                                    } else {
+                                        pod_name.to_string()
+                                    };
+
                                     workloads.push(WorkloadInfo {
-                                        id: format!("beemesh-{}", manifest_id),
+                                        id: workload_id,
                                         manifest_id,
                                         status,
                                         metadata,
@@ -822,8 +854,8 @@ impl RuntimeEngine for PodmanEngine {
         // Generate unique workload ID
         let workload_id = self.generate_workload_id(manifest_id, manifest_content);
 
-        // Modify manifest for deployment
-        let modified_manifest = self.modify_manifest_for_deployment(manifest_content, manifest_id)?;
+        // Modify manifest for deployment - pass the workload_id so pod name matches
+        let modified_manifest = self.modify_manifest_for_deployment(manifest_content, &workload_id)?;
 
         // Try REST API first if socket is configured
         if let Some(client) = self.create_api_client() {
@@ -852,9 +884,8 @@ impl RuntimeEngine for PodmanEngine {
             .parse_manifest_metadata(manifest_content)
             .unwrap_or_default();
 
-        // Get port mappings
-        let pod_name = format!("beemesh-{}", manifest_id);
-        let ports = self.extract_port_mappings(&pod_name).await.unwrap_or_default();
+        // Get port mappings - use workload_id which matches the pod name
+        let ports = self.extract_port_mappings(&workload_id).await.unwrap_or_default();
 
         let now = std::time::SystemTime::now();
         Ok(WorkloadInfo {
@@ -1114,20 +1145,20 @@ spec:
         let manifest_without_name = b"apiVersion: v1\nkind: Pod";
 
         let id1 = engine.generate_workload_id("manifest-123", manifest1);
-        let id2 = engine.generate_workload_id("manifest-123", manifest1);
         let id3 = engine.generate_workload_id("manifest-456", manifest2);
         let id4 = engine.generate_workload_id("manifest-789", manifest_without_name);
 
-        // IDs should be identical for the same manifest and ID
-        assert_eq!(id1, id2);
-        assert_eq!(id1, "beemesh-manifest-123");
+        // IDs should follow the format beemesh-{manifest_id}-{timestamp}
+        assert!(id1.starts_with("beemesh-manifest-123-"));
+        assert!(id3.starts_with("beemesh-manifest-456-"));
+        assert!(id4.starts_with("beemesh-manifest-789-"));
 
-        // Different manifest IDs should produce different workload IDs
-        assert_ne!(id1, id3);
-        assert_eq!(id3, "beemesh-manifest-456");
+        // Different manifest IDs should produce different workload IDs (different prefix)
+        assert_ne!(id1[..id1.rfind('-').unwrap()], id3[..id3.rfind('-').unwrap()]);
 
-        // Manifest without name should still use manifest_id only
-        assert_eq!(id4, "beemesh-manifest-789");
+        // IDs should contain a timestamp (numeric suffix after last hyphen)
+        let timestamp_suffix = id1.rsplit('-').next().unwrap();
+        assert!(timestamp_suffix.chars().all(|c| c.is_ascii_digit()));
     }
 
     #[serial]
