@@ -95,15 +95,15 @@
 //! # }
 //! ```
 
+use crate::runtimes::podman_api::PodmanApiClient;
 use crate::runtimes::{
     DeploymentConfig, PortMapping, RuntimeEngine, RuntimeError, RuntimeResult, WorkloadInfo,
     WorkloadStatus,
 };
-use crate::runtimes::podman_api::PodmanApiClient;
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
-use serde_yaml::Value;
+use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -111,6 +111,8 @@ use std::sync::RwLock;
 pub struct PodmanEngine {
     podman_socket: Option<String>,
 }
+
+const LOCAL_PEER_LABEL_KEY: &str = "beemesh.local_peer_id";
 
 static PODMAN_SOCKET_OVERRIDE: Lazy<RwLock<Option<String>>> = Lazy::new(|| RwLock::new(None));
 
@@ -172,7 +174,9 @@ impl PodmanEngine {
 
     /// Create a REST API client for the configured socket
     fn create_api_client(&self) -> Option<PodmanApiClient> {
-        self.podman_socket.as_ref().map(|socket| PodmanApiClient::new(socket))
+        self.podman_socket
+            .as_ref()
+            .map(|socket| PodmanApiClient::new(socket))
     }
 
     fn require_api_client(&self) -> RuntimeResult<PodmanApiClient> {
@@ -229,11 +233,12 @@ impl PodmanEngine {
         format!("beemesh-{}-{}", manifest_id, timestamp)
     }
 
-    /// Modify the manifest to set the pod name to our workload ID
+    /// Modify the manifest to set the pod name to our workload ID and optional peer labels
     fn modify_manifest_for_deployment(
         &self,
         manifest_content: &[u8],
         workload_id: &str,
+        local_peer_id: Option<&str>,
     ) -> RuntimeResult<Vec<u8>> {
         let manifest_str = String::from_utf8_lossy(manifest_content);
         let mut doc: serde_yaml::Value = serde_yaml::from_str(&manifest_str)
@@ -249,6 +254,9 @@ impl PodmanEngine {
                     serde_yaml::Value::String("name".to_string()),
                     serde_yaml::Value::String(pod_name.to_string()),
                 );
+                if let Some(peer_id) = local_peer_id {
+                    Self::insert_peer_label(metadata_map, peer_id);
+                }
             }
         }
 
@@ -261,6 +269,9 @@ impl PodmanEngine {
                             serde_yaml::Value::String("name".to_string()),
                             serde_yaml::Value::String(format!("{}-pod", pod_name)),
                         );
+                        if let Some(peer_id) = local_peer_id {
+                            Self::insert_peer_label(template_metadata_map, peer_id);
+                        }
                     }
                 }
             }
@@ -270,8 +281,85 @@ impl PodmanEngine {
         let modified_manifest = serde_yaml::to_string(&doc)
             .map_err(|e| RuntimeError::InvalidManifest(format!("YAML serialize error: {}", e)))?;
 
-        debug!("Modified manifest for deployment with pod name: {}", pod_name);
+        debug!(
+            "Modified manifest for deployment with pod name: {}",
+            pod_name
+        );
         Ok(modified_manifest.into_bytes())
+    }
+
+    fn insert_peer_label(target: &mut Mapping, peer_id: &str) {
+        let labels_key = serde_yaml::Value::String("labels".to_string());
+
+        if !target.contains_key(&labels_key) {
+            target.insert(
+                labels_key.clone(),
+                serde_yaml::Value::Mapping(Mapping::new()),
+            );
+        }
+
+        if let Some(labels_value) = target.get_mut(&labels_key) {
+            if let Some(labels_map) = labels_value.as_mapping_mut() {
+                labels_map.insert(
+                    serde_yaml::Value::String(LOCAL_PEER_LABEL_KEY.to_string()),
+                    serde_yaml::Value::String(peer_id.to_string()),
+                );
+            }
+        }
+    }
+
+    async fn deploy_with_peer_label(
+        &self,
+        manifest_id: &str,
+        manifest_content: &[u8],
+        config: &DeploymentConfig,
+        local_peer_id: Option<&str>,
+    ) -> RuntimeResult<WorkloadInfo> {
+        info!(
+            "Deploying workload for manifest_id: {}{}",
+            manifest_id,
+            local_peer_id
+                .map(|peer| format!(" (local peer: {})", peer))
+                .unwrap_or_default()
+        );
+
+        let _ = config;
+
+        self.validate_manifest(manifest_content).await?;
+
+        let workload_id = self.generate_workload_id(manifest_id, manifest_content);
+        let modified_manifest = self.modify_manifest_for_deployment(
+            manifest_content,
+            &workload_id,
+            local_peer_id,
+        )?;
+
+        let client = self.require_api_client()?;
+        if let Err(e) = self.deploy_via_api(&client, &modified_manifest).await {
+            error!("Podman REST API deployment failed: {}", e);
+            return Err(e);
+        }
+        info!("Workload deployed via REST API: {}", workload_id);
+
+        let metadata = self
+            .parse_manifest_metadata(manifest_content)
+            .unwrap_or_default();
+
+        let ports = self
+            .extract_port_mappings(&workload_id)
+            .await
+            .unwrap_or_default();
+
+        let now = std::time::SystemTime::now();
+        Ok(WorkloadInfo {
+            id: workload_id,
+            manifest_id: manifest_id.to_string(),
+            status: WorkloadStatus::Running,
+            metadata,
+            created_at: now,
+            updated_at: now,
+            ports,
+        })
     }
 
     /// Deploy using REST API
@@ -281,9 +369,9 @@ impl PodmanEngine {
         manifest_content: &[u8],
     ) -> RuntimeResult<()> {
         debug!("Deploying workload via Podman REST API");
-        
+
         let response = client.play_kube(manifest_content, true).await?;
-        
+
         // Check if any pods were created
         if response.pods.is_empty() {
             return Err(RuntimeError::DeploymentFailed(
@@ -307,7 +395,7 @@ impl PodmanEngine {
         client: &PodmanApiClient,
     ) -> RuntimeResult<Vec<WorkloadInfo>> {
         debug!("Listing pods via Podman REST API");
-        
+
         let pods = client.list_pods().await?;
         let mut workloads = Vec::new();
 
@@ -319,11 +407,13 @@ impl PodmanEngine {
                     // First strip the "beemesh-" prefix, then handle optional "-pod" suffix
                     let name_without_prefix = pod_name.strip_prefix("beemesh-").unwrap_or(pod_name);
                     let name_without_suffix = if name_without_prefix.ends_with("-pod") {
-                        name_without_prefix.strip_suffix("-pod").unwrap_or(name_without_prefix)
+                        name_without_prefix
+                            .strip_suffix("-pod")
+                            .unwrap_or(name_without_prefix)
                     } else {
                         name_without_prefix
                     };
-                    
+
                     // The manifest_id is everything except the last segment (timestamp)
                     // Format: {manifest_id}-{timestamp}
                     let manifest_id = if let Some(last_hyphen) = name_without_suffix.rfind('-') {
@@ -348,11 +438,17 @@ impl PodmanEngine {
                     };
 
                     // Extract metadata from pod labels if available
-                    let metadata = pod.labels.clone().unwrap_or_default();
+                    let mut metadata = pod.labels.clone().unwrap_or_default();
+                    if let Some(peer_id) = metadata.get(LOCAL_PEER_LABEL_KEY).cloned() {
+                        metadata.insert("local_peer_id".to_string(), peer_id);
+                    }
 
                     // Use the full pod name (without -pod suffix) as the workload id
                     let workload_id = if pod_name.ends_with("-pod") {
-                        pod_name.strip_suffix("-pod").unwrap_or(pod_name).to_string()
+                        pod_name
+                            .strip_suffix("-pod")
+                            .unwrap_or(pod_name)
+                            .to_string()
                     } else {
                         pod_name.to_string()
                     };
@@ -367,7 +463,10 @@ impl PodmanEngine {
                         ports: Vec::new(),
                     };
 
-                    debug!("Found beemesh workload: {} (pod: {})", workload_info.id, pod_name);
+                    debug!(
+                        "Found beemesh workload: {} (pod: {})",
+                        workload_info.id, pod_name
+                    );
                     workloads.push(workload_info);
                 }
             }
@@ -426,7 +525,10 @@ impl PodmanEngine {
         // Try with -pod suffix first
         let pod_name_with_suffix = format!("{}-pod", workload_id);
         if let Ok(manifest) = client.generate_kube(&pod_name_with_suffix).await {
-            info!("Successfully generated manifest for pod: {}", pod_name_with_suffix);
+            info!(
+                "Successfully generated manifest for pod: {}",
+                pod_name_with_suffix
+            );
             return Ok(manifest.into_bytes());
         }
 
@@ -552,44 +654,10 @@ impl RuntimeEngine for PodmanEngine {
         &self,
         manifest_id: &str,
         manifest_content: &[u8],
-        _config: &DeploymentConfig,
+        config: &DeploymentConfig,
     ) -> RuntimeResult<WorkloadInfo> {
-        info!("Deploying workload for manifest_id: {}", manifest_id);
-
-        // Validate manifest first
-        self.validate_manifest(manifest_content).await?;
-
-        // Generate unique workload ID
-        let workload_id = self.generate_workload_id(manifest_id, manifest_content);
-
-        // Modify manifest for deployment - pass the workload_id so pod name matches
-        let modified_manifest = self.modify_manifest_for_deployment(manifest_content, &workload_id)?;
-
-        let client = self.require_api_client()?;
-        if let Err(e) = self.deploy_via_api(&client, &modified_manifest).await {
-            error!("Podman REST API deployment failed: {}", e);
-            return Err(e);
-        }
-        info!("Workload deployed via REST API: {}", workload_id);
-
-        // Parse manifest metadata
-        let metadata = self
-            .parse_manifest_metadata(manifest_content)
-            .unwrap_or_default();
-
-        // Get port mappings - use workload_id which matches the pod name
-        let ports = self.extract_port_mappings(&workload_id).await.unwrap_or_default();
-
-        let now = std::time::SystemTime::now();
-        Ok(WorkloadInfo {
-            id: workload_id,
-            manifest_id: manifest_id.to_string(),
-            status: WorkloadStatus::Running,
-            metadata,
-            created_at: now,
-            updated_at: now,
-            ports,
-        })
+        self.deploy_with_peer_label(manifest_id, manifest_content, config, None)
+            .await
     }
 
     /// Deploy a workload with local peer ID tracking
@@ -600,15 +668,19 @@ impl RuntimeEngine for PodmanEngine {
         config: &DeploymentConfig,
         local_peer_id: libp2p::PeerId,
     ) -> RuntimeResult<WorkloadInfo> {
-        // Use the base deploy_workload method
+        let peer_id_string = local_peer_id.to_string();
         let mut workload_info = self
-            .deploy_workload(manifest_id, manifest_content, config)
+            .deploy_with_peer_label(
+                manifest_id,
+                manifest_content,
+                config,
+                Some(peer_id_string.as_str()),
+            )
             .await?;
 
-        // Add local peer ID to metadata
         workload_info
             .metadata
-            .insert("local_peer_id".to_string(), local_peer_id.to_string());
+            .insert("local_peer_id".to_string(), peer_id_string);
 
         Ok(workload_info)
     }
@@ -618,7 +690,7 @@ impl RuntimeEngine for PodmanEngine {
 
         // List all workloads and find the matching one
         let workloads = self.list_workloads().await?;
-        
+
         for workload in workloads {
             if workload.id == workload_id || workload.manifest_id == workload_id {
                 return Ok(workload);
@@ -789,7 +861,10 @@ spec:
         assert!(id4.starts_with("beemesh-manifest-789-"));
 
         // Different manifest IDs should produce different workload IDs (different prefix)
-        assert_ne!(id1[..id1.rfind('-').unwrap()], id3[..id3.rfind('-').unwrap()]);
+        assert_ne!(
+            id1[..id1.rfind('-').unwrap()],
+            id3[..id3.rfind('-').unwrap()]
+        );
 
         // IDs should contain a timestamp (numeric suffix after last hyphen)
         let timestamp_suffix = id1.rsplit('-').next().unwrap();

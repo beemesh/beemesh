@@ -160,9 +160,9 @@ pub fn setup_libp2p_node(
     // Load the node keypair for this specific peer_id (set by lib.rs startup)
     let keypair = {
         let keypairs = NODE_KEYPAIRS.lock().unwrap();
-        let (_, sk) = keypairs
-            .get(local_peer_id_bytes)
-            .ok_or_else(|| anyhow::anyhow!("machine peer identity not initialized for this peer_id"))?;
+        let (_, sk) = keypairs.get(local_peer_id_bytes).ok_or_else(|| {
+            anyhow::anyhow!("machine peer identity not initialized for this peer_id")
+        })?;
         libp2p::identity::Keypair::from_protobuf_encoding(sk)?
     };
 
@@ -288,7 +288,7 @@ pub async fn start_libp2p_node(
     // This allows multiple nodes in the same process to have separate schedulers
     let local_peer_id = *swarm.local_peer_id();
     behaviour::set_scheduler_input_for_peer(local_peer_id, sched_input_tx.clone());
-    
+
     // Also set legacy global for backward compatibility (first node wins)
     behaviour::SCHEDULER_INPUT_TX.set(sched_input_tx).ok();
 

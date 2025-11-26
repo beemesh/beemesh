@@ -43,9 +43,10 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
             {
                 Ok(_) => {
                     // Use per-node scheduler channel if available, otherwise fall back to global
-                    let tx = crate::network::behaviour::get_scheduler_input_for_peer(&local_peer_id)
-                        .or_else(|| SCHEDULER_INPUT_TX.get().cloned());
-                    
+                    let tx =
+                        crate::network::behaviour::get_scheduler_input_for_peer(&local_peer_id)
+                            .or_else(|| SCHEDULER_INPUT_TX.get().cloned());
+
                     if let Some(tx) = tx {
                         let _ = tx.send((
                             topic.hash(),

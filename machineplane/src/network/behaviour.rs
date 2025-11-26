@@ -77,7 +77,7 @@ pub fn gossipsub_message(
             payload.len(),
             local_peer_id
         );
-        
+
         // First try to find the scheduler for this specific local peer
         if let Some(tx) = get_scheduler_input_for_peer(&local_peer_id) {
             if let Err(e) = tx.send((topic, message)) {
@@ -85,14 +85,17 @@ pub fn gossipsub_message(
             }
             return;
         }
-        
+
         // Fall back to legacy global channel for backward compatibility
         if let Some(tx) = SCHEDULER_INPUT_TX.get() {
             if let Err(e) = tx.send((topic, message)) {
                 error!("Failed to forward scheduler message: {}", e);
             }
         } else {
-            warn!("Scheduler input channel not initialized for peer {}, dropping message", local_peer_id);
+            warn!(
+                "Scheduler input channel not initialized for peer {}, dropping message",
+                local_peer_id
+            );
         }
         return;
     }

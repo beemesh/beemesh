@@ -257,8 +257,7 @@ async fn publish_tender(
         .ok_or_else(|| {
             warn!(
                 "Tender publication aborted for {}: missing node keypair for peer {:?}",
-                manifest_id,
-                state.local_peer_id_bytes
+                manifest_id, state.local_peer_id_bytes
             );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;

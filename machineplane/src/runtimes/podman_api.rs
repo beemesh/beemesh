@@ -236,7 +236,9 @@ impl PodmanApiClient {
             .into_body()
             .collect()
             .await
-            .map_err(|e| RuntimeError::CommandFailed(format!("Failed to read response body: {}", e)))?
+            .map_err(|e| {
+                RuntimeError::CommandFailed(format!("Failed to read response body: {}", e))
+            })?
             .to_bytes();
 
         Ok((status, body))
@@ -260,8 +262,9 @@ impl PodmanApiClient {
             return Err(RuntimeError::CommandFailed(error_msg));
         }
 
-        serde_json::from_slice(&body)
-            .map_err(|e| RuntimeError::CommandFailed(format!("Failed to parse info response: {}", e)))
+        serde_json::from_slice(&body).map_err(|e| {
+            RuntimeError::CommandFailed(format!("Failed to parse info response: {}", e))
+        })
     }
 
     /// Deploy a Kubernetes manifest using the kube play endpoint
@@ -299,8 +302,13 @@ impl PodmanApiClient {
             return Err(RuntimeError::DeploymentFailed(error_msg));
         }
 
-        let response: PlayKubeResponse = serde_json::from_slice(&body)
-            .map_err(|e| RuntimeError::DeploymentFailed(format!("Failed to parse play kube response: {} - body: {}", e, String::from_utf8_lossy(&body))))?;
+        let response: PlayKubeResponse = serde_json::from_slice(&body).map_err(|e| {
+            RuntimeError::DeploymentFailed(format!(
+                "Failed to parse play kube response: {} - body: {}",
+                e,
+                String::from_utf8_lossy(&body)
+            ))
+        })?;
 
         // Check for errors in the response
         if let Some(errors) = &response.errors {
@@ -332,7 +340,10 @@ impl PodmanApiClient {
             self.build_uri_with_query("/play/kube", &query_params.join("&"))
         };
 
-        debug!("Removing Kubernetes manifest resources via kube play down: {:?}", uri);
+        debug!(
+            "Removing Kubernetes manifest resources via kube play down: {:?}",
+            uri
+        );
 
         let request = Request::builder()
             .method(Method::DELETE)
@@ -348,8 +359,9 @@ impl PodmanApiClient {
             return Err(RuntimeError::CommandFailed(error_msg));
         }
 
-        serde_json::from_slice(&body)
-            .map_err(|e| RuntimeError::CommandFailed(format!("Failed to parse play kube down response: {}", e)))
+        serde_json::from_slice(&body).map_err(|e| {
+            RuntimeError::CommandFailed(format!("Failed to parse play kube down response: {}", e))
+        })
     }
 
     /// List all pods
@@ -375,8 +387,13 @@ impl PodmanApiClient {
             return Ok(Vec::new());
         }
 
-        serde_json::from_slice(&body)
-            .map_err(|e| RuntimeError::CommandFailed(format!("Failed to parse pods list: {} - body: {}", e, String::from_utf8_lossy(&body))))
+        serde_json::from_slice(&body).map_err(|e| {
+            RuntimeError::CommandFailed(format!(
+                "Failed to parse pods list: {} - body: {}",
+                e,
+                String::from_utf8_lossy(&body)
+            ))
+        })
     }
 
     /// Inspect a specific pod by name
@@ -393,7 +410,10 @@ impl PodmanApiClient {
         let (status, body) = self.execute_request(request).await?;
 
         if status == StatusCode::NOT_FOUND {
-            return Err(RuntimeError::WorkloadNotFound(format!("Pod not found: {}", pod_name)));
+            return Err(RuntimeError::WorkloadNotFound(format!(
+                "Pod not found: {}",
+                pod_name
+            )));
         }
 
         if !status.is_success() {
@@ -401,8 +421,9 @@ impl PodmanApiClient {
             return Err(RuntimeError::CommandFailed(error_msg));
         }
 
-        serde_json::from_slice(&body)
-            .map_err(|e| RuntimeError::CommandFailed(format!("Failed to parse pod inspect response: {}", e)))
+        serde_json::from_slice(&body).map_err(|e| {
+            RuntimeError::CommandFailed(format!("Failed to parse pod inspect response: {}", e))
+        })
     }
 
     /// Remove a pod by name
@@ -424,7 +445,10 @@ impl PodmanApiClient {
 
         if status == StatusCode::NOT_FOUND {
             // Pod doesn't exist - treat as success for idempotency
-            debug!("Pod {} not found during removal (already removed)", pod_name);
+            debug!(
+                "Pod {} not found during removal (already removed)",
+                pod_name
+            );
             return Ok(());
         }
 
@@ -453,7 +477,10 @@ impl PodmanApiClient {
         let (status, body) = self.execute_request(request).await?;
 
         if status == StatusCode::NOT_FOUND {
-            return Err(RuntimeError::WorkloadNotFound(format!("Pod not found: {}", pod_name)));
+            return Err(RuntimeError::WorkloadNotFound(format!(
+                "Pod not found: {}",
+                pod_name
+            )));
         }
 
         if !status.is_success() {
@@ -461,12 +488,17 @@ impl PodmanApiClient {
             return Err(RuntimeError::CommandFailed(error_msg));
         }
 
-        String::from_utf8(body.to_vec())
-            .map_err(|e| RuntimeError::CommandFailed(format!("Invalid UTF-8 in generated manifest: {}", e)))
+        String::from_utf8(body.to_vec()).map_err(|e| {
+            RuntimeError::CommandFailed(format!("Invalid UTF-8 in generated manifest: {}", e))
+        })
     }
 
     /// Get logs from a pod's containers
-    pub async fn get_pod_logs(&self, pod_name: &str, tail: Option<usize>) -> Result<String, RuntimeError> {
+    pub async fn get_pod_logs(
+        &self,
+        pod_name: &str,
+        tail: Option<usize>,
+    ) -> Result<String, RuntimeError> {
         let mut query_params = Vec::new();
         if let Some(lines) = tail {
             query_params.push(format!("tail={}", lines));
@@ -492,7 +524,10 @@ impl PodmanApiClient {
         let (status, body) = self.execute_request(request).await?;
 
         if status == StatusCode::NOT_FOUND {
-            return Err(RuntimeError::WorkloadNotFound(format!("Pod not found: {}", pod_name)));
+            return Err(RuntimeError::WorkloadNotFound(format!(
+                "Pod not found: {}",
+                pod_name
+            )));
         }
 
         if !status.is_success() {
@@ -527,7 +562,6 @@ impl PodmanApiClient {
             format!("HTTP {} - {}", status, body_text)
         }
     }
-
 }
 
 #[cfg(test)]
@@ -552,7 +586,11 @@ mod tests {
         let uri = client.build_uri("/pods/json");
         let uri_str = uri.to_string();
         // The URI should contain the path
-        assert!(uri_str.contains("/v5.0.0/libpod/pods/json"), "URI was: {}", uri_str);
+        assert!(
+            uri_str.contains("/v5.0.0/libpod/pods/json"),
+            "URI was: {}",
+            uri_str
+        );
     }
 
     #[test]
@@ -596,5 +634,4 @@ mod tests {
         assert_eq!(pods[0].name, Some("beemesh-test-pod".to_string()));
         assert_eq!(pods[0].status, Some("Running".to_string()));
     }
-
 }
