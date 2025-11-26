@@ -540,11 +540,21 @@ async fn is_podman_available() -> bool {
         })
 }
 
-async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> bool {
-    // The pod name should now be in the format "beemesh-{manifest_id}-pod"
-    // Podman adds "-pod" suffix when creating pods from Kubernetes Deployment manifests
-    let expected_pod_name = format!("beemesh-{}-pod", tender_id);
+fn podman_resource_matches_tender(resource_name: &str, tender_id: &str) -> bool {
+    if tender_id.is_empty() {
+        return false;
+    }
 
+    let base = format!("beemesh-{}", tender_id);
+    if resource_name == base {
+        return true;
+    }
+
+    let prefixed = format!("{}-", base);
+    resource_name.starts_with(&prefixed)
+}
+
+async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> bool {
     // Check if the pod was created by Podman
     let output = podman_command(&["pod", "ls", "--format", "json"])
         .output()
@@ -559,8 +569,7 @@ async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> b
                 if let Some(pods_array) = pods.as_array() {
                     for pod in pods_array {
                         if let Some(name) = pod.get("Name").and_then(|n| n.as_str()) {
-                            // Check if this pod name matches our expected pattern
-                            if name == expected_pod_name {
+                            if podman_resource_matches_tender(name, tender_id) {
                                 log::info!("Found matching Podman pod: {}", name);
                                 return true;
                             }
@@ -587,8 +596,7 @@ async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> b
                                 {
                                     for name in names {
                                         if let Some(name_str) = name.as_str() {
-                                            if name_str.contains(&format!("beemesh-{}", tender_id))
-                                            {
+                                            if podman_resource_matches_tender(name_str, tender_id) {
                                                 log::info!(
                                                     "Found matching Podman container: {}",
                                                     name_str
@@ -616,6 +624,27 @@ async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> b
 async fn cleanup_podman_resources(tender_id: &str) {
     log::info!("Cleaning up Podman resources for task: {}", tender_id);
 
+    if let Ok(pod_list_output) = podman_command(&["pod", "ls", "--format", "json"])
+        .output()
+        .await
+    {
+        if pod_list_output.status.success() {
+            let stdout = String::from_utf8_lossy(&pod_list_output.stdout);
+            if let Ok(pods) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                if let Some(pods_array) = pods.as_array() {
+                    for pod in pods_array {
+                        if let Some(name) = pod.get("Name").and_then(|v| v.as_str()) {
+                            if podman_resource_matches_tender(name, tender_id) {
+                                let _ = podman_command(&["pod", "rm", "-f", name]).output().await;
+                                log::info!("Attempted to clean up Podman pod: {}", name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Try to remove the specific pod by the expected name (with -pod suffix)
     let expected_pod_name = format!("beemesh-{}-pod", tender_id);
     let _ = podman_command(&["pod", "rm", "-f", &expected_pod_name])
@@ -634,7 +663,8 @@ async fn cleanup_podman_resources(tender_id: &str) {
     );
 
     // Also try to remove pods by name pattern (fallback)
-    let output = podman_command(&["pod", "ls", "-q", "--filter", &format!("name=beemesh")])
+    let targeted_filter = format!("name=beemesh-{}", tender_id);
+    let output = podman_command(&["pod", "ls", "-q", "--filter", &targeted_filter])
         .output()
         .await;
 
@@ -652,7 +682,56 @@ async fn cleanup_podman_resources(tender_id: &str) {
     }
 
     // Also clean up any containers that might be running
-    let container_output = podman_command(&["ps", "-aq", "--filter", "name=beemesh"])
+    if let Ok(container_list_output) = podman_command(&["ps", "-a", "--format", "json"])
+        .output()
+        .await
+    {
+        if container_list_output.status.success() {
+            let stdout = String::from_utf8_lossy(&container_list_output.stdout);
+            if let Ok(containers) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                if let Some(array) = containers.as_array() {
+                    for container in array {
+                        if let Some(names) =
+                            container.get("Names").and_then(|value| value.as_array())
+                        {
+                            let mut matches_peer = false;
+                            for name in names {
+                                if let Some(name_str) = name.as_str() {
+                                    if podman_resource_matches_tender(name_str, tender_id) {
+                                        matches_peer = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if matches_peer {
+                                let container_identifier = container
+                                    .get("Id")
+                                    .or_else(|| container.get("ID"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_else(|| {
+                                        names.get(0).and_then(|v| v.as_str()).unwrap_or("")
+                                    });
+
+                                if !container_identifier.is_empty() {
+                                    let _ = podman_command(&["rm", "-f", container_identifier])
+                                        .output()
+                                        .await;
+                                    log::info!(
+                                        "Attempted to clean up Podman container: {}",
+                                        container_identifier
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let container_filter = format!("name=beemesh-{}", tender_id);
+    let container_output = podman_command(&["ps", "-aq", "--filter", &container_filter])
         .output()
         .await;
 

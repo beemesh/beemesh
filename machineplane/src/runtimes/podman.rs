@@ -328,11 +328,8 @@ impl PodmanEngine {
         self.validate_manifest(manifest_content).await?;
 
         let workload_id = self.generate_workload_id(manifest_id, manifest_content);
-        let modified_manifest = self.modify_manifest_for_deployment(
-            manifest_content,
-            &workload_id,
-            local_peer_id,
-        )?;
+        let modified_manifest =
+            self.modify_manifest_for_deployment(manifest_content, &workload_id, local_peer_id)?;
 
         let client = self.require_api_client()?;
         if let Err(e) = self.deploy_via_api(&client, &modified_manifest).await {
