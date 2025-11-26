@@ -113,6 +113,7 @@ pub struct PodmanEngine {
 }
 
 const LOCAL_PEER_LABEL_KEY: &str = "beemesh.local_peer_id";
+const MANIFEST_ID_LABEL_KEY: &str = "beemesh.manifest_id";
 
 static PODMAN_SOCKET_OVERRIDE: Lazy<RwLock<Option<String>>> = Lazy::new(|| RwLock::new(None));
 
@@ -238,6 +239,7 @@ impl PodmanEngine {
         &self,
         manifest_content: &[u8],
         workload_id: &str,
+        manifest_id: &str,
         local_peer_id: Option<&str>,
     ) -> RuntimeResult<Vec<u8>> {
         let manifest_str = String::from_utf8_lossy(manifest_content);
@@ -254,6 +256,7 @@ impl PodmanEngine {
                     serde_yaml::Value::String("name".to_string()),
                     serde_yaml::Value::String(pod_name.to_string()),
                 );
+                Self::insert_manifest_label(metadata_map, manifest_id);
                 if let Some(peer_id) = local_peer_id {
                     Self::insert_peer_label(metadata_map, peer_id);
                 }
@@ -269,6 +272,7 @@ impl PodmanEngine {
                             serde_yaml::Value::String("name".to_string()),
                             serde_yaml::Value::String(format!("{}-pod", pod_name)),
                         );
+                        Self::insert_manifest_label(template_metadata_map, manifest_id);
                         if let Some(peer_id) = local_peer_id {
                             Self::insert_peer_label(template_metadata_map, peer_id);
                         }
@@ -288,7 +292,7 @@ impl PodmanEngine {
         Ok(modified_manifest.into_bytes())
     }
 
-    fn insert_peer_label(target: &mut Mapping, peer_id: &str) {
+    fn insert_label(target: &mut Mapping, key: &str, value: &str) {
         let labels_key = serde_yaml::Value::String("labels".to_string());
 
         if !target.contains_key(&labels_key) {
@@ -301,11 +305,19 @@ impl PodmanEngine {
         if let Some(labels_value) = target.get_mut(&labels_key) {
             if let Some(labels_map) = labels_value.as_mapping_mut() {
                 labels_map.insert(
-                    serde_yaml::Value::String(LOCAL_PEER_LABEL_KEY.to_string()),
-                    serde_yaml::Value::String(peer_id.to_string()),
+                    serde_yaml::Value::String(key.to_string()),
+                    serde_yaml::Value::String(value.to_string()),
                 );
             }
         }
+    }
+
+    fn insert_manifest_label(target: &mut Mapping, manifest_id: &str) {
+        Self::insert_label(target, MANIFEST_ID_LABEL_KEY, manifest_id);
+    }
+
+    fn insert_peer_label(target: &mut Mapping, peer_id: &str) {
+        Self::insert_label(target, LOCAL_PEER_LABEL_KEY, peer_id);
     }
 
     async fn deploy_with_peer_label(
@@ -328,8 +340,12 @@ impl PodmanEngine {
         self.validate_manifest(manifest_content).await?;
 
         let workload_id = self.generate_workload_id(manifest_id, manifest_content);
-        let modified_manifest =
-            self.modify_manifest_for_deployment(manifest_content, &workload_id, local_peer_id)?;
+        let modified_manifest = self.modify_manifest_for_deployment(
+            manifest_content,
+            &workload_id,
+            manifest_id,
+            local_peer_id,
+        )?;
 
         let client = self.require_api_client()?;
         if let Err(e) = self.deploy_via_api(&client, &modified_manifest).await {
@@ -397,9 +413,24 @@ impl PodmanEngine {
         let mut workloads = Vec::new();
 
         for pod in pods {
-            if let Some(pod_name) = &pod.name {
-                // Only include pods that match our naming convention "beemesh-*"
-                if pod_name.starts_with("beemesh-") {
+            let manifest_id_label = pod
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get(MANIFEST_ID_LABEL_KEY).cloned());
+            let pod_name = pod.name.clone();
+
+            let include_pod = manifest_id_label.is_some()
+                || pod_name
+                    .as_deref()
+                    .map(|name| name.starts_with("beemesh-"))
+                    .unwrap_or(false);
+
+            if !include_pod {
+                continue;
+            }
+
+            if let Some(pod_name) = &pod_name {
+                let manifest_id = manifest_id_label.clone().unwrap_or_else(|| {
                     // Extract manifest_id from pod name (format: beemesh-{manifest_id}-{timestamp})
                     // First strip the "beemesh-" prefix, then handle optional "-pod" suffix
                     let name_without_prefix = pod_name.strip_prefix("beemesh-").unwrap_or(pod_name);
@@ -413,7 +444,7 @@ impl PodmanEngine {
 
                     // The manifest_id is everything except the last segment (timestamp)
                     // Format: {manifest_id}-{timestamp}
-                    let manifest_id = if let Some(last_hyphen) = name_without_suffix.rfind('-') {
+                    if let Some(last_hyphen) = name_without_suffix.rfind('-') {
                         // Check if the part after the last hyphen looks like a timestamp (all digits)
                         let potential_timestamp = &name_without_suffix[last_hyphen + 1..];
                         if potential_timestamp.chars().all(|c| c.is_ascii_digit()) {
@@ -423,49 +454,52 @@ impl PodmanEngine {
                         }
                     } else {
                         name_without_suffix.to_string()
-                    };
-
-                    // Parse pod status
-                    let status = match pod.status.as_deref() {
-                        Some("Running") => WorkloadStatus::Running,
-                        Some("Stopped") | Some("Exited") => WorkloadStatus::Stopped,
-                        Some("Error") => WorkloadStatus::Failed("Pod in error state".to_string()),
-                        Some("Failed") => WorkloadStatus::Failed("Pod failed".to_string()),
-                        _ => WorkloadStatus::Unknown,
-                    };
-
-                    // Extract metadata from pod labels if available
-                    let mut metadata = pod.labels.clone().unwrap_or_default();
-                    if let Some(peer_id) = metadata.get(LOCAL_PEER_LABEL_KEY).cloned() {
-                        metadata.insert("local_peer_id".to_string(), peer_id);
                     }
+                });
 
-                    // Use the full pod name (without -pod suffix) as the workload id
-                    let workload_id = if pod_name.ends_with("-pod") {
-                        pod_name
-                            .strip_suffix("-pod")
-                            .unwrap_or(pod_name)
-                            .to_string()
-                    } else {
-                        pod_name.to_string()
-                    };
+                // Parse pod status
+                let status = match pod.status.as_deref() {
+                    Some("Running") => WorkloadStatus::Running,
+                    Some("Stopped") | Some("Exited") => WorkloadStatus::Stopped,
+                    Some("Error") => WorkloadStatus::Failed("Pod in error state".to_string()),
+                    Some("Failed") => WorkloadStatus::Failed("Pod failed".to_string()),
+                    _ => WorkloadStatus::Unknown,
+                };
 
-                    let workload_info = WorkloadInfo {
-                        id: workload_id,
-                        manifest_id,
-                        status,
-                        metadata,
-                        created_at: std::time::SystemTime::now(),
-                        updated_at: std::time::SystemTime::now(),
-                        ports: Vec::new(),
-                    };
-
-                    debug!(
-                        "Found beemesh workload: {} (pod: {})",
-                        workload_info.id, pod_name
-                    );
-                    workloads.push(workload_info);
+                // Extract metadata from pod labels if available
+                let mut metadata = pod.labels.clone().unwrap_or_default();
+                if let Some(peer_id) = metadata.get(LOCAL_PEER_LABEL_KEY).cloned() {
+                    metadata.insert("local_peer_id".to_string(), peer_id);
                 }
+                metadata
+                    .entry("manifest_id".to_string())
+                    .or_insert_with(|| manifest_id.clone());
+
+                // Use the full pod name (without -pod suffix) as the workload id
+                let workload_id = if pod_name.ends_with("-pod") {
+                    pod_name
+                        .strip_suffix("-pod")
+                        .unwrap_or(pod_name)
+                        .to_string()
+                } else {
+                    pod_name.to_string()
+                };
+
+                let workload_info = WorkloadInfo {
+                    id: workload_id,
+                    manifest_id,
+                    status,
+                    metadata,
+                    created_at: std::time::SystemTime::now(),
+                    updated_at: std::time::SystemTime::now(),
+                    ports: Vec::new(),
+                };
+
+                debug!(
+                    "Found beemesh workload: {} (pod: {})",
+                    workload_info.id, pod_name
+                );
+                workloads.push(workload_info);
             }
         }
 

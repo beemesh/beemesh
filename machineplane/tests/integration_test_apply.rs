@@ -10,7 +10,7 @@
 
 use env_logger::Env;
 use machineplane::runtimes::podman::PodmanEngine;
-use machineplane::runtimes::podman_api::PodmanApiClient;
+use machineplane::runtimes::podman_api::{PodListEntry, PodmanApiClient};
 use serial_test::serial;
 
 use std::path::PathBuf;
@@ -37,6 +37,8 @@ fn configure_podman_client() -> Option<PodmanApiClient> {
     PodmanEngine::configure_runtime(Some(socket.clone()));
     Some(PodmanApiClient::new(&socket))
 }
+
+const MANIFEST_ID_LABEL_KEY: &str = "beemesh.manifest_id";
 
 /// Tests the basic apply functionality with the Podman runtime.
 ///
@@ -527,12 +529,33 @@ async fn verify_podman_deployment(tender_id: &str, _original_content: &str) -> b
     };
 
     match client.list_pods().await {
-        Ok(pods) => pods.into_iter().any(|pod| {
-            pod.name
-                .as_deref()
-                .map(|name| podman_resource_matches_tender(name, tender_id))
-                .unwrap_or(false)
-        }),
+        Ok(pods) => {
+            if pods.is_empty() {
+                log::info!(
+                    "Podman reported no pods when verifying manifest {}",
+                    tender_id
+                );
+                return false;
+            }
+
+            for pod in &pods {
+                if pod_matches_manifest(pod, tender_id) {
+                    log::info!(
+                        "Found Podman pod for manifest {}: {}",
+                        tender_id,
+                        describe_pod(pod)
+                    );
+                    return true;
+                }
+            }
+
+            log::info!(
+                "Podman pods observed but none matched manifest {}: {}",
+                tender_id,
+                summarize_pods(&pods)
+            );
+            false
+        }
         Err(err) => {
             log::warn!("Failed to list pods via Podman REST API: {}", err);
             false
@@ -550,16 +573,15 @@ async fn cleanup_podman_resources(tender_id: &str) {
     match client.list_pods().await {
         Ok(pods) => {
             for pod in pods {
-                if let Some(name) = pod.name.as_deref() {
-                    if podman_resource_matches_tender(name, tender_id) {
-                        match client.remove_pod(name, true).await {
-                            Ok(_) => log::info!("Removed Podman pod via REST API: {}", name),
-                            Err(err) => log::warn!(
-                                "Failed to remove Podman pod {} via REST API: {}",
-                                name,
-                                err
-                            ),
-                        }
+                if pod_matches_manifest(&pod, tender_id) {
+                    let pod_name = pod.name.as_deref().unwrap_or("<unknown>");
+                    match client.remove_pod(pod_name, true).await {
+                        Ok(_) => log::info!("Removed Podman pod via REST API: {}", pod_name),
+                        Err(err) => log::warn!(
+                            "Failed to remove Podman pod {} via REST API: {}",
+                            pod_name,
+                            err
+                        ),
                     }
                 }
             }
@@ -586,4 +608,42 @@ async fn cleanup_podman_resources(tender_id: &str) {
             log::info!("Removed Podman pod via REST API: {}", name);
         }
     }
+}
+
+fn pod_matches_manifest(pod: &PodListEntry, manifest_id: &str) -> bool {
+    if manifest_id.is_empty() {
+        return false;
+    }
+
+    if pod
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(MANIFEST_ID_LABEL_KEY))
+        .map(|value| value == manifest_id)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    pod.name
+        .as_deref()
+        .map(|name| podman_resource_matches_tender(name, manifest_id))
+        .unwrap_or(false)
+}
+
+fn describe_pod(pod: &PodListEntry) -> String {
+    let name = pod.name.as_deref().unwrap_or("<unnamed>");
+    let status = pod.status.as_deref().unwrap_or("unknown");
+    let manifest = pod
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(MANIFEST_ID_LABEL_KEY))
+        .cloned()
+        .unwrap_or_else(|| "-".to_string());
+
+    format!("{}[status={}, manifest={}]", name, status, manifest)
+}
+
+fn summarize_pods(pods: &[PodListEntry]) -> String {
+    pods.iter().map(describe_pod).collect::<Vec<_>>().join(", ")
 }
