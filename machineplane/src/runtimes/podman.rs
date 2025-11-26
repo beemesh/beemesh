@@ -904,9 +904,13 @@ spec:
             id3[..id3.rfind('-').unwrap()]
         );
 
-        // IDs should contain a timestamp (numeric suffix after last hyphen)
-        let timestamp_suffix = id1.rsplit('-').next().unwrap();
-        assert!(timestamp_suffix.chars().all(|c| c.is_ascii_digit()));
+        // IDs should end with "{timestamp}-{entropy}"; timestamp is digits, entropy is hex
+        let mut segments = id1.rsplit('-');
+        let entropy_segment = segments.next().expect("entropy segment present");
+        let timestamp_segment = segments.next().expect("timestamp segment present");
+        assert!(timestamp_segment.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(entropy_segment.len(), 8);
+        assert!(entropy_segment.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[serial]
