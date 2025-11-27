@@ -51,7 +51,5 @@ jobs:
       
       - name: Cargo tests with Podman
         env:
-          RUST_BACKTRACE: full
-          RUST_LOG: debug
           CONTAINER_HOST: ${{ env.CONTAINER_HOST }}
         run: cargo test --workspace --verbose
