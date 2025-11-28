@@ -1,7 +1,42 @@
-//! Scheduler module for Decentralized Bidding
+//! Decentralized Scheduler for Machineplane
 //!
-//! This module implements the "Pull" model where nodes listen for Tenders,
-//! evaluate their fit, submit Bids, and if they win, acquire a Lease.
+//! This module implements the **Tender→Bid→Award** scheduling flow as specified in
+//! `machineplane-spec.md` §4. It provides **at-least-once scheduling** with
+//! **deterministic winner selection** under A/P (Availability/Partition-Tolerance)
+//! semantics.
+//!
+//! # Architecture
+//!
+//! The scheduler operates as a state machine per tender:
+//!
+//! ```text
+//! [Idle] ──TenderReceived──► [Bidding] ──AwardReceived──► [Deploying] ──DeployOK──► [Running]
+//!                                │                              │
+//!                                └──NotEligible──► [Idle]       └──DeployFail──► [Idle]
+//! ```
+//!
+//! # Message Flow
+//!
+//! 1. **Tender**: Published by a producer (e.g., kubectl apply). Contains manifest digest
+//!    but NOT the manifest itself. All nodes receive via gossipsub.
+//!
+//! 2. **Bid**: Each eligible node computes a score and submits a signed bid within
+//!    the selection window (~250ms ± jitter).
+//!
+//! 3. **Award**: The tender owner collects bids, deterministically selects winners,
+//!    and publishes the award. Manifest is then sent only to winners via secure stream.
+//!
+//! 4. **Event**: Winners emit `Deployed`/`Failed` events after attempting deployment.
+//!
+//! # Security
+//!
+//! - All messages are Ed25519-signed (see `messages/signatures.rs`)
+//! - Replay protection via `(tender_id, nonce)` tuples with 5-minute window
+//! - Timestamp freshness enforced (±30 seconds max clock skew)
+//!
+//! # References
+//!
+//! - Spec: `machineplane-spec.md` §3 (Protocols), §4 (Scheduling), §6 (Failure Handling)
 
 use crate::messages::constants::{BEEMESH_FABRIC, DEFAULT_SELECTION_WINDOW_MS};
 use crate::messages::types::{
@@ -12,43 +47,74 @@ use crate::network::utils::peer_id_to_public_key;
 use libp2p::gossipsub;
 use libp2p::identity::Keypair;
 use log::{error, info};
-use once_cell::sync::Lazy;
 use rand::RngCore;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Maximum allowed clock skew between nodes (spec §3.3).
+/// Messages with timestamps outside this window are rejected.
 const MAX_CLOCK_SKEW_MS: u64 = 30_000;
+
+/// Duration to retain seen message tuples for replay protection (spec §3.3).
+/// After this window, a replayed message would be accepted again.
 const REPLAY_WINDOW_MS: u64 = 300_000;
 
-static LOCAL_MANIFEST_CACHE: Lazy<Mutex<HashMap<String, String>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+// ============================================================================
+// Global State (Process-Scoped Caches)
+// ============================================================================
 
-/// Tracks the user-facing manifest identifier (Kube manifest hash) for each tender ULID.
-static TENDER_MANIFEST_IDS: Lazy<Mutex<HashMap<String, String>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+/// Cache of manifest JSON content keyed by tender ID.
+///
+/// When a node publishes a tender, it stores the manifest here so it can be
+/// distributed to winners after the award. This is NOT persisted to disk—the
+/// Machineplane is stateless (spec §1).
+static LOCAL_MANIFEST_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Global mapping from workload_id to the peer_id that deployed it.
-/// This allows multi-node in-process tests to track which node deployed which workload.
-static WORKLOAD_PEER_MAP: Lazy<tokio::sync::RwLock<HashMap<String, String>>> =
-    Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
+/// Maps tender IDs to their user-facing manifest identifiers (Kube resource hash).
+///
+/// This allows the scheduler to track which Kubernetes resource (by manifest_id)
+/// corresponds to each tender, enabling proper cleanup on delete operations.
+static TENDER_MANIFEST_IDS: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Record which peer deployed a workload (for multi-node test scenarios)
+/// Maps workload IDs to the peer that deployed them.
+///
+/// Used in multi-node in-process tests to verify which node deployed which
+/// workload. In production, this provides debug introspection.
+static WORKLOAD_PEER_MAP: LazyLock<tokio::sync::RwLock<HashMap<String, String>>> =
+    LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
+
+// ============================================================================
+// Workload-Peer Tracking (Debug/Test Support)
+// ============================================================================
+
+/// Records which peer deployed a workload.
+///
+/// Called after successful deployment to enable debug endpoints like
+/// `/debug/workloads_by_peer/{peer_id}` to show workload distribution.
 pub async fn record_workload_peer(workload_id: &str, peer_id: &str) {
     let mut map = WORKLOAD_PEER_MAP.write().await;
     map.insert(workload_id.to_string(), peer_id.to_string());
 }
 
-/// Get the peer that deployed a workload (for multi-node test scenarios)
+/// Returns the peer ID that deployed a given workload, if known.
 pub async fn get_workload_peer(workload_id: &str) -> Option<String> {
     let map = WORKLOAD_PEER_MAP.read().await;
     map.get(workload_id).cloned()
 }
 
-/// Get all workloads deployed by a specific peer
+/// Returns all workload IDs deployed by a specific peer.
+///
+/// Useful for debug endpoints and testing multi-node workload distribution.
 pub async fn get_workloads_by_peer(peer_id: &str) -> Vec<String> {
     let map = WORKLOAD_PEER_MAP.read().await;
     map.iter()
@@ -62,63 +128,143 @@ pub async fn get_workloads_by_peer(peer_id: &str) -> Vec<String> {
         .collect()
 }
 
-/// Scheduler manages the bidding lifecycle
+// ============================================================================
+// Scheduler Core
+// ============================================================================
+
+/// The decentralized scheduler that manages the Tender→Bid→Award lifecycle.
+///
+/// Each node runs one `Scheduler` instance that:
+/// - Listens for tenders on the `beemesh-fabric` gossipsub topic
+/// - Evaluates eligibility and submits bids for tenders it can fulfill
+/// - For owned tenders, collects bids and selects winners deterministically
+/// - Emits deployment events after workload operations
+///
+/// # Concurrency
+///
+/// The scheduler uses `Arc<Mutex<_>>` for shared state to support concurrent
+/// message handling from the libp2p event loop. The owned tenders map tracks
+/// active bid collection windows.
+///
+/// # Example
+///
+/// ```ignore
+/// let scheduler = Scheduler::new(local_peer_id, keypair, outbound_tx);
+/// scheduler.handle_message(&topic_hash, &message).await;
+/// ```
 pub struct Scheduler {
-    /// Local node ID (PeerId string)
+    /// This node's libp2p PeerId as a string (e.g., "12D3KooW...").
     local_node_id: String,
-    /// Node keypair for signing scheduler messages
+
+    /// Ed25519 keypair for signing outbound scheduler messages.
     keypair: Keypair,
-    /// Tenders this node created and is responsible for selecting winners for
+
+    /// Tenders originated by this node, awaiting bid collection.
+    ///
+    /// Key: tender_id, Value: context including received bids and manifest.
+    /// Entries are removed after the selection window closes and winners are chosen.
     owned_tenders: Arc<Mutex<HashMap<String, OwnedTenderContext>>>,
-    /// Replay filter for tenders
+
+    /// Replay filter for tenders: `(tender_id, nonce) -> first_seen_timestamp`.
+    ///
+    /// Prevents processing the same tender multiple times within REPLAY_WINDOW_MS.
     seen_tenders: Arc<Mutex<HashMap<(String, u64), u64>>>,
-    /// Replay filter for bids
+
+    /// Replay filter for bids: `(tender_id, node_id, nonce) -> first_seen_timestamp`.
     seen_bids: Arc<Mutex<HashMap<(String, String, u64), u64>>>,
-    /// Replay filter for awards
+
+    /// Replay filter for awards: `(tender_id, nonce) -> first_seen_timestamp`.
     seen_awards: Arc<Mutex<HashMap<(String, u64), u64>>>,
-    /// Replay filter for scheduler events
+
+    /// Replay filter for events: `(tender_id, node_id, nonce) -> first_seen_timestamp`.
     seen_events: Arc<Mutex<HashMap<(String, String, u64), u64>>>,
-    /// Channel to send messages back to the network loop
+
+    /// Channel to send commands (Publish, Deploy, SendManifest) to the network loop.
     outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
 }
 
+// ============================================================================
+// Internal Bid Tracking Structures
+// ============================================================================
+
+/// Tracks collected bids for a tender during the selection window.
 struct BidContext {
+    /// User-facing manifest identifier (hash of Kube resource).
     manifest_id: String,
+    /// Content hash of the manifest (for integrity verification).
     manifest_digest: String,
+    /// Bids received during the selection window.
     bids: Vec<BidEntry>,
 }
 
+/// A single bid entry from a competing node.
 #[derive(Clone)]
 struct BidEntry {
+    /// PeerId of the bidding node.
     bidder_id: String,
+    /// Computed score (higher is better).
     score: f64,
 }
 
+/// Full context for a tender owned by this node.
 struct OwnedTenderContext {
+    /// Bid collection context.
     bid_context: BidContext,
+    /// The manifest JSON content (kept local until award).
     manifest_json: Option<String>,
 }
 
-/// Commands emitted by the scheduler for the libp2p network loop to process
+// ============================================================================
+// Scheduler Commands (Outbound to Network Loop)
+// ============================================================================
+
+/// Commands emitted by the scheduler for the libp2p network loop to process.
+///
+/// The scheduler cannot directly access the libp2p swarm, so it sends these
+/// commands through a channel to the network event loop which executes them.
 #[derive(Debug, Clone)]
 pub enum SchedulerCommand {
+    /// Publish a message to a gossipsub topic (bids, awards, events).
     Publish {
+        /// Topic name (always `beemesh-fabric` for scheduler messages).
         topic: String,
+        /// Bincode-encoded `SchedulerMessage` payload.
         payload: Vec<u8>,
     },
+
+    /// Deploy a workload locally after winning a tender.
     DeployWorkload {
+        /// The tender that was won.
         tender_id: String,
+        /// User-facing manifest identifier for the Kube resource.
         manifest_id: String,
+        /// Full manifest JSON content.
         manifest_json: String,
+        /// Number of replicas to deploy (usually 1 per node).
         replicas: u32,
     },
+
+    /// Send manifest content to an awarded winner via request-response protocol.
     SendManifest {
+        /// PeerId of the winning node to send the manifest to.
         peer_id: String,
+        /// Bincode-encoded `ManifestTransfer` payload.
         payload: Vec<u8>,
     },
 }
 
+// ============================================================================
+// Scheduler Implementation
+// ============================================================================
+
 impl Scheduler {
+    /// Creates a new scheduler instance for the given node.
+    ///
+    /// # Arguments
+    ///
+    /// * `local_node_id` - This node's PeerId as a string
+    /// * `keypair` - Ed25519 keypair for signing messages
+    /// * `outbound_tx` - Channel to send commands to the network loop
     pub fn new(
         local_node_id: String,
         keypair: Keypair,
@@ -136,7 +282,16 @@ impl Scheduler {
         }
     }
 
-    /// Handle incoming Gossipsub message
+    /// Routes an incoming gossipsub message to the appropriate handler.
+    ///
+    /// Messages on the `beemesh-fabric` topic are decoded and dispatched:
+    /// - `Tender` → `handle_tender()` (evaluate and bid)
+    /// - `Bid` → `handle_bid()` (collect if we're the tender owner)
+    /// - `Award` → `handle_award()` (check if we won)
+    /// - `Event` → `handle_event()` (observe deployment status)
+    ///
+    /// Messages on other topics are silently ignored (spec §2.1 requires
+    /// all scheduler payloads on `beemesh-fabric` only).
     pub async fn handle_message(
         &self,
         topic_hash: &gossipsub::TopicHash,
@@ -164,12 +319,31 @@ impl Scheduler {
         }
     }
 
-    /// Process a Tender message: Evaluate -> Bid
+    // ========================================================================
+    // Tender Handling
+    // ========================================================================
+
+    /// Processes an incoming tender message.
+    ///
+    /// # Flow (spec §4.1)
+    ///
+    /// 1. Verify the message has a source peer (required for signature verification)
+    /// 2. Check timestamp freshness (reject if > MAX_CLOCK_SKEW_MS from now)
+    /// 3. Check replay filter (reject if seen within REPLAY_WINDOW_MS)
+    /// 4. Verify Ed25519 signature
+    /// 5. If we're the tender owner: initialize bid collection, skip bidding
+    /// 6. If we're a potential bidder: evaluate eligibility, compute score, submit bid
+    ///
+    /// # Security
+    ///
+    /// - Unsigned or invalid-signature tenders are discarded (spec §3.3)
+    /// - Replayed tenders are ignored to prevent duplicate work
     async fn handle_tender(&self, tender: &Tender, message: &gossipsub::Message) {
         let tender_id = tender.id.clone();
         info!("Received Tender: {}", tender_id);
         println!("tender:received id={}", tender_id);
 
+        // Extract source peer for signature verification
         let source_peer = match message.source.as_ref() {
             Some(peer) => peer,
             None => {
@@ -179,6 +353,7 @@ impl Scheduler {
             }
         };
 
+        // Timestamp freshness check (spec §3.3)
         if !is_timestamp_fresh(tender.timestamp) {
             error!(
                 "Discarding tender {}: timestamp outside allowed skew",
@@ -188,12 +363,14 @@ impl Scheduler {
             return;
         }
 
+        // Replay protection (spec §3.3): reject if we've seen this (tender_id, nonce) recently
         if !self.mark_tender_seen(&tender_id, tender.nonce) {
             info!("Ignoring replayed tender {}", tender_id);
             eprintln!("tender:replay id={}", tender_id);
             return;
         }
 
+        // Derive public key from source peer for signature verification
         let public_key = match peer_id_to_public_key(source_peer) {
             Some(key) => key,
             None => {
@@ -206,12 +383,14 @@ impl Scheduler {
             }
         };
 
+        // Signature verification (spec §5): reject unsigned or tampered messages
         if !signatures::verify_sign_tender(tender, &public_key) {
             error!("Discarding tender {}: invalid signature", tender_id);
             eprintln!("tender:error id={} reason=invalid_signature", tender_id);
             return;
         }
 
+        // Determine if this node is the tender owner (published the tender)
         let is_owner = source_peer.to_string() == self.local_node_id;
         let manifest_json = if is_owner {
             get_local_manifest(&tender_id)
@@ -219,6 +398,7 @@ impl Scheduler {
             None
         };
 
+        // Owner path: start bid collection window, don't bid on own tender
         if is_owner {
             if manifest_json.is_none() {
                 error!(
@@ -232,6 +412,7 @@ impl Scheduler {
             let manifest_key =
                 take_tender_manifest_id(&tender_id).unwrap_or_else(|| tender_id.clone());
 
+            // Initialize bid collection context and spawn winner selection task
             self.initialize_owned_tender(
                 &tender_id,
                 &manifest_key,
@@ -246,15 +427,21 @@ impl Scheduler {
             return;
         }
 
-        // 1. Evaluate Fit
-        let capacity_score = 1.0; // Placeholder: assume perfect fit for now
+        // Bidder path: evaluate eligibility and submit bid
+        //
+        // TODO(spec §4.1): Implement real resource evaluation against tender requirements.
+        // Current implementation uses placeholder scores for testing.
 
-        // 2. Calculate Bid Score
-        // Score = (ResourceFit * 0.4) + (NetworkLocality * 0.3) + (Reputation * 0.3)
-        // For now, just use random or static for testing
-        let my_score = capacity_score * 0.8 + 0.2; // Simple formula
+        // Step 1: Evaluate resource fit (placeholder - assumes perfect fit)
+        let capacity_score = 1.0;
 
-        // 3. Publish Bid
+        // Step 2: Calculate composite bid score
+        // Spec §4.1 recommends: Resource fit (50%), Network locality (30%),
+        // Historical reliability (10%), Price/QoS (10%)
+        // Current: simplified formula for initial implementation
+        let my_score = capacity_score * 0.8 + 0.2;
+
+        // Step 3: Construct and sign the bid
         let mut bid = Bid {
             tender_id: tender_id.clone(),
             node_id: self.local_node_id.clone(),
@@ -278,6 +465,7 @@ impl Scheduler {
             }
         };
 
+        // Step 4: Queue bid for publication on beemesh-fabric
         if let Err(e) = self.outbound_tx.send(SchedulerCommand::Publish {
             topic: BEEMESH_FABRIC.to_string(),
             payload: bid_bytes,
@@ -291,6 +479,27 @@ impl Scheduler {
         }
     }
 
+    // ========================================================================
+    // Owned Tender Management (Bid Collection & Winner Selection)
+    // ========================================================================
+
+    /// Initializes bid collection for a tender owned by this node.
+    ///
+    /// This is called when we receive our own tender back from gossipsub (after
+    /// publishing it). It sets up the bid collection context and spawns an async
+    /// task that will:
+    ///
+    /// 1. Wait for the selection window (`DEFAULT_SELECTION_WINDOW_MS`)
+    /// 2. Collect all bids received during that window
+    /// 3. Deterministically select winners using `select_winners()`
+    /// 4. Publish the Award message
+    /// 5. Send manifest to each winner via secure stream
+    /// 6. If local node won, trigger deployment
+    ///
+    /// # Spec Reference
+    ///
+    /// - §4.1: "Tender owner MUST collect bids for at least the bid window"
+    /// - §4.1: "Winner selection MUST be reproducible by any observer"
     fn initialize_owned_tender(
         &self,
         tender_id: &str,
@@ -298,10 +507,11 @@ impl Scheduler {
         manifest_digest: &str,
         manifest_json: Option<String>,
     ) {
+        // Register the tender in our owned_tenders map (thread-safe)
         {
             let mut owned = self.owned_tenders.lock().unwrap();
             if owned.contains_key(tender_id) {
-                return;
+                return; // Already initialized (duplicate tender receipt)
             }
 
             owned.insert(
@@ -317,15 +527,20 @@ impl Scheduler {
             );
         }
 
+        // Clone references for the async task
         let owned_tenders = self.owned_tenders.clone();
         let tender_id_clone = tender_id.to_string();
         let local_id = self.local_node_id.clone();
         let keypair = self.keypair.clone();
         let outbound_tx = self.outbound_tx.clone();
 
+        // Spawn async task to handle the selection window and winner announcement
         tokio::spawn(async move {
+            // Wait for the selection window to allow bids to arrive
+            // TODO(spec §4.1): Add jitter (selection_jitter_ms) to this delay
             sleep(Duration::from_millis(DEFAULT_SELECTION_WINDOW_MS)).await;
 
+            // Close the bidding window and extract collected bids
             let (winners, manifest_id_opt, manifest_json_opt, manifest_digest_opt) = {
                 let mut tenders = owned_tenders.lock().unwrap();
                 if let Some(ctx) = tenders.remove(&tender_id_clone) {
@@ -340,6 +555,7 @@ impl Scheduler {
                 }
             };
 
+            // Proceed only if we have valid manifest information
             if let (Some(manifest_id), Some(manifest_digest)) =
                 (manifest_id_opt, manifest_digest_opt)
             {
@@ -351,6 +567,7 @@ impl Scheduler {
                     return;
                 }
 
+                // Log winner summary for debugging
                 let summary = winners
                     .iter()
                     .map(|w| format!("{} ({:.2})", w.bidder_id, w.score))
@@ -362,6 +579,7 @@ impl Scheduler {
                     tender_id_clone, manifest_id, summary
                 );
 
+                // Construct and sign the Award message
                 let winners_list: Vec<String> =
                     winners.iter().map(|w| w.bidder_id.clone()).collect();
                 let mut award = Award {
@@ -373,6 +591,7 @@ impl Scheduler {
                     signature: Vec::new(),
                 };
 
+                // Publish award to fabric (spec §4.1: "Award MUST be visible on fabric topic")
                 if let Err(e) = signatures::sign_award(&mut award, &keypair) {
                     error!("Failed to sign award for tender {}: {}", tender_id_clone, e);
                 } else if let Err(e) = outbound_tx.send(SchedulerCommand::Publish {
@@ -398,6 +617,7 @@ impl Scheduler {
                 {
                     let owner_pubkey = keypair.to_protobuf_encoding().unwrap_or_default();
 
+                    // Build manifest transfer payload for remote winners
                     let transfer = ManifestTransfer {
                         tender_id: tender_id_clone.clone(),
                         manifest_id: manifest_id.clone(),
@@ -410,6 +630,8 @@ impl Scheduler {
 
                     let transfer_bytes = machine::build_manifest_transfer(&transfer);
 
+                    // Send manifest to remote winners via request-response protocol
+                    // (spec §4.1: "manifest MUST be sent only to awarded nodes")
                     for winner in winners.iter().filter(|bid| bid.bidder_id != local_id) {
                         if let Err(e) = outbound_tx.send(SchedulerCommand::SendManifest {
                             peer_id: winner.bidder_id.clone(),
@@ -433,6 +655,7 @@ impl Scheduler {
                     );
                 }
 
+                // If local node is among the winners, trigger deployment
                 if winners.iter().any(|bid| bid.bidder_id == local_id) {
                     info!(
                         "Local node won tender {}; proceeding to deployment",
@@ -466,11 +689,21 @@ impl Scheduler {
         });
     }
 
+    // ========================================================================
+    // Replay Protection Helpers
+    // ========================================================================
+
+    /// Records a tender as seen and returns true if this is the first time.
+    ///
+    /// Uses the (tender_id, nonce) tuple as the dedup key.
     fn mark_tender_seen(&self, tender_id: &str, nonce: u64) -> bool {
         let mut seen = self.seen_tenders.lock().unwrap();
         record_replay(&mut seen, (tender_id.to_string(), nonce))
     }
 
+    /// Records a bid as seen and returns true if this is the first time.
+    ///
+    /// Uses the (tender_id, node_id, nonce) tuple as the dedup key.
     fn mark_bid_seen(&self, bid: &Bid) -> bool {
         let mut seen = self.seen_bids.lock().unwrap();
         record_replay(
@@ -479,11 +712,13 @@ impl Scheduler {
         )
     }
 
+    /// Records an award as seen and returns true if this is the first time.
     fn mark_award_seen(&self, tender_id: &str, nonce: u64) -> bool {
         let mut seen = self.seen_awards.lock().unwrap();
         record_replay(&mut seen, (tender_id.to_string(), nonce))
     }
 
+    /// Records an event as seen and returns true if this is the first time.
     fn mark_event_seen(&self, event: &SchedulerEvent) -> bool {
         let mut seen = self.seen_events.lock().unwrap();
         record_replay(
@@ -492,7 +727,21 @@ impl Scheduler {
         )
     }
 
-    /// Process a Bid message: Update highest bid
+    // ========================================================================
+    // Bid Handling
+    // ========================================================================
+
+    /// Processes an incoming bid message.
+    ///
+    /// Only the tender owner collects bids. Other nodes ignore bids for tenders
+    /// they don't own (they will learn the outcome via the Award message).
+    ///
+    /// # Validation
+    ///
+    /// 1. Timestamp freshness check
+    /// 2. Signature verification
+    /// 3. Replay protection
+    /// 4. Ownership check (only collect if we own this tender)
     async fn handle_bid(&self, bid: &Bid, message: &gossipsub::Message) {
         if !is_timestamp_fresh(bid.timestamp) {
             error!(
@@ -537,6 +786,7 @@ impl Scheduler {
             return;
         }
 
+        // Replay protection
         if !self.mark_bid_seen(bid) {
             info!(
                 "Ignoring replayed bid {} from {}",
@@ -553,7 +803,7 @@ impl Scheduler {
         let bidder_id = bid.node_id.clone();
         let score = bid.score;
 
-        // Ignore our own bids (handled locally)
+        // Ignore our own bids (we already know our score)
         if bidder_id == self.local_node_id {
             println!(
                 "bid:local tender_id={} node_id={} action=ignore",
@@ -562,6 +812,7 @@ impl Scheduler {
             return;
         }
 
+        // Only collect bids for tenders we own
         let mut owned = self.owned_tenders.lock().unwrap();
         if let Some(ctx) = owned.get_mut(&tender_id) {
             info!(
@@ -577,6 +828,7 @@ impl Scheduler {
                 score,
             });
         } else {
+            // Not the tender owner - ignore (we'll learn outcome from Award)
             info!(
                 "Ignoring bid for tender {} because this node is not the owner",
                 tender_id
@@ -588,7 +840,20 @@ impl Scheduler {
         }
     }
 
-    /// Process Scheduler Events (e.g. Cancelled, Preempted)
+    // ========================================================================
+    // Event Handling
+    // ========================================================================
+
+    /// Processes scheduler events (Deployed, Failed, Preempted, Cancelled).
+    ///
+    /// Events are informational: they notify the fabric about deployment outcomes
+    /// and allow nodes to update their internal state. For example, observing a
+    /// `Failed` event might allow a non-winning node to re-evaluate the tender.
+    ///
+    /// # Spec Reference
+    ///
+    /// - §9.1: Events MUST be emitted for Deployed, Failed, Preempted, Cancelled
+    /// - §6: Failed events may trigger backoff and retry behavior
     async fn handle_event(&self, event: &SchedulerEvent, message: &gossipsub::Message) {
         let tender_id = event.tender_id.clone();
         info!(
@@ -596,6 +861,7 @@ impl Scheduler {
             tender_id, event.event_type
         );
 
+        // Timestamp freshness check
         if !is_timestamp_fresh(event.timestamp) {
             error!(
                 "Discarding scheduler event for tender {}: timestamp outside skew",
@@ -605,6 +871,7 @@ impl Scheduler {
             return;
         }
 
+        // Signature verification
         let public_key = match message
             .source
             .as_ref()
@@ -633,6 +900,7 @@ impl Scheduler {
             return;
         }
 
+        // Replay protection
         if !self.mark_event_seen(event) {
             info!(
                 "Ignoring replayed scheduler event for tender {} from {}",
@@ -645,6 +913,8 @@ impl Scheduler {
             return;
         }
 
+        // Process termination events for locally deployed workloads
+        // These events indicate that a previously running workload has stopped
         if event.node_id == self.local_node_id {
             if matches!(
                 event.event_type,
@@ -658,8 +928,22 @@ impl Scheduler {
         }
     }
 
-    /// Process Award messages announcing winners
+    // ========================================================================
+    // Award Handling
+    // ========================================================================
+
+    /// Processes Award messages announcing tender winners.
+    ///
+    /// Awards are published by the tender owner after the bid collection period
+    /// expires. Winners are selected by highest score (§5.2). If this node is
+    /// among the winners, it awaits manifest transfer via RequestResponse.
+    ///
+    /// # Spec Reference
+    ///
+    /// - §5.2: Awards MUST contain winner list ordered by score
+    /// - §5.3: Manifest transfer follows award via RequestResponse
     async fn handle_award(&self, award: &Award, message: &gossipsub::Message) {
+        // Timestamp freshness check
         if !is_timestamp_fresh(award.timestamp) {
             error!(
                 "Discarding award for tender {}: timestamp outside skew",
@@ -672,6 +956,7 @@ impl Scheduler {
             return;
         }
 
+        // Signature verification
         let public_key = match message
             .source
             .as_ref()
@@ -703,6 +988,7 @@ impl Scheduler {
             return;
         }
 
+        // Replay protection
         if !self.mark_award_seen(&award.tender_id, award.nonce) {
             info!(
                 "Ignoring replayed award for tender {} from {:?}",
@@ -715,7 +1001,9 @@ impl Scheduler {
             return;
         }
 
+        // Check if this node is a winner
         if award.winners.contains(&self.local_node_id) {
+            // Winner: expect manifest transfer via RequestResponse protocol
             info!(
                 "Local node awarded tender {}; awaiting manifest transfer",
                 award.tender_id
@@ -725,6 +1013,7 @@ impl Scheduler {
                 award.tender_id
             );
         } else {
+            // Observer: not selected for this tender
             println!(
                 "award:received tender_id={} outcome=observer winners={:?}",
                 award.tender_id, award.winners
@@ -732,7 +1021,22 @@ impl Scheduler {
         }
     }
 
+    // ========================================================================
+    // Event Publishing
+    // ========================================================================
+
+    /// Publishes a scheduler event to the fabric.
+    ///
+    /// Events are informational messages about deployment lifecycle changes.
+    /// This method handles signing and publishing the event via gossipsub.
+    ///
+    /// # Arguments
+    ///
+    /// * `tender_id` - The tender this event relates to
+    /// * `event_type` - The type of event (Deployed, Failed, etc.)
+    /// * `reason` - Human-readable reason for the event
     pub fn publish_event(&self, tender_id: &str, event_type: EventType, reason: &str) {
+        // Create unsigned event with fresh timestamp and random nonce
         let mut event = SchedulerEvent {
             tender_id: tender_id.to_string(),
             node_id: self.local_node_id.clone(),
@@ -743,6 +1047,7 @@ impl Scheduler {
             signature: Vec::new(),
         };
 
+        // Sign and encode the event
         let payload = match signatures::sign_scheduler_event(&mut event, &self.keypair) {
             Ok(_) => machine::encode_scheduler_message(SchedulerMessage::Event(event)),
             Err(e) => {
@@ -754,6 +1059,7 @@ impl Scheduler {
             }
         };
 
+        // Queue for publication via gossipsub
         if let Err(e) = self.outbound_tx.send(SchedulerCommand::Publish {
             topic: BEEMESH_FABRIC.to_string(),
             payload,
@@ -766,13 +1072,36 @@ impl Scheduler {
     }
 }
 
+// ============================================================================
+// Winner Selection
+// ============================================================================
+
+/// Intermediate structure for winner selection.
+///
+/// Used during `select_winners()` to track the best score per bidding node.
 #[derive(Clone)]
 struct BidOutcome {
+    /// The node ID of the bidder
     bidder_id: String,
+    /// The highest score submitted by this bidder
     score: f64,
 }
 
+/// Selects winners from collected bids based on highest score.
+///
+/// Implements §5.2 of the spec: winners are ordered by score descending,
+/// limited to `replicas` count. If multiple bids exist from the same node,
+/// only the highest-scoring bid is considered.
+///
+/// # Arguments
+///
+/// * `context` - The bid collection context containing all received bids
+///
+/// # Returns
+///
+/// A vector of `BidOutcome` structs representing the winners, ordered by score.
 fn select_winners(context: &BidContext) -> Vec<BidOutcome> {
+    // De-duplicate bids by node, keeping highest score per node
     let mut best_by_node: HashMap<String, BidEntry> = HashMap::new();
 
     for bid in &context.bids {
@@ -801,31 +1130,52 @@ fn select_winners(context: &BidContext) -> Vec<BidOutcome> {
         .collect()
 }
 
+// ============================================================================
+// Public Manifest Cache API
+// ============================================================================
+
+/// Registers a manifest in the local cache for later retrieval.
+///
+/// Called when creating a tender to store the manifest JSON so it can be
+/// transferred to winners via the RequestResponse protocol.
 pub fn register_local_manifest(tender_id: &str, manifest_json: &str) {
     let mut cache = LOCAL_MANIFEST_CACHE.lock().unwrap();
     cache.insert(tender_id.to_string(), manifest_json.to_string());
 }
 
+/// Retrieves a manifest from the local cache.
+///
+/// Returns `None` if the tender_id is not found in the cache.
 fn get_local_manifest(tender_id: &str) -> Option<String> {
     LOCAL_MANIFEST_CACHE.lock().unwrap().get(tender_id).cloned()
 }
 
-/// Remember the user-facing manifest identifier associated with a tender.
+/// Records the user-facing manifest identifier associated with a tender.
+///
+/// This mapping allows the system to track which user-provided manifest ID
+/// corresponds to each internal tender ID.
 pub fn record_tender_manifest_id(tender_id: &str, manifest_id: &str) {
     let mut map = TENDER_MANIFEST_IDS.lock().unwrap();
     map.insert(tender_id.to_string(), manifest_id.to_string());
 }
 
-/// Fetch and retain the manifest identifier for a tender without removing it.
+/// Retrieves the manifest identifier for a tender without removing it.
 pub fn get_tender_manifest_id(tender_id: &str) -> Option<String> {
     TENDER_MANIFEST_IDS.lock().unwrap().get(tender_id).cloned()
 }
 
-/// Remove and return the manifest identifier for a tender when it is no longer needed.
+/// Removes and returns the manifest identifier for a tender.
+///
+/// Use this when the tender is complete and the mapping is no longer needed.
 pub fn take_tender_manifest_id(tender_id: &str) -> Option<String> {
     TENDER_MANIFEST_IDS.lock().unwrap().remove(tender_id)
 }
 
+// ============================================================================
+// Time and Replay Utilities
+// ============================================================================
+
+/// Returns the current time in milliseconds since UNIX epoch.
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -833,11 +1183,22 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Records a key in a replay-protection map with automatic expiry.
+///
+/// This function maintains a sliding window of seen keys. Keys older than
+/// `REPLAY_WINDOW_MS` are automatically pruned on each call.
+///
+/// # Returns
+///
+/// - `true` if the key was newly recorded (not a replay)
+/// - `false` if the key was already seen within the replay window
 fn record_replay<K: Eq + Hash + Clone>(map: &mut HashMap<K, u64>, key: K) -> bool {
     let now = now_ms();
 
+    // Prune expired entries
     map.retain(|_, ts| now.saturating_sub(*ts) <= REPLAY_WINDOW_MS);
 
+    // Check if already seen
     if let Some(ts) = map.get(&key) {
         if now.saturating_sub(*ts) <= REPLAY_WINDOW_MS {
             return false;
@@ -848,6 +1209,10 @@ fn record_replay<K: Eq + Hash + Clone>(map: &mut HashMap<K, u64>, key: K) -> boo
     true
 }
 
+/// Checks if a timestamp is within the acceptable clock skew window.
+///
+/// Messages with timestamps outside the `MAX_CLOCK_SKEW_MS` window are
+/// rejected to prevent replay attacks and stale message processing.
 fn is_timestamp_fresh(timestamp_ms: u64) -> bool {
     let now = now_ms();
     let (min, max) = if now > timestamp_ms {
@@ -859,20 +1224,18 @@ fn is_timestamp_fresh(timestamp_ms: u64) -> bool {
     max - min <= MAX_CLOCK_SKEW_MS
 }
 
-// ---------------------------------------------------------------------------
+// ============================================================================
+// Runtime Integration Module
+// ============================================================================
+
 pub use runtime_integration::*;
 
-// ---------------------------------------------------------------------------
-// Runtime integration and apply handling (merged from run.rs)
-// ---------------------------------------------------------------------------
-
+/// Runtime integration and apply handling (merged from run.rs).
+///
+/// This module provides integration between the existing libp2p apply message
+/// handling and the workload manager system. It updates the apply message
+/// handler to use the runtime engines and provider announcement system.
 mod runtime_integration {
-    //! Workload Integration Module
-    //!
-    //! This module provides integration between the existing libp2p apply message handling
-    //! and the new workload manager system. It updates the apply message handler to use
-    //! the runtime engines and provider announcement system.
-
     use crate::messages::machine;
     use crate::messages::types::ApplyRequest;
     use crate::network::behaviour::MyBehaviour;
@@ -881,20 +1244,27 @@ mod runtime_integration {
     use libp2p::Swarm;
     use libp2p::kad;
     use log::{debug, error, info, warn};
-    use once_cell::sync::Lazy;
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock};
     use tokio::sync::RwLock;
 
-    /// Global runtime registry for all available engines
-    static RUNTIME_REGISTRY: Lazy<Arc<RwLock<Option<RuntimeRegistry>>>> =
-        Lazy::new(|| Arc::new(RwLock::new(None)));
+    /// Global runtime registry for all available container engines.
+    ///
+    /// Lazily initialized on first access. Contains Podman and potentially
+    /// other container runtime adapters.
+    static RUNTIME_REGISTRY: LazyLock<Arc<RwLock<Option<RuntimeRegistry>>>> =
+        LazyLock::new(|| Arc::new(RwLock::new(None)));
 
     /// Node-local cache mapping manifest IDs to owner public keys.
-    static MANIFEST_OWNER_MAP: Lazy<RwLock<HashMap<String, Vec<u8>>>> =
-        Lazy::new(|| RwLock::new(HashMap::new()));
+    ///
+    /// Used to verify delete requests come from the original manifest owner.
+    static MANIFEST_OWNER_MAP: LazyLock<RwLock<HashMap<String, Vec<u8>>>> =
+        LazyLock::new(|| RwLock::new(HashMap::new()));
 
-    /// Initialize the runtime registry and provider manager
+    /// Initializes the runtime registry and probes available engines.
+    ///
+    /// This should be called during node startup to prepare the container
+    /// runtime system. Currently defaults to Podman.
     pub async fn initialize_podman_manager() -> Result<(), Box<dyn std::error::Error>> {
         info!("Initializing runtime registry for manifest deployment");
 
@@ -913,7 +1283,9 @@ mod runtime_integration {
         Ok(())
     }
 
-    /// Record the owner public key for a manifest on this node.
+    /// Records the owner public key for a manifest on this node.
+    ///
+    /// Used for authorization when processing delete requests.
     pub async fn record_manifest_owner(manifest_id: &str, owner_pubkey: &[u8]) {
         let mut map = MANIFEST_OWNER_MAP.write().await;
         map.insert(manifest_id.to_string(), owner_pubkey.to_vec());
@@ -924,19 +1296,19 @@ mod runtime_integration {
         );
     }
 
-    /// Retrieve the owner public key for a manifest if known.
+    /// Retrieves the owner public key for a manifest if known.
     pub async fn get_manifest_owner(manifest_id: &str) -> Option<Vec<u8>> {
         let map = MANIFEST_OWNER_MAP.read().await;
         map.get(manifest_id).cloned()
     }
 
-    /// Remove the owner mapping for a manifest.
+    /// Removes the owner mapping for a manifest.
     pub async fn remove_manifest_owner(manifest_id: &str) -> Option<Vec<u8>> {
         let mut map = MANIFEST_OWNER_MAP.write().await;
         map.remove(manifest_id)
     }
 
-    /// Get access to the global runtime registry (for testing and debug endpoints)
+    /// Provides access to the global runtime registry (for testing/debug).
     pub async fn get_global_runtime_registry()
     -> Option<tokio::sync::RwLockReadGuard<'static, Option<RuntimeRegistry>>> {
         let registry_guard = RUNTIME_REGISTRY.read().await;
@@ -947,7 +1319,16 @@ mod runtime_integration {
         }
     }
 
-    /// Process manifest deployment using the workload manager
+    /// Processes manifest deployment using the workload manager.
+    ///
+    /// This is the main entry point for deploying workloads received via
+    /// the tender/bid/award protocol. It:
+    ///
+    /// 1. Decodes the manifest content (handles base64 if needed)
+    /// 2. Modifies replicas to 1 for single-node deployment
+    /// 3. Selects appropriate runtime engine
+    /// 4. Deploys via the runtime adapter
+    /// 5. Publishes workload info to DHT
     pub async fn process_manifest_deployment(
         swarm: &mut Swarm<MyBehaviour>,
         apply_req: &ApplyRequest,
@@ -972,6 +1353,7 @@ mod runtime_integration {
             manifest_id
         );
 
+        // Store owner pubkey for later delete authorization
         if owner_pubkey.is_empty() {
             debug!(
                 "process_manifest_deployment: missing owner pubkey for manifest_id={}",
@@ -1246,7 +1628,13 @@ mod runtime_integration {
         }
     }
 
-    /// Get runtime registry statistics
+    // ========================================================================
+    // Runtime Registry Utilities
+    // ========================================================================
+
+    /// Returns availability statistics for all registered runtime engines.
+    ///
+    /// Used by debug endpoints to report which container runtimes are available.
     pub async fn get_runtime_registry_stats() -> HashMap<String, bool> {
         if let Some(registry) = RUNTIME_REGISTRY.read().await.as_ref() {
             registry.check_available_engines().await
@@ -1255,7 +1643,7 @@ mod runtime_integration {
         }
     }
 
-    /// List all available runtime engines
+    /// Lists all registered runtime engine names.
     pub async fn list_available_engines() -> Vec<String> {
         if let Some(registry) = RUNTIME_REGISTRY.read().await.as_ref() {
             registry
@@ -1268,7 +1656,16 @@ mod runtime_integration {
         }
     }
 
-    /// Remove a workload by ID (requires engine name)
+    // ========================================================================
+    // Workload Management Operations
+    // ========================================================================
+
+    /// Removes a workload by ID using a specific engine.
+    ///
+    /// # Arguments
+    ///
+    /// * `workload_id` - The container/workload ID to remove
+    /// * `engine_name` - The runtime engine managing this workload
     pub async fn remove_workload_by_id(
         workload_id: &str,
         engine_name: &str,
@@ -1290,7 +1687,15 @@ mod runtime_integration {
         Ok(())
     }
 
-    /// Remove workloads by manifest ID - searches through all engines and removes matching workloads
+    /// Removes all workloads associated with a manifest ID across all engines.
+    ///
+    /// This is used during delete operations to clean up all containers that
+    /// were deployed as part of a single manifest. Searches through all
+    /// registered runtime engines.
+    ///
+    /// # Returns
+    ///
+    /// A vector of workload IDs that were successfully removed.
     pub async fn remove_workloads_by_manifest_id(
         manifest_id: &str,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -1308,6 +1713,7 @@ mod runtime_integration {
         let mut errors = Vec::new();
         let engine_names = registry.list_engines();
 
+        // Search all engines for matching workloads
         for engine_name in &engine_names {
             if let Some(engine) = registry.get_engine(engine_name) {
                 info!(
@@ -1357,8 +1763,8 @@ mod runtime_integration {
             }
         }
 
+        // Clear owner mapping only if all removals succeeded
         if errors.is_empty() {
-            // Drop the cached owner once the manifest workloads are removed successfully.
             if remove_manifest_owner(manifest_id).await.is_some() {
                 info!(
                     "remove_workloads_by_manifest_id: cleared owner mapping for manifest_id={}",
@@ -1380,7 +1786,13 @@ mod runtime_integration {
         Ok(removed_workloads)
     }
 
-    /// Get logs from a workload (requires engine name)
+    /// Retrieves logs from a running workload.
+    ///
+    /// # Arguments
+    ///
+    /// * `workload_id` - The container/workload ID
+    /// * `engine_name` - The runtime engine managing this workload
+    /// * `tail` - Optional number of lines to retrieve from the end
     pub async fn get_workload_logs_by_id(
         workload_id: &str,
         engine_name: &str,

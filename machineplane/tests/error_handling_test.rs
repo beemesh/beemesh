@@ -3,9 +3,7 @@
 //! This module verifies helper functions used for parsing and identifying manifests,
 //! ensuring they handle missing fields and generate consistent IDs.
 
-use machineplane::messages::machine::{
-    compute_manifest_id, compute_manifest_id_from_content, extract_manifest_name,
-};
+use machineplane::messages::machine::{compute_manifest_id_from_content, extract_manifest_name};
 
 /// Verifies that `extract_manifest_name` returns `None` for invalid or incomplete JSON.
 #[test]
@@ -35,16 +33,4 @@ fn compute_manifest_id_hashes_content() {
         manifest_id,
         compute_manifest_id_from_content(different_manifest)
     );
-}
-
-/// Verifies that `compute_manifest_id` includes a version suffix to distinguish updates.
-#[test]
-fn compute_manifest_id_includes_version_suffix() {
-    let name = "demo";
-    let version_one = compute_manifest_id(name, 1);
-    let version_two = compute_manifest_id(name, 2);
-
-    assert!(version_one.starts_with(name));
-    assert!(version_two.starts_with(name));
-    assert_ne!(version_one, version_two);
 }

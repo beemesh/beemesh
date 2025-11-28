@@ -14,9 +14,9 @@ use axum::{
 use base64::Engine;
 use libp2p::identity::Keypair;
 use log::{debug, error, info};
-use once_cell::sync::Lazy;
 use rand::RngCore;
 use serde_json::{Map, Value};
+use std::sync::LazyLock;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use tokio::{
     sync::watch,
     time::{Duration, timeout},
 };
-use ulid::Ulid;
+use uuid::Uuid;
 
 async fn create_response_with_fallback(
     body: &[u8],
@@ -75,12 +75,12 @@ pub struct RestState {
 
 // Global in-memory store of decrypted manifests for debugging / tests.
 // Keyed by manifest_id -> decrypted manifest JSON/value.
-static DECRYPTED_MANIFESTS: Lazy<tokio::sync::RwLock<HashMap<String, serde_json::Value>>> =
-    Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
+static DECRYPTED_MANIFESTS: LazyLock<tokio::sync::RwLock<HashMap<String, serde_json::Value>>> =
+    LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
 // Global mapping of operation_id -> manifest_cid to ensure consistent manifest ID usage across REST API and apply processing
-static OPERATION_MANIFEST_MAPPING: Lazy<tokio::sync::RwLock<HashMap<String, String>>> =
-    Lazy::new(|| tokio::sync::RwLock::new(HashMap::new()));
+static OPERATION_MANIFEST_MAPPING: LazyLock<tokio::sync::RwLock<HashMap<String, String>>> =
+    LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
 /// Store a decrypted manifest (async). FOR DEBUG/TEST USE ONLY.
 /// This function should NOT be called during normal operation as the machine plane
@@ -318,8 +318,8 @@ pub async fn create_tender(
         (manifest_id, operation_id)
     };
 
-    // Generate a unique tender_id to satisfy the ULID requirement in the spec
-    let tender_id = Ulid::new().to_string();
+    // Generate a unique tender_id using UUID v4
+    let tender_id = Uuid::new_v4().to_string();
     log::info!("create_tender: generated tender_id='{}'", tender_id);
 
     // Store the operation_id -> manifest_id mapping for later self-apply lookups

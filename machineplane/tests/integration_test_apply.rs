@@ -12,8 +12,8 @@ use dirs::runtime_dir;
 use env_logger::Env;
 use machineplane::runtimes::podman::PodmanEngine;
 use machineplane::runtimes::podman_api::{PodListEntry, PodmanApiClient};
-use once_cell::sync::Lazy;
 use serial_test::serial;
+use std::sync::LazyLock;
 
 use std::collections::HashSet;
 use std::env;
@@ -40,7 +40,7 @@ use kube_helpers::{apply_manifest_via_kube_api, delete_manifest_via_kube_api};
 use runtime_helpers::{make_test_daemon, shutdown_nodes, start_nodes, wait_for_local_multiaddr};
 use tokio::task::JoinHandle;
 
-static EMBEDDED_PODMAN_SERVICE: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
+static EMBEDDED_PODMAN_SERVICE: LazyLock<Mutex<Option<Child>>> = LazyLock::new(|| Mutex::new(None));
 
 fn configure_podman_client() -> Option<PodmanApiClient> {
     let socket = detect_or_bootstrap_podman_socket()?;

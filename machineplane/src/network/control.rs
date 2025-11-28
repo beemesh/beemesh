@@ -1,9 +1,8 @@
 use crate::messages::constants::BEEMESH_FABRIC;
 use crate::network::behaviour::{MyBehaviour, SCHEDULER_INPUT_TX};
 use libp2p::{Swarm, gossipsub};
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -93,9 +92,9 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
 }
 
 /// Global store for tracking pending manifest distribution requests
-static PENDING_MANIFEST_REQUESTS: Lazy<
+static PENDING_MANIFEST_REQUESTS: LazyLock<
     Mutex<HashMap<libp2p::request_response::OutboundRequestId, (ManifestRequestSender, Instant)>>,
-> = Lazy::new(|| Mutex::new(HashMap::new()));
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Get access to the pending manifest requests store
 pub fn get_pending_manifest_requests() -> &'static Mutex<

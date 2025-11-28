@@ -1,3 +1,28 @@
+//! # Network Module
+//!
+//! This module implements the libp2p networking layer for the machineplane.
+//! It provides peer-to-peer communication using:
+//!
+//! - **Gossipsub**: For pub/sub messaging of scheduler messages (Tender, Bid, Award, Event)
+//! - **Kademlia DHT**: For peer discovery (MDHT) and distributed record storage
+//! - **Request-Response**: For direct peer communication (manifest transfer)
+//! - **QUIC Transport**: For encrypted, multiplexed connections
+//!
+//! ## Architecture
+//!
+//! The networking layer follows a message-driven architecture:
+//!
+//! 1. `start_libp2p_node()` initializes the swarm and begins the event loop
+//! 2. Incoming gossipsub messages are decoded and dispatched to the `Scheduler`
+//! 3. Outbound messages are sent via `SchedulerCommand::Publish`
+//! 4. DHT operations handle peer discovery and workload record storage
+//!
+//! ## Spec Reference
+//!
+//! - §3: MDHT Discovery - Kademlia-based peer discovery with bootstrap and random walks
+//! - §4: Gossipsub messaging for Tender/Bid/Award/Event distribution
+//! - §5.3: RequestResponse for manifest transfer to award winners
+
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{AsyncReadExt, AsyncWriteExt, stream::StreamExt};
@@ -6,9 +31,8 @@ use libp2p::{
     request_response, swarm::SwarmEvent,
 };
 use log::{debug, error, info, warn};
-use once_cell::sync::{Lazy, OnceCell};
 use std::net::IpAddr;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -20,22 +44,38 @@ use crate::messages::libp2p_constants::BEEMESH_FABRIC;
 use crate::messages::types::EventType;
 use crate::scheduler::SchedulerCommand;
 
-// Flattened modules
+// Submodules
 pub mod behaviour;
 pub mod control;
-pub mod dht_manager;
 pub mod utils;
 
 use behaviour::{MyBehaviour, MyBehaviourEvent};
 use control::Libp2pControl;
 
-// Global control sender for distributed operations
-static CONTROL_SENDER: OnceCell<mpsc::UnboundedSender<control::Libp2pControl>> = OnceCell::new();
-// Map from peer_id bytes to (public_key_bytes, private_key_bytes)
-// This allows multiple nodes in the same process (for testing) to have distinct keypairs.
-static NODE_KEYPAIRS: Lazy<Mutex<std::collections::HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>>> =
-    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+// ============================================================================
+// Global State
+// ============================================================================
 
+/// Global control sender for distributed operations.
+///
+/// Allows external components to send control messages to the libp2p event loop
+/// (e.g., to trigger DHT lookups or publish messages).
+static CONTROL_SENDER: OnceLock<mpsc::UnboundedSender<control::Libp2pControl>> = OnceLock::new();
+
+/// Per-node keypair storage for multi-node testing.
+///
+/// Maps peer_id bytes to (public_key_bytes, private_key_bytes).
+/// This allows multiple nodes in the same process to have distinct keypairs.
+static NODE_KEYPAIRS: LazyLock<Mutex<std::collections::HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+// ============================================================================
+// Request-Response Protocol Types
+// ============================================================================
+
+/// Protocol identifier for the request-response codec.
+///
+/// Used to negotiate the protocol during libp2p stream opening.
 #[derive(Clone, Copy)]
 pub struct ByteProtocol(&'static str);
 
@@ -45,6 +85,10 @@ impl AsRef<str> for ByteProtocol {
     }
 }
 
+/// Simple byte-based codec for request-response messages.
+///
+/// Reads and writes raw bytes without framing - the entire stream is
+/// consumed as a single message. Used for manifest transfer.
 #[derive(Clone, Default)]
 pub struct ByteCodec;
 
@@ -107,11 +151,21 @@ impl request_response::Codec for ByteCodec {
     }
 }
 
-// Protocol definitions
+/// Type alias for the manifest transfer codec.
 pub type ManifestTransferCodec = ByteCodec;
 
-/// Get the node keypair for the given peer_id.
-/// If peer_id is None, returns the first available keypair (for backward compatibility).
+// ============================================================================
+// Keypair Management
+// ============================================================================
+
+/// Retrieves the keypair for a specific peer ID.
+///
+/// If `peer_id` is `None`, returns the first available keypair for backward
+/// compatibility with single-node scenarios.
+///
+/// # Returns
+///
+/// A tuple of (public_key_bytes, private_key_bytes) if found.
 pub fn get_node_keypair_for_peer(peer_id: Option<&[u8]>) -> Option<(Vec<u8>, Vec<u8>)> {
     let keypairs = NODE_KEYPAIRS.lock().unwrap();
     if let Some(pid) = peer_id {
@@ -122,14 +176,16 @@ pub fn get_node_keypair_for_peer(peer_id: Option<&[u8]>) -> Option<(Vec<u8>, Vec
     }
 }
 
-/// Get the node keypair (for backward compatibility, returns first available).
+/// Retrieves the first available keypair (backward compatibility).
 pub fn get_node_keypair() -> Option<(Vec<u8>, Vec<u8>)> {
     get_node_keypair_for_peer(None)
 }
 
-/// Set the node keypair for a specific peer_id.
-/// The first element of the tuple is the peer_id (public key bytes),
-/// the second is the private key encoding.
+/// Stores a keypair for a specific peer ID.
+///
+/// # Arguments
+///
+/// * `pair` - Tuple of (peer_id_bytes, private_key_encoding)
 pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
     let mut keypairs = NODE_KEYPAIRS.lock().unwrap();
     if let Some((peer_id_bytes, keypair_bytes)) = pair {
@@ -137,16 +193,46 @@ pub fn set_node_keypair(pair: Option<(Vec<u8>, Vec<u8>)>) {
     }
 }
 
-/// Set the global control sender for distributed operations
+// ============================================================================
+// Control Channel Management
+// ============================================================================
+
+/// Sets the global control sender for distributed operations.
+///
+/// This sender allows external components to send control messages to the
+/// libp2p event loop (e.g., DHT operations, gossipsub publishes).
 pub fn set_control_sender(sender: mpsc::UnboundedSender<control::Libp2pControl>) {
     let _ = CONTROL_SENDER.set(sender);
 }
 
-/// Get the global control sender for distributed operations
+/// Retrieves the global control sender for distributed operations.
 pub fn get_control_sender() -> Option<&'static mpsc::UnboundedSender<control::Libp2pControl>> {
     CONTROL_SENDER.get()
 }
 
+// ============================================================================
+// Swarm Setup
+// ============================================================================
+
+/// Sets up a new libp2p swarm with gossipsub, Kademlia, and request-response.
+///
+/// This function:
+/// 1. Loads the keypair for the given peer ID
+/// 2. Configures QUIC transport with DNS resolution
+/// 3. Sets up gossipsub with strict validation and message deduplication
+/// 4. Initializes Kademlia DHT in server mode
+/// 5. Configures request-response for manifest transfer
+/// 6. Subscribes to the BEEMESH_FABRIC topic
+///
+/// # Arguments
+///
+/// * `quic_port` - UDP port for QUIC transport
+/// * `host` - Host address to bind to (e.g., "0.0.0.0")
+/// * `local_peer_id_bytes` - Peer ID bytes to look up the keypair
+///
+/// # Returns
+///
+/// A tuple of (Swarm, gossipsub topic, peer watch receiver, peer watch sender).
 pub fn setup_libp2p_node(
     quic_port: u16,
     host: &str,
@@ -166,17 +252,23 @@ pub fn setup_libp2p_node(
         libp2p::identity::Keypair::from_protobuf_encoding(sk)?
     };
 
+    // Build the swarm with QUIC transport and DNS support
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_quic()
         .with_dns()?
         .with_behaviour(|key| {
             info!("Local PeerId: {}", key.public().to_peer_id());
+
+            // Configure gossipsub with content-addressed message IDs
+            // This prevents duplicate messages based on content hash
             let message_id_fn = |message: &gossipsub::Message| {
                 let mut s = DefaultHasher::new();
                 message.data.hash(&mut s);
                 gossipsub::MessageId::from(s.finish().to_string())
             };
+
+            // Gossipsub configuration per §4 of spec
             let gossipsub_config = gossipsub::ConfigBuilder::default()
                 .heartbeat_interval(Duration::from_secs(10))
                 // Enforce strict validation to ensure only authenticated messages are accepted.
@@ -270,16 +362,52 @@ pub fn setup_libp2p_node(
     Ok((swarm, topic, peer_rx, peer_tx))
 }
 
-/// Start the libp2p node event loop and process control messages and swarm events.
+// ============================================================================
+// Event Loop
+// ============================================================================
+
+/// Starts the libp2p node event loop.
+///
+/// This is the main async function that drives the networking layer. It:
+///
+/// 1. Initializes the scheduler and spawns its message handler
+/// 2. Processes incoming swarm events (connections, messages, DHT)
+/// 3. Handles control commands from external components
+/// 4. Performs periodic DHT refresh via random walks
+/// 5. Updates the connected peers watch channel
+///
+/// # Arguments
+///
+/// * `swarm` - The configured libp2p swarm
+/// * `topic` - The gossipsub topic to publish scheduler messages on
+/// * `peer_tx` - Watch channel sender for connected peers list
+/// * `control_rx` - Receiver for control commands
+/// * `dht_refresh_interval_secs` - Interval in seconds for DHT random walks
+///
+/// # Spec Reference
+///
+/// - §3: MDHT Discovery - bootstrap on first connection, periodic random walks
+/// - §4: Gossipsub message handling
 pub async fn start_libp2p_node(
     mut swarm: Swarm<MyBehaviour>,
     topic: gossipsub::IdentTopic, // Main fabric topic
     peer_tx: watch::Sender<Vec<String>>,
     mut control_rx: mpsc::UnboundedReceiver<Libp2pControl>,
+    dht_refresh_interval_secs: u64,
 ) -> Result<()> {
+    // Periodic cleanup of stale connections
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(2));
 
+    // Periodic DHT refresh via random walks per §3 of spec
+    let mut dht_refresh_interval = tokio::time::interval(Duration::from_secs(dht_refresh_interval_secs));
+    // Don't tick immediately on startup; wait for connections first
+    dht_refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Track whether we've done initial DHT bootstrap
+    let mut dht_bootstrapped = false;
+
     // --- Scheduler Setup ---
+    // Create channels for scheduler input/output
     let (sched_input_tx, mut sched_input_rx) =
         mpsc::unbounded_channel::<(gossipsub::TopicHash, gossipsub::Message)>();
     let (sched_output_tx, mut sched_output_rx) = mpsc::unbounded_channel::<SchedulerCommand>();
@@ -292,7 +420,7 @@ pub async fn start_libp2p_node(
     // Also set legacy global for backward compatibility (first node wins)
     behaviour::SCHEDULER_INPUT_TX.set(sched_input_tx).ok();
 
-    // Spawn Scheduler
+    // Spawn Scheduler with keypair from this node
     let local_node_id = swarm.local_peer_id().to_string();
     let local_peer_id_bytes = swarm.local_peer_id().to_bytes();
     let scheduler_keypair = get_node_keypair_for_peer(Some(&local_peer_id_bytes))
@@ -304,6 +432,7 @@ pub async fn start_libp2p_node(
     let scheduler = std::sync::Arc::new(scheduler);
     let scheduler_for_messages = scheduler.clone();
 
+    // Spawn async task to handle incoming scheduler messages
     tokio::spawn(async move {
         while let Some((topic, msg)) = sched_input_rx.recv().await {
             scheduler_for_messages.handle_message(&topic, &msg).await;
@@ -311,18 +440,21 @@ pub async fn start_libp2p_node(
     });
     // -----------------------
 
+    // Main event loop
     loop {
         tokio::select! {
-            // Handle scheduler output (bids/leases to publish)
+            // Handle scheduler output (bids/tenders/awards to publish, workloads to deploy)
             Some(command) = sched_output_rx.recv() => {
                      match command {
                          SchedulerCommand::Publish { topic, payload } => {
+                             // Publish scheduler message to gossipsub
                              let topic = gossipsub::IdentTopic::new(topic);
                              if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, payload) {
                                  log::error!("Failed to publish scheduler message: {}", e);
                              }
                          }
                          SchedulerCommand::DeployWorkload { tender_id, manifest_id, manifest_json, replicas } => {
+                            // Deploy workload locally after winning tender
                             let apply_req = crate::messages::types::ApplyRequest {
                                 replicas,
                                 operation_id: format!("sched-deploy-{}", uuid::Uuid::new_v4()),
@@ -331,8 +463,7 @@ pub async fn start_libp2p_node(
                                 manifest_id: manifest_id.clone(),
                                 signature: Vec::new(),
                             };
-                             // We use an empty owner_pubkey for now as we trust the scheduler's decision
-                             // In a real scenario, we should pass the owner_pubkey from the Tender/Manifest
+                             // Empty owner_pubkey - we trust the scheduler's decision
                              let owner_pubkey = Vec::new();
 
                              match crate::scheduler::process_manifest_deployment(
@@ -342,6 +473,7 @@ pub async fn start_libp2p_node(
                                  &owner_pubkey,
                              ).await {
                                  Ok(workload_id) => {
+                                     // Emit Deployed event per §9.1
                                      scheduler.publish_event(
                                          &tender_id,
                                          EventType::Deployed,
@@ -349,6 +481,7 @@ pub async fn start_libp2p_node(
                                      );
                                  }
                                  Err(e) => {
+                                     // Emit Failed event per §9.1
                                      log::error!("Failed to deploy workload from scheduler: {}", e);
                                      scheduler.publish_event(
                                          &tender_id,
@@ -582,11 +715,13 @@ pub async fn start_libp2p_node(
                             .collect();
                         let _ = peer_tx.send(all_peers);
 
-                        // Bootstrap DHT after establishing connections to improve local test reliability
-                        let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
-                        if connected_peers.len() >= 2 {
-                            info!("DHT: Bootstrapping with {} connected peers", connected_peers.len());
-                            let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                        // Bootstrap DHT on first connection to start peer discovery
+                        if !dht_bootstrapped {
+                            let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
+                            info!("MDHT: Bootstrapping DHT with {} connected peer(s)", connected_peers.len());
+                            if swarm.behaviour_mut().kademlia.bootstrap().is_ok() {
+                                dht_bootstrapped = true;
+                            }
                         }
                     }
                     SwarmEvent::ConnectionClosed { peer_id, connection_id: _, endpoint: _, num_established, cause: _ } => {
@@ -619,12 +754,39 @@ pub async fn start_libp2p_node(
                 // Clean up timed-out manifest distribution requests
                 control::cleanup_timed_out_manifest_requests();
             }
-            /*_ = mesh_alive_interval.tick() => {
-                // Periodically publish a 'mesh-alive' message to the topic
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-                let mesh_alive_msg = format!("mesh-alive-{}-{}-{}", swarm.local_peer_id(), now);
-                let res = swarm.behaviour_mut().gossipsub.publish(topic.clone(), mesh_alive_msg.as_bytes());
-            }*/
+            _ = dht_refresh_interval.tick() => {
+                let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
+                
+                // Only perform DHT operations if we have at least one connected peer
+                if connected_peers.is_empty() {
+                    continue;
+                }
+
+                // Initial bootstrap if not done yet
+                if !dht_bootstrapped {
+                    info!("MDHT: Initiating DHT bootstrap with {} connected peers", connected_peers.len());
+                    if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+                        warn!("MDHT: Bootstrap failed: {:?}", e);
+                    } else {
+                        dht_bootstrapped = true;
+                    }
+                }
+
+                // Perform random walk for peer discovery
+                // Generate a random PeerId to search for, which triggers discovery of nearby peers
+                let random_peer_id = libp2p::PeerId::random();
+                debug!("MDHT: Starting random walk discovery (target: {})", random_peer_id);
+                swarm.behaviour_mut().kademlia.get_closest_peers(random_peer_id);
+
+                // Log current DHT state
+                let routing_table_size = swarm.behaviour_mut().kademlia.kbuckets()
+                    .fold(0usize, |acc, bucket| acc + bucket.num_entries());
+                debug!(
+                    "MDHT: Refresh complete - {} connected peers, {} DHT routing entries",
+                    connected_peers.len(),
+                    routing_table_size
+                );
+            }
         }
     }
 

@@ -1,3 +1,24 @@
+//! # Message Signature Module
+//!
+//! This module provides cryptographic signing and verification for all scheduler
+//! messages (Tender, Bid, Award, SchedulerEvent) and API messages (ApplyRequest,
+//! ApplyResponse).
+//!
+//! ## Signature Scheme
+//!
+//! All signatures use Ed25519 keys (from libp2p identity) with SHA-256 digest:
+//!
+//! 1. A "view" struct is created containing all fields to be signed (excluding signature)
+//! 2. The view is serialized using deterministic bincode encoding
+//! 3. SHA-256 hash is computed over the serialized view
+//! 4. The 32-byte digest is signed using the Ed25519 private key
+//!
+//! ## Spec Reference
+//!
+//! - §7: All scheduler messages MUST be signed using Ed25519
+//! - §7.1: Signature covers all fields except the signature field itself
+//! - §7.2: Replay protection via timestamp + nonce combination
+
 use crate::messages::types::{ApplyRequest, ApplyResponse, Award, Bid, SchedulerEvent, Tender};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -7,17 +28,42 @@ use log::{debug, warn};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+// ============================================================================
+// Serialization Helpers
+// ============================================================================
+
+/// Serializes a value using deterministic bincode configuration.
+///
+/// Uses little-endian byte order and fixed integer encoding to ensure
+/// consistent serialization across platforms and bincode versions.
 fn serialize_view<T: Serialize>(value: &T) -> anyhow::Result<Vec<u8>> {
-    // Use an explicit, deterministic bincode configuration to avoid platform or
-    // version-dependent encoding differences.
     Ok(bincode::DefaultOptions::new()
         .with_little_endian()
         .with_fixint_encoding()
         .serialize(value)?)
 }
 
+// ============================================================================
+// Signature Macro
+// ============================================================================
+
+/// Generates sign and verify functions for a message type.
+///
+/// This macro creates two functions:
+/// - `sign_$name`: Signs a mutable message, storing the signature in-place
+/// - `verify_sign_$name`: Verifies a message's signature against a public key
+///
+/// The signing process:
+/// 1. Builds a view struct from the message (all fields except signature)
+/// 2. Serializes the view using deterministic bincode
+/// 3. Computes SHA-256 digest of the serialized view
+/// 4. Signs the 32-byte digest using Ed25519
+/// 5. Stores the signature in the message's `signature` field
 macro_rules! define_sign_verify {
     ($name:ident, $typ:ty, $view:ty, $builder:expr) => {
+        /// Signs the message using the provided keypair.
+        ///
+        /// The signature is stored in the message's `signature` field.
         pub fn $name(message: &mut $typ, keypair: &Keypair) -> anyhow::Result<()> {
             let view: $view = $builder(message);
             let view_bytes = serialize_view(&view).map_err(|err| {
@@ -52,6 +98,9 @@ macro_rules! define_sign_verify {
         }
 
         paste::paste! {
+            /// Verifies the message's signature against the provided public key.
+            ///
+            /// Returns `true` if the signature is valid, `false` otherwise.
             pub fn [<verify_ $name>](message: &$typ, public_key: &PublicKey) -> bool {
                 if message.signature.is_empty() {
                     let view: $view = $builder(message);
@@ -100,6 +149,13 @@ macro_rules! define_sign_verify {
     };
 }
 
+// ============================================================================
+// View Structs
+// ============================================================================
+
+/// Signing view for Tender messages.
+///
+/// Contains all fields that are signed (excludes signature).
 #[derive(Serialize, Debug)]
 struct TenderView {
     id: String,
@@ -109,6 +165,7 @@ struct TenderView {
     nonce: u64,
 }
 
+/// Signing view for Bid messages.
 #[derive(Serialize, Debug)]
 struct BidView {
     tender_id: String,
@@ -120,6 +177,7 @@ struct BidView {
     nonce: u64,
 }
 
+/// Signing view for SchedulerEvent messages.
 #[derive(Serialize, Debug)]
 struct SchedulerEventView {
     tender_id: String,
@@ -130,6 +188,7 @@ struct SchedulerEventView {
     nonce: u64,
 }
 
+/// Signing view for Award messages.
 #[derive(Serialize, Debug)]
 struct AwardView {
     tender_id: String,
@@ -139,6 +198,7 @@ struct AwardView {
     nonce: u64,
 }
 
+/// Signing view for ApplyRequest messages.
 #[derive(Serialize, Debug)]
 struct ApplyRequestView {
     replicas: u32,
@@ -148,12 +208,17 @@ struct ApplyRequestView {
     manifest_id: String,
 }
 
+/// Signing view for ApplyResponse messages.
 #[derive(Serialize, Debug)]
 struct ApplyResponseView {
     ok: bool,
     operation_id: String,
     message: String,
 }
+
+// ============================================================================
+// Sign/Verify Function Definitions
+// ============================================================================
 
 define_sign_verify!(
     sign_tender,
@@ -235,6 +300,10 @@ define_sign_verify!(
         message: r.message.clone(),
     })
 );
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {

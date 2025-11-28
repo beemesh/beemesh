@@ -102,10 +102,9 @@ use crate::runtimes::{
 };
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
-use once_cell::sync::Lazy;
 use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{LazyLock, RwLock};
 
 /// Podman runtime engine
 pub struct PodmanEngine {
@@ -116,7 +115,7 @@ const LOCAL_PEER_LABEL_KEY: &str = "beemesh.local_peer_id";
 const MANIFEST_ID_LABEL_KEY: &str = "beemesh.manifest_id";
 const WORKLOAD_ID_LABEL_KEY: &str = "beemesh.workload_id";
 
-static PODMAN_SOCKET_OVERRIDE: Lazy<RwLock<Option<String>>> = Lazy::new(|| RwLock::new(None));
+static PODMAN_SOCKET_OVERRIDE: LazyLock<RwLock<Option<String>>> = LazyLock::new(|| RwLock::new(None));
 
 impl PodmanEngine {
     /// Create a new Podman engine instance

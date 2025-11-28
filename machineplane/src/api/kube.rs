@@ -20,7 +20,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
-use ulid::Ulid;
 use uuid::Uuid;
 
 const DEPLOYMENT_KIND: &str = "Deployment";
@@ -248,7 +247,7 @@ async fn publish_tender(
         .as_millis() as u64;
 
     let manifest_digest = machine::compute_manifest_id_from_content(manifest_str.as_bytes());
-    let tender_id = Ulid::new().to_string();
+    let tender_id = Uuid::new_v4().to_string();
     register_local_manifest(&tender_id, manifest_str);
     crate::scheduler::record_tender_manifest_id(&tender_id, manifest_id);
 

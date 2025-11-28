@@ -180,13 +180,6 @@ pub struct CandidateNode {
     pub public_key: String,
 }
 
-/// Signed node identity record stored in the DHT.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NodeIdentityRecord {
-    pub peer_id: String,
-    pub signature: Vec<u8>,
-}
-
 /// Response with list of candidate nodes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CandidatesResponse {
@@ -199,25 +192,6 @@ pub struct CandidatesResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodesResponse {
     pub peers: Vec<String>,
-}
-
-// ============================================================================
-// Assignment Messages
-// ============================================================================
-
-/// Request to assign a tender (schema not in .fbs files, inferred from generated code)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AssignRequest {
-    pub tender_id: String,
-}
-
-/// Response to assignment request
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AssignResponse {
-    pub ok: bool,
-    pub tender_id: String,
-    pub assigned_peers: Vec<String>,
-    pub per_peer_results_json: String,
 }
 
 // ============================================================================
