@@ -893,17 +893,7 @@ pub struct ServiceRecord {
 
 ### 8.1 Machineplane REST API
 
-#### Core Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/version` | GET | API version info |
-| `/apis` | GET | API group list |
-| `/health` | GET | Health check |
-| `/api/v1/pubkey` | GET | Get node public key |
-| `/nodes` | GET | List cluster nodes |
-
-#### Kubernetes-Compatible API (Stateless)
+#### Kubernetes API
 
 ```mermaid
 classDiagram
@@ -1042,6 +1032,15 @@ classDiagram
     PersistentVolumeClaim --> PersistentVolume : binds
 ```
 
+#### Core Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/version` | GET | API version info |
+| `/apis` | GET | API group list |
+| `/health` | GET | Health check |
+| `/api/v1/pubkey` | GET | Get node public key |
+| `/nodes` | GET | List cluster nodes |
 
 The K8s API is **stateless by design**: all read operations derive state from the local Podman runtime,
 and all write operations publish tenders via Gossipsub (fire-and-forget).
