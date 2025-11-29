@@ -39,6 +39,7 @@ async fn create_response_with_fallback(
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+// Stateless K8s API - all state derived from Podman runtime
 pub mod kube;
 
 async fn get_nodes(
@@ -64,11 +65,17 @@ async fn get_public_key(State(_state): State<RestState>) -> String {
     "ERROR: No keypair available".to_string()
 }
 
+/// REST API state - stateless by design
+/// 
+/// The machineplane is ephemeral and does not persist any K8s resource state.
+/// All K8s API responses are derived from Podman runtime state.
+/// The tender_tracker is for transient operation tracking only (not fabric-wide state).
 #[derive(Clone)]
 pub struct RestState {
     pub peer_rx: watch::Receiver<Vec<String>>,
     pub control_tx: mpsc::UnboundedSender<crate::network::control::Libp2pControl>,
-    tender_store: Arc<RwLock<HashMap<String, TenderRecord>>>,
+    /// Transient local tender tracking for ongoing operations (not persisted)
+    pub tender_tracker: Arc<RwLock<HashMap<String, TenderRecord>>>,
     /// Local peer ID for this node (used for keypair lookup in multi-node scenarios)
     pub local_peer_id_bytes: Vec<u8>,
 }
@@ -78,7 +85,8 @@ pub struct RestState {
 static DECRYPTED_MANIFESTS: LazyLock<tokio::sync::RwLock<HashMap<String, serde_json::Value>>> =
     LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
-// Global mapping of operation_id -> manifest_cid to ensure consistent manifest ID usage across REST API and apply processing
+// Transient mapping of operation_id -> manifest_cid for consistent manifest ID usage.
+// This is ephemeral tracking, not persisted state.
 static OPERATION_MANIFEST_MAPPING: LazyLock<tokio::sync::RwLock<HashMap<String, String>>> =
     LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
@@ -130,7 +138,7 @@ pub fn build_router(
     let state = RestState {
         peer_rx,
         control_tx,
-        tender_store: Arc::new(RwLock::new(HashMap::new())),
+        tender_tracker: Arc::new(RwLock::new(HashMap::new())),
         local_peer_id_bytes,
     };
     let kube_routes = Router::new()
@@ -344,24 +352,24 @@ pub async fn create_tender(
         kube: None,
     };
     {
-        let mut store = state.tender_store.write().await;
+        let mut tracker = state.tender_tracker.write().await;
         log::info!(
-            "create_tender: storing tender with tender_id='{}' in tender_store",
+            "create_tender: tracking tender with tender_id='{}'",
             tender_id
         );
         log::info!(
-            "create_tender: tender_store had {} tenders before insert",
-            store.len()
+            "create_tender: tender_tracker had {} tenders before insert",
+            tracker.len()
         );
-        store.insert(tender_id.clone(), rec);
+        tracker.insert(tender_id.clone(), rec);
         log::info!(
-            "create_tender: tender_store now has {} tenders after insert",
-            store.len()
+            "create_tender: tender_tracker now has {} tenders after insert",
+            tracker.len()
         );
         log::info!(
-            "create_tender: verifying tender_id '{}' exists in store: {}",
+            "create_tender: verifying tender_id '{}' exists in tracker: {}",
             tender_id,
-            store.contains_key(&tender_id)
+            tracker.contains_key(&tender_id)
         );
     }
 
@@ -678,12 +686,12 @@ async fn debug_peers(State(state): State<RestState>) -> axum::Json<serde_json::V
     }))
 }
 
-// Debug: list all tenders with their manifest CIDs
+// Debug: list all tracked tenders with their manifest CIDs
 async fn debug_all_tenders(State(state): State<RestState>) -> axum::Json<serde_json::Value> {
-    let store = state.tender_store.read().await;
+    let tracker = state.tender_tracker.read().await;
     let mut tenders = serde_json::Map::new();
 
-    for (tender_id, record) in store.iter() {
+    for (tender_id, record) in tracker.iter() {
         tenders.insert(tender_id.clone(), serde_json::json!({
             "manifest_cid": record.manifest_cid,
             "created_at": record.created_at.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
@@ -703,7 +711,7 @@ async fn get_tender_manifest_id(
     State(state): State<RestState>,
     _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    let maybe = { state.tender_store.read().await.get(&tender_id).cloned() };
+    let maybe = { state.tender_tracker.read().await.get(&tender_id).cloned() };
     let tender = match maybe {
         Some(t) => t,
         None => {
@@ -764,7 +772,7 @@ pub async fn get_tender_status(
     State(state): State<RestState>,
     _headers: HeaderMap,
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
-    let maybe = { state.tender_store.read().await.get(&tender_id).cloned() };
+    let maybe = { state.tender_tracker.read().await.get(&tender_id).cloned() };
     if let Some(r) = maybe {
         let assigned = r.assigned_peers.unwrap_or_default();
 

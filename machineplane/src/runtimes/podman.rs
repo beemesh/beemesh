@@ -114,6 +114,10 @@ pub struct PodmanEngine {
 const LOCAL_PEER_LABEL_KEY: &str = "beemesh.local_peer_id";
 const MANIFEST_ID_LABEL_KEY: &str = "beemesh.manifest_id";
 const WORKLOAD_ID_LABEL_KEY: &str = "beemesh.workload_id";
+/// K8s-compatible namespace label for filtering pods by namespace
+const NAMESPACE_LABEL_KEY: &str = "io.kubernetes.pod.namespace";
+/// K8s-compatible app name label for workload identification
+const APP_NAME_LABEL_KEY: &str = "app.kubernetes.io/name";
 
 static PODMAN_SOCKET_OVERRIDE: LazyLock<RwLock<Option<String>>> = LazyLock::new(|| RwLock::new(None));
 
@@ -147,6 +151,12 @@ impl PodmanEngine {
             .read()
             .expect("podman socket override rwlock poisoned")
             .clone()
+    }
+
+    /// Get the currently configured Podman socket path.
+    /// Returns the socket URL (with unix:// prefix) if configured.
+    pub fn get_socket() -> Option<String> {
+        Self::detect_podman_socket()
     }
 
     pub fn normalize_socket(value: &str) -> String {
@@ -247,6 +257,22 @@ impl PodmanEngine {
         // Use the workload_id as the pod name (already includes {manifest_id}-{entropy})
         let pod_name = workload_id;
 
+        // Extract namespace from manifest metadata (default to "default")
+        let namespace = doc
+            .get("metadata")
+            .and_then(|m| m.get("namespace"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("default")
+            .to_string();
+
+        // Extract app name from manifest metadata (use manifest name as fallback)
+        let app_name = doc
+            .get("metadata")
+            .and_then(|m| m.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or(manifest_id)
+            .to_string();
+
         // Update metadata name to use our generated pod name
         if let Some(metadata) = doc.get_mut("metadata") {
             if let Some(metadata_map) = metadata.as_mapping_mut() {
@@ -256,6 +282,8 @@ impl PodmanEngine {
                 );
                 Self::insert_workload_label(metadata_map, workload_id);
                 Self::insert_manifest_label(metadata_map, manifest_id);
+                Self::insert_namespace_label(metadata_map, &namespace);
+                Self::insert_app_name_label(metadata_map, &app_name);
                 if let Some(peer_id) = local_peer_id {
                     Self::insert_peer_label(metadata_map, peer_id);
                 }
@@ -273,6 +301,8 @@ impl PodmanEngine {
                         );
                         Self::insert_workload_label(template_metadata_map, workload_id);
                         Self::insert_manifest_label(template_metadata_map, manifest_id);
+                        Self::insert_namespace_label(template_metadata_map, &namespace);
+                        Self::insert_app_name_label(template_metadata_map, &app_name);
                         if let Some(peer_id) = local_peer_id {
                             Self::insert_peer_label(template_metadata_map, peer_id);
                         }
@@ -322,6 +352,14 @@ impl PodmanEngine {
 
     fn insert_workload_label(target: &mut Mapping, workload_id: &str) {
         Self::insert_label(target, WORKLOAD_ID_LABEL_KEY, workload_id);
+    }
+
+    fn insert_namespace_label(target: &mut Mapping, namespace: &str) {
+        Self::insert_label(target, NAMESPACE_LABEL_KEY, namespace);
+    }
+
+    fn insert_app_name_label(target: &mut Mapping, app_name: &str) {
+        Self::insert_label(target, APP_NAME_LABEL_KEY, app_name);
     }
 
     fn normalize_workload_id_from_pod_name(pod_name: &str) -> String {

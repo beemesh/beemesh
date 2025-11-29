@@ -36,10 +36,14 @@ Beemesh is a decentralized, scale-out workload orchestration fabric that elimina
 
 ### 1.2 Design Principles
 
-1. **Statelessness**: Machineplane persists nothing; fabric state lives in workloads
+1. **Statelessness**: Machineplane persists nothing; all state is derived from:
+   - **Runtime state**: Podman provides the source of truth for running workloads
+   - **Ephemeral tracking**: `tender_tracker` holds transient operation state (not persisted)
+   - **K8s API**: All responses are reconstructed from Podman pod labels
 2. **Separation of Concerns**: Machine and workload identities are cryptographically disjoint
 3. **Consumer-Scoped Consistency**: Each workload manages its own consensus (Raft for stateful)
 4. **Ephemeral Scheduling**: Tender→Bid→Award protocol without global state
+5. **Fire-and-Forget Mutations**: CREATE/DELETE operations publish tenders and return immediately
 
 ### 1.3 Technology Stack
 
@@ -59,42 +63,41 @@ reqwest = "0.11"       # HTTP client
 ### 2.1 High-Level Components
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              BEEMESH FABRIC                                  │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                         MACHINEPLANE                                 │    │
-│  │                                                                      │    │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │    │
-│  │  │  Machine A   │  │  Machine B   │  │  Machine C   │              │    │
-│  │  │  (Daemon)    │◄─┤  (Daemon)    │◄─┤  (Daemon)    │              │    │
-│  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │    │
-│  │         │                 │                 │                       │    │
-│  │         └────────────┬────┴────────────┬────┘                       │    │
-│  │                      │                 │                            │    │
-│  │               ┌──────▼──────┐   ┌──────▼──────┐                     │    │
-│  │               │    MDHT     │   │  Gossipsub  │                     │    │
-│  │               │ (Kademlia)  │   │ (Pub/Sub)   │                     │    │
-│  │               └─────────────┘   └─────────────┘                     │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                          WORKPLANE                                   │    │
-│  │                                                                      │    │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │    │
-│  │  │  Workload A  │  │  Workload B  │  │  Workload C  │              │    │
-│  │  │  (Agent)     │◄─┤  (Agent)     │◄─┤  (Agent)     │              │    │
-│  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │    │
-│  │         │                 │                 │                       │    │
-│  │         └────────────┬────┴────────────┬────┘                       │    │
-│  │                      │                 │                            │    │
-│  │               ┌──────▼──────┐   ┌──────▼──────┐                     │    │
-│  │               │    WDHT     │   │  RPC Streams│                     │    │
-│  │               │ (Kademlia)  │   │ (Req/Resp)  │                     │    │
-│  │               └─────────────┘   └─────────────┘                     │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                              BEEMESH FABRIC                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                         MACHINEPLANE                                │   │
+│  │                                                                     │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │   │
+│  │  │  Machine A   │  │  Machine B   │  │  Machine C   │               │   │
+│  │  │  (Daemon)    │◄─┤  (Daemon)    │◄─┤  (Daemon)    │               │   │
+│  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │   │
+│  │         │                 │                 │                       │   │
+│  │         └────────────┬────┴────────────┬────┘                       │   │
+│  │                      │                 │                            │   │
+│  │               ┌──────▼──────┐   ┌──────▼──────┐                     │   │
+│  │               │    MDHT     │   │  Gossipsub  │                     │   │
+│  │               │ (Kademlia)  │   │ (Pub/Sub)   │                     │   │
+│  │               └─────────────┘   └─────────────┘                     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                          WORKPLANE                                  │   │
+│  │                                                                     │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │   │
+│  │  │  Workload A  │  │  Workload B  │  │  Workload C  │               │   │
+│  │  │  (Agent)     │◄─┤  (Agent)     │◄─┤  (Agent)     │               │   │
+│  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │   │
+│  │         │                 │                 │                       │   │
+│  │         └────────────┬────┴────────────┬────┘                       │   │
+│  │                      │                 │                            │   │
+│  │               ┌──────▼──────┐   ┌──────▼──────┐                     │   │
+│  │               │    WDHT     │   │  RPC Streams│                     │   │
+│  │               │ (Kademlia)  │   │ (Req/Resp)  │                     │   │
+│  │               └─────────────┘   └─────────────┘                     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 Module Structure
@@ -107,8 +110,8 @@ beemesh/
 │   │   ├── main.rs         # Binary entry point
 │   │   ├── scheduler.rs    # Tender/Bid/Award scheduling logic
 │   │   ├── api/            # REST API (Kubernetes-compatible)
-│   │   │   ├── mod.rs      # Router, tender/apply handlers
-│   │   │   └── kube.rs     # Kubernetes API compatibility
+│   │   │   ├── mod.rs      # Router, tender/apply handlers, tender_tracker
+│   │   │   └── kube.rs     # Stateless K8s API (derives state from Podman)
 │   │   ├── messages/       # Wire protocol types
 │   │   │   ├── types.rs    # SchedulerMessage, Tender, Bid, Award, Event
 │   │   │   ├── signatures.rs # Ed25519 signing/verification
@@ -116,10 +119,12 @@ beemesh/
 │   │   ├── network/        # libp2p networking
 │   │   │   ├── mod.rs      # Swarm setup, event loop
 │   │   │   ├── behaviour.rs # Gossipsub + Kademlia + Request/Response
-│   │   │   └── control.rs  # Control channel for external commands
+│   │   │   ├── control.rs  # Control channel for external commands
+│   │   │   └── dht_manager.rs # DHT operations and workload announcements
 │   │   └── runtimes/       # Container runtime adapters
 │   │       ├── mod.rs      # RuntimeEngine trait, registry
-│   │       └── podman.rs   # Podman implementation
+│   │       ├── podman.rs   # Podman implementation
+│   │       └── podman_api.rs # Podman REST API client
 │   └── tests/              # Integration tests
 │
 └── workplane/
@@ -373,6 +378,73 @@ impl RuntimeEngine for PodmanEngine {
     }
 }
 ```
+
+#### Pod Labels Injected During Deployment
+
+When deploying a manifest, Beemesh injects the following labels for tracking and K8s API compatibility:
+
+| Label | Description |
+|-------|-------------|
+| `beemesh.workload_id` | Unique workload identifier (manifest_id + entropy) |
+| `beemesh.manifest_id` | Manifest identifier for grouping replicas |
+| `beemesh.local_peer_id` | Peer ID of the node running this pod |
+| `io.kubernetes.pod.namespace` | K8s namespace (extracted from manifest, defaults to "default") |
+| `app.kubernetes.io/name` | App name (extracted from manifest metadata.name) |
+
+### 3.6 Kubernetes API (Stateless)
+
+The K8s API module (`kube.rs`) provides kubectl-compatible endpoints while maintaining Beemesh's
+stateless architecture. **No K8s resource state is stored in memory**—all responses are derived
+from the Podman runtime.
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    kubectl / K8s Client                          │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Machineplane REST API                         │
+│              /apis/apps/v1/namespaces/{ns}/deployments           │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┴───────────────┐
+              │                               │
+         GET/LIST                       POST/DELETE
+              │                               │
+              ▼                               ▼
+┌─────────────────────────┐     ┌─────────────────────────┐
+│   Podman Runtime        │     │   Gossipsub Tender      │
+│   (local pods only)     │     │   (fire-and-forget)     │
+└─────────────────────────┘     └─────────────────────────┘
+```
+
+#### Workload Aggregation
+
+Deployments and StatefulSets are reconstructed by aggregating pods with matching labels:
+
+```rust
+// Pods with these labels are grouped into workloads:
+// - app.kubernetes.io/name → workload name
+// - io.kubernetes.pod.namespace → namespace filtering
+// - beemesh.io/workload-kind → "Deployment" or "StatefulSet"
+
+fn aggregate_workloads(pods: &[PodListEntry], namespace: &str, kind: Option<&str>) -> Vec<WorkloadInfo> {
+    // Group pods by (namespace, kind, app_name)
+    // Count replicas and ready_replicas
+    // Return K8s-formatted responses
+}
+```
+
+#### Limitations
+
+| Limitation | Reason |
+|------------|--------|
+| Local node only | No mesh-wide aggregation; each node shows only its own pods |
+| No UPDATE/PATCH | Only CREATE and DELETE supported (republish for updates) |
+| Best-effort status | Status reflects Podman state, may have propagation delay |
 
 ---
 
@@ -821,27 +893,200 @@ pub struct ServiceRecord {
 
 ### 8.1 Machineplane REST API
 
+#### Core Endpoints
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/version` | GET | API version info |
 | `/apis` | GET | API group list |
-| `/api/...` | Various | Core Kubernetes API routes |
-| `/apis/apps/v1/...` | Various | Apps v1 API routes (deployments) |
 | `/health` | GET | Health check |
 | `/api/v1/pubkey` | GET | Get node public key |
-| `/api/v1/signing_pubkey` | GET | Get signing public key |
+| `/nodes` | GET | List cluster nodes |
+
+#### Kubernetes-Compatible API (Stateless)
+
+```mermaid
+classDiagram
+
+    %% Core Concepts
+    class Cluster {
+        +API Server
+        +etcd
+        +Controller Manager
+        +Scheduler
+    }
+
+    class Namespace {
+        +Logical isolation
+    }
+
+    class Node {
+        +Kubelet
+        +Kube-proxy
+        +Pods
+    }
+
+    class Pod {
+        +Containers
+        +Volumes
+        +Networking
+    }
+
+    class Container {
+        +Image
+        +Environment
+        +Ports
+    }
+
+    %% Workloads
+    class Deployment {
+        +ReplicaSets
+        +Scaling
+        +Rolling Updates
+    }
+
+    class ReplicaSet {
+        +Ensures Pod count
+    }
+
+    class StatefulSet {
+        +Stable network identity
+        +Persistent volumes
+    }
+
+    class DaemonSet {
+        +One Pod per Node
+    }
+
+    class Job {
+        +Run to completion
+    }
+
+    class CronJob {
+        +Scheduled jobs
+    }
+
+    %% Services & Networking
+    class Service {
+        +Stable DNS/ClusterIP
+        +Load balancing
+    }
+
+    class Ingress {
+        +HTTP routing
+    }
+
+    %% Config & Storage
+    class ConfigMap {
+        +Key-value configuration
+    }
+
+    class Secret {
+        +Sensitive data
+    }
+
+    class Volume {
+        +Ephemeral or Persistent
+    }
+
+    class PersistentVolume {
+        +Cluster-wide storage
+    }
+
+    class PersistentVolumeClaim {
+        +Pod storage request
+    }
+
+    %% Relationships
+
+    %% Cluster & Namespaces
+    Cluster --> Namespace : manages
+    Cluster --> Node : manages
+    Cluster --> PersistentVolume : provides
+
+    %% Namespaced resources
+    Namespace --> Pod : contains
+    Namespace --> Service : contains
+    Namespace --> Deployment : contains
+    Namespace --> ReplicaSet : contains
+    Namespace --> StatefulSet : contains
+    Namespace --> DaemonSet : contains
+    Namespace --> Job : contains
+    Namespace --> CronJob : contains
+    Namespace --> Ingress : contains
+    Namespace --> ConfigMap : contains
+    Namespace --> Secret : contains
+    Namespace --> PersistentVolumeClaim : contains
+
+    %% Workload relationships
+    Node --> Pod : runs
+    Deployment --> ReplicaSet : controls
+    ReplicaSet --> Pod : manages
+    StatefulSet --> Pod : manages
+    DaemonSet --> Pod : schedules
+    Job --> Pod : runs
+    CronJob --> Job : schedules
+
+    %% Networking
+    Ingress --> Service : routes to
+    Service --> Pod : targets
+
+    %% Pod internals & config
+    Pod --> Container : contains
+    Pod --> ConfigMap : consumes
+    Pod --> Secret : consumes
+    Pod --> Volume : mounts
+
+    %% Storage chain
+    Volume --> PersistentVolumeClaim : references
+    PersistentVolumeClaim --> PersistentVolume : binds
+```
+
+
+The K8s API is **stateless by design**: all read operations derive state from the local Podman runtime,
+and all write operations publish tenders via Gossipsub (fire-and-forget).
+
+| Endpoint | Method | Description | Source |
+|----------|--------|-------------|--------|
+| `/api/v1/namespaces/{ns}/pods` | GET | List pods | Podman runtime |
+| `/api/v1/namespaces/{ns}/pods/{name}` | GET | Get pod | Podman runtime |
+| `/api/v1/namespaces/{ns}/pods/{name}/log` | GET | Get pod logs | Podman runtime |
+| `/apis/apps/v1/namespaces/{ns}/deployments` | GET | List deployments | Podman pods (aggregated) |
+| `/apis/apps/v1/namespaces/{ns}/deployments/{name}` | GET | Get deployment | Podman pods (aggregated) |
+| `/apis/apps/v1/namespaces/{ns}/deployments` | POST | Create deployment | Gossipsub tender |
+| `/apis/apps/v1/namespaces/{ns}/deployments/{name}` | DELETE | Delete deployment | Gossipsub tender |
+| `/apis/apps/v1/namespaces/{ns}/statefulsets` | GET | List statefulsets | Podman pods (aggregated) |
+| `/apis/apps/v1/namespaces/{ns}/statefulsets/{name}` | GET | Get statefulset | Podman pods (aggregated) |
+| `/apis/apps/v1/namespaces/{ns}/statefulsets` | POST | Create statefulset | Gossipsub tender |
+| `/apis/apps/v1/namespaces/{ns}/statefulsets/{name}` | DELETE | Delete statefulset | Gossipsub tender |
+| `/apis/apps/v1/namespaces/{ns}/replicasets` | GET | List replicasets | Derived from deployments |
+| `/apis/apps/v1/namespaces/{ns}/replicasets/{name}` | GET | Get replicaset | Derived from deployments |
+
+**Note**: K8s API responses show only workloads running on the **local node**. Mesh-wide aggregation
+requires querying multiple nodes or using DHT-based discovery.
+
+#### Tender Management
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
 | `/tenders` | POST | Create tender |
 | `/tenders/{tender_id}` | GET | Get tender status |
 | `/tenders/{tender_id}` | DELETE | Cancel tender |
 | `/tenders/{tender_id}/candidates` | POST | Get scheduling candidates |
+| `/tenders/{tender_id}/manifest_id` | GET | Get manifest ID for tender |
 | `/apply_direct/{peer_id}` | POST | Apply manifest to specific peer |
-| `/nodes` | GET | List cluster nodes |
+
+#### Debug Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
 | `/debug/peers` | GET | List connected peers |
-| `/debug/tenders` | GET | List all tenders |
+| `/debug/tenders` | GET | List tracked tenders |
 | `/debug/local_peer_id` | GET | Get local peer ID |
 | `/debug/dht/peers` | GET | List DHT peers |
 | `/debug/dht/active_announces` | GET | List active DHT announcements |
 | `/debug/decrypted_manifests` | GET | List decrypted manifests |
+| `/debug/workloads_by_peer/{peer_id}` | GET | List workloads for peer |
 
 ### 8.2 Workplane RPC Methods
 
