@@ -405,14 +405,15 @@ async fn create_deployment(
     }
     
     // Fire-and-forget: publish tender and return accepted
-    publish_workload_tender(&state, &manifest).await?;
+    let manifest_id = publish_workload_tender(&state, &manifest).await?;
     
-    info!("Deployment {}/{} tender published", namespace, name);
+    info!("Deployment {}/{} tender published (manifest_id={})", namespace, name, manifest_id);
     
     // Return a placeholder response - actual state will appear when pod starts
     Ok(Json(json!({
         "apiVersion": APPS_V1,
         "kind": DEPLOYMENT_KIND,
+        "manifest_id": manifest_id,
         "metadata": {
             "name": name,
             "namespace": namespace,
@@ -441,8 +442,8 @@ async fn delete_deployment(
     // Build a delete manifest (replicas: 0 with delete annotation)
     let delete_manifest = build_delete_manifest(&namespace, &name, DEPLOYMENT_KIND, APPS_V1);
     
-    // Fire-and-forget: publish delete tender
-    publish_workload_tender(&state, &delete_manifest).await?;
+    // Fire-and-forget: publish delete tender (ignore manifest_id)
+    let _ = publish_workload_tender(&state, &delete_manifest).await?;
     
     info!("Deployment {}/{} delete tender published", namespace, name);
     
@@ -554,13 +555,14 @@ async fn create_statefulset(
     }
     
     // Fire-and-forget: publish tender
-    publish_workload_tender(&state, &manifest).await?;
+    let manifest_id = publish_workload_tender(&state, &manifest).await?;
     
-    info!("StatefulSet {}/{} tender published", namespace, name);
+    info!("StatefulSet {}/{} tender published (manifest_id={})", namespace, name, manifest_id);
     
     Ok(Json(json!({
         "apiVersion": APPS_V1,
         "kind": STATEFULSET_KIND,
+        "manifest_id": manifest_id,
         "metadata": {
             "name": name,
             "namespace": namespace,
@@ -583,7 +585,8 @@ async fn delete_statefulset(
 ) -> Result<Json<Value>, StatusCode> {
     let delete_manifest = build_delete_manifest(&namespace, &name, STATEFULSET_KIND, APPS_V1);
     
-    publish_workload_tender(&state, &delete_manifest).await?;
+    // Fire-and-forget: publish delete tender (ignore manifest_id)
+    let _ = publish_workload_tender(&state, &delete_manifest).await?;
     
     info!("StatefulSet {}/{} delete tender published", namespace, name);
     
@@ -931,7 +934,8 @@ fn build_delete_manifest(namespace: &str, name: &str, kind: &str, api_version: &
     })
 }
 
-async fn publish_workload_tender(state: &RestState, manifest: &Value) -> Result<(), StatusCode> {
+/// Publish a workload tender and return the manifest_id (digest).
+async fn publish_workload_tender(state: &RestState, manifest: &Value) -> Result<String, StatusCode> {
     let manifest_str = serde_json::to_string(manifest)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
@@ -942,6 +946,7 @@ async fn publish_workload_tender(state: &RestState, manifest: &Value) -> Result<
 
     let manifest_digest = machine::compute_manifest_id_from_content(manifest_str.as_bytes());
     let tender_id = Uuid::new_v4().to_string();
+    let manifest_id = manifest_digest.clone();
     
     // Register manifest locally for when we win the tender
     register_local_manifest(&tender_id, &manifest_str);
@@ -983,7 +988,7 @@ async fn publish_workload_tender(state: &RestState, manifest: &Value) -> Result<
 
     // Wait briefly for publication confirmation
     match timeout(Duration::from_secs(5), reply_rx.recv()).await {
-        Ok(Some(Ok(_))) => Ok(()),
+        Ok(Some(Ok(_))) => Ok(manifest_id),
         Ok(Some(Err(e))) => {
             warn!("Tender publication failed: {}", e);
             Err(StatusCode::BAD_GATEWAY)
