@@ -257,9 +257,6 @@ fn conflict_resolution_same_version_and_timestamp_peer_id_tiebreaker() {
 // Timestamp Freshness Tests (Clock Skew Protection)
 // ============================================================================
 
-/// Maximum allowed clock skew in milliseconds (±30 seconds per spec).
-const MAX_CLOCK_SKEW_MS: i64 = 30_000;
-
 /// Verifies that records with current timestamps are accepted.
 #[test]
 fn freshness_accepts_current_timestamp() {
