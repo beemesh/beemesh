@@ -70,7 +70,7 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::discovery::{self, ServiceRecord};
-use crate::streams::{RPCRequest, RPCResponse};
+use crate::rpc::{RPCRequest, RPCResponse};
 
 // ============================================================================
 // Network Behaviour
@@ -669,7 +669,7 @@ async fn network_event_loop(
                         match message {
                             // Incoming RPC request - invoke registered handler
                             request_response::Message::Request { request, channel, .. } => {
-                                let response = crate::streams::handle_request(&peer.to_string(), request).await;
+                                let response = crate::rpc::handle_request(&peer.to_string(), request).await;
                                 let _ = swarm.behaviour_mut().request_response.send_response(channel, response);
                             }
                             // Outbound RPC response received

@@ -1,7 +1,8 @@
-//! Tests for CLI environment variable parsing.
+//! CLI Tests
 //!
-//! This module verifies that the CLI correctly picks up configuration from environment variables,
-//! specifically `CONTAINER_HOST`.
+//! This module tests CLI argument parsing and environment variable handling.
+//! It verifies that the CLI correctly picks up configuration from environment
+//! variables like `CONTAINER_HOST`.
 
 use clap::Parser;
 use machineplane::Cli;
@@ -38,7 +39,7 @@ impl Drop for EnvGuard {
 
 /// Verifies that `CONTAINER_HOST` env var sets the `podman_socket` CLI arg.
 #[test]
-fn cli_pulls_podman_socket_from_env() {
+fn container_host_env_sets_podman_socket() {
     let _guard = EnvGuard::set("CONTAINER_HOST", "unix:///tmp/env-podman.sock");
 
     let cli = Cli::parse_from(["beemesh-machineplane"]);

@@ -111,7 +111,7 @@ pub mod discovery;
 pub mod raft;
 pub mod network;
 pub mod selfheal;
-pub mod streams;
+pub mod rpc;
 pub mod workload;
 
 // Internal metrics module – provides `increment_counter!` and `gauge!` macros

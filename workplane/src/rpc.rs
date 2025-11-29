@@ -101,7 +101,7 @@ static HANDLER: LazyLock<Mutex<Option<Handler>>> = LazyLock::new(|| Mutex::new(N
 /// # Example
 ///
 /// ```ignore
-/// use workplane::streams::{register_stream_handler, RPCRequest, RPCResponse};
+/// use workplane::rpc::{register_stream_handler, RPCRequest, RPCResponse};
 /// use std::sync::Arc;
 ///
 /// register_stream_handler(Arc::new(|peer, request| {

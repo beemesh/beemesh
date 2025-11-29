@@ -1,11 +1,11 @@
-//! Integration tests for the Machineplane.
+//! Mesh Tests
 //!
-//! This module contains the basic integration test suite for the Machineplane.
-//! It verifies the core functionality of the system, including:
-//! - Node startup and mesh formation.
-//! - Health check endpoints.
-//! - Public key retrieval.
-//! - Basic peer discovery.
+//! This module tests mesh formation and node connectivity in the Machineplane.
+//! It verifies:
+//! - Node startup and peer discovery
+//! - Mesh formation with multiple nodes
+//! - Health check endpoints
+//! - Public key retrieval endpoints
 
 use env_logger::Env;
 use log::info;
@@ -35,7 +35,7 @@ use runtime_helpers::shutdown_nodes;
 /// - The public key endpoints return valid keys.
 #[tokio::test]
 #[ignore = "Full host flow requires local REST+QUIC ports; see test-spec.md"]
-async fn test_run_host_application() {
+async fn mesh_forms_and_endpoints_respond() {
     // Initialize logger
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
 

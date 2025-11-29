@@ -79,7 +79,7 @@ use crate::config::Config;
 use crate::discovery;
 use crate::discovery::ServiceRecord;
 use crate::network::Network;
-use crate::streams::RPCRequest;
+use crate::rpc::RPCRequest;
 
 /// Tender for scheduling a new replica via the machineplane API.
 ///

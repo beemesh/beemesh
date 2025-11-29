@@ -71,7 +71,7 @@ use crate::discovery::ServiceRecord;
 use crate::network::Network;
 use crate::raft::{Heartbeat, LeadershipUpdate, RaftAction, RaftManager, RaftRole, VoteRequest, VoteResponse};
 use crate::selfheal::SelfHealer;
-use crate::streams::{RPCRequest, RPCResponse, register_stream_handler};
+use crate::rpc::{RPCRequest, RPCResponse, register_stream_handler};
 
 /// Main workload agent coordinating networking, Raft, and self-healing.
 ///

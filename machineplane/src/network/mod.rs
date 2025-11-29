@@ -47,7 +47,7 @@ use crate::scheduler::SchedulerCommand;
 // Submodules
 pub mod behaviour;
 pub mod control;
-pub mod utils;
+pub mod identity;
 
 use behaviour::{MyBehaviour, MyBehaviourEvent};
 use control::Libp2pControl;

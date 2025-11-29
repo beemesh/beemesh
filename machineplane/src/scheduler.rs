@@ -43,7 +43,7 @@ use crate::messages::types::{
     Award, Bid, EventType, ManifestTransfer, SchedulerEvent, SchedulerMessage, Tender,
 };
 use crate::messages::{machine, signatures};
-use crate::network::utils::peer_id_to_public_key;
+use crate::network::identity::peer_id_to_public_key;
 use libp2p::gossipsub;
 use libp2p::identity::Keypair;
 use log::{error, info};

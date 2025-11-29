@@ -1,12 +1,12 @@
-//! Integration tests for the "Apply" workflow.
+//! Apply Tests
 //!
-//! This module tests the end-to-end flow of applying a manifest via the Kubernetes-compatible API.
-//! It covers:
-//! - Applying a manifest using `kubectl` (simulated).
-//! - Verifying the workload is scheduled and deployed.
-//! - Verifying the content of the deployed manifest.
-//! - Testing with the Podman runtime (if available).
-//! - Testing replica distribution.
+//! This module tests the manifest apply workflow end-to-end via the
+//! Kubernetes-compatible API. It covers:
+//! - Applying manifests via the REST API
+//! - Verifying workload scheduling and deployment
+//! - Manifest content verification
+//! - Podman runtime integration (when available)
+//! - Replica distribution across nodes
 
 use dirs::runtime_dir;
 use env_logger::Env;
@@ -67,7 +67,7 @@ const MANIFEST_ID_LABEL_KEY: &str = "beemesh.manifest_id";
 /// 4. Verifies that the deployed manifest content matches the original.
 #[serial]
 #[tokio::test]
-async fn test_apply_functionality() {
+async fn apply_deploys_manifest_to_mesh() {
     if !is_podman_available().await {
         log::warn!("Skipping apply test - Podman not available");
         return;
@@ -153,7 +153,7 @@ async fn test_apply_functionality() {
 /// 2. Deletion of the manifest removes the Podman resources.
 #[serial]
 #[tokio::test]
-async fn test_apply_with_real_podman() {
+async fn apply_with_podman_creates_and_removes_pods() {
     // Skip test if Podman is not available
     if !is_podman_available().await {
         log::warn!("Skipping Podman integration test - Podman not available");
@@ -346,7 +346,7 @@ async fn wait_for_podman_state(
 /// 2. The deployed manifests on each node have `replicas: 1` (since the scheduler distributes single replicas).
 #[serial]
 #[tokio::test]
-async fn test_apply_nginx_with_replicas() {
+async fn apply_distributes_replicas_across_nodes() {
     if !is_podman_available().await {
         log::warn!("Skipping apply test - Podman not available");
         return;

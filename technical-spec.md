@@ -132,7 +132,7 @@ beemesh/
     │   ├── discovery.rs    # In-memory WDHT cache
     │   ├── raft.rs         # Leader election (stateful workloads)
     │   ├── selfheal.rs     # Replica management, health probing
-    │   ├── streams.rs      # RPC request/response types
+    │   ├── rpc.rs          # RPC request/response types
     │   └── metrics.rs      # Internal metrics macros
     └── tests/
 ```
@@ -407,7 +407,7 @@ impl Workload {
         self.self_healer.start();
 
         // 3. Register RPC handlers
-        streams::register_stream_handler(self.create_handler());
+        rpc::register_stream_handler(self.create_handler());
 
         // 4. For stateful workloads, start Raft tick loop
         if self.config.is_stateful() {
@@ -824,22 +824,24 @@ pub struct ServiceRecord {
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/version` | GET | API version info |
-| `/api` | GET | API capabilities |
-| `/apis/apps/v1/namespaces/{ns}/deployments` | POST | Create deployment (kubectl compatible) |
-| `/apis/apps/v1/namespaces/{ns}/deployments/{name}` | GET | Get deployment status |
-| `/apis/apps/v1/namespaces/{ns}/deployments/{name}` | DELETE | Delete deployment |
-| `/v1/apply` | POST | Apply manifest |
-| `/v1/delete` | POST | Delete workload |
-| `/v1/publish_tender` | POST | Publish scheduling tender |
-| `/v1/remove_replica` | POST | Remove specific replica |
+| `/apis` | GET | API group list |
+| `/api/...` | Various | Core Kubernetes API routes |
+| `/apis/apps/v1/...` | Various | Apps v1 API routes (deployments) |
+| `/health` | GET | Health check |
+| `/api/v1/pubkey` | GET | Get node public key |
+| `/api/v1/signing_pubkey` | GET | Get signing public key |
 | `/tenders` | POST | Create tender |
-| `/tenders/{id}` | GET | Get tender status |
-| `/tenders/{id}` | DELETE | Cancel tender |
-| `/tenders/{id}/candidates` | POST | Get scheduling candidates |
+| `/tenders/{tender_id}` | GET | Get tender status |
+| `/tenders/{tender_id}` | DELETE | Cancel tender |
+| `/tenders/{tender_id}/candidates` | POST | Get scheduling candidates |
+| `/apply_direct/{peer_id}` | POST | Apply manifest to specific peer |
+| `/nodes` | GET | List cluster nodes |
 | `/debug/peers` | GET | List connected peers |
 | `/debug/tenders` | GET | List all tenders |
-| `/debug/workloads` | GET | List all workloads |
-| `/debug/workloads_by_peer/{peer_id}` | GET | Workloads on specific node |
+| `/debug/local_peer_id` | GET | Get local peer ID |
+| `/debug/dht/peers` | GET | List DHT peers |
+| `/debug/dht/active_announces` | GET | List active DHT announcements |
+| `/debug/decrypted_manifests` | GET | List decrypted manifests |
 
 ### 8.2 Workplane RPC Methods
 
