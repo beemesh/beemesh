@@ -34,7 +34,6 @@ use runtime_helpers::shutdown_nodes;
 /// - The health endpoint returns "ok".
 /// - The public key endpoints return valid keys.
 #[tokio::test]
-#[ignore = "Full host flow requires local REST+QUIC ports; see test-spec.md"]
 async fn mesh_forms_and_endpoints_respond() {
     // Initialize logger
     let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();

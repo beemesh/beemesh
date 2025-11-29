@@ -28,7 +28,7 @@ use hyper_util::client::legacy::Client;
 use hyperlocal::{UnixClientExt, UnixConnector, Uri};
 use log::{debug, warn};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::env;
@@ -38,6 +38,18 @@ use tokio::sync::OnceCell;
 const DEFAULT_API_VERSION: &str = "v5.0.0";
 const FALLBACK_API_VERSIONS: &[&str] = &[DEFAULT_API_VERSION, "v4.0.0"];
 const PODMAN_API_VERSION_ENV: &str = "PODMAN_API_VERSION";
+
+/// Deserialize a field that may be `null` or an array as an empty Vec when null.
+/// This handles Podman API version differences where some versions return `null`
+/// instead of `[]` for empty arrays.
+fn deserialize_null_as_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let opt: Option<Vec<T>> = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
 
 /// Podman REST API client for Unix socket communication
 pub struct PodmanApiClient {
@@ -78,20 +90,20 @@ pub struct VersionInfo {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct PlayKubeResponse {
-    /// List of pod IDs created
-    #[serde(default, alias = "Pods")]
+    /// List of pod IDs created. Some Podman versions return `null` instead of `[]`.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub pods: Vec<PlayKubePod>,
-    /// Volumes created (if any)
-    #[serde(default, alias = "Volumes")]
+    /// Volumes created (if any). Some Podman versions return `null` instead of `[]`.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub volumes: Vec<PlayKubeVolume>,
     /// Errors encountered during play
-    #[serde(default, alias = "Errors")]
+    #[serde(default)]
     pub errors: Option<Vec<String>>,
     /// rm_report - only present in delete response
-    #[serde(default, rename = "RmReport")]
+    #[serde(default)]
     pub rm_report: Option<Vec<RmReport>>,
     /// stop_report - only present in delete response
-    #[serde(default, rename = "StopReport")]
+    #[serde(default)]
     pub stop_report: Option<Vec<StopReport>>,
 }
 
@@ -100,14 +112,18 @@ pub struct PlayKubeResponse {
 pub struct PlayKubePod {
     #[serde(rename = "ID")]
     pub id: Option<String>,
-    #[serde(default)]
-    pub containers: Option<Vec<String>>,
-    #[serde(default)]
-    pub init_containers: Option<Vec<String>>,
-    #[serde(default)]
-    pub logs: Option<Vec<String>>,
-    #[serde(default)]
-    pub container_errors: Option<Vec<String>>,
+    /// Container IDs created. Some Podman versions return `null` instead of `[]`.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub containers: Vec<String>,
+    /// Init container IDs. Some Podman versions return `null` instead of `[]`.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub init_containers: Vec<String>,
+    /// Logs from container creation. Some Podman versions return `null` instead of `[]`.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub logs: Vec<String>,
+    /// Errors from container creation. Some Podman versions return `null` instead of `[]`.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub container_errors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -774,6 +790,42 @@ mod tests {
         let response: PlayKubeResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.pods.len(), 1);
         assert_eq!(response.pods[0].id, Some("abc123".to_string()));
+        assert_eq!(response.pods[0].containers.len(), 2);
+    }
+
+    /// Test parsing Podman API response where null is returned instead of empty arrays.
+    /// This happens with some Podman versions (e.g., 4.9.x) for InitContainers, Logs, etc.
+    #[test]
+    fn test_parse_play_kube_response_with_null_arrays() {
+        // This is the actual response format from Podman 4.9.x in GitHub Actions
+        let json = r#"{
+            "Pods": [{
+                "ID": "a14d571d54b3fb6419956fbb37060bb69f77b2252442713ad6d771152921301f",
+                "Containers": ["306179cde8bd55c7a036116796872d3f9666f4bc2f122f9366dd8407e6f19145"],
+                "InitContainers": null,
+                "Logs": null,
+                "ContainerErrors": null
+            }],
+            "Volumes": null,
+            "StopReport": null,
+            "RmReport": null,
+            "VolumeRmReport": null,
+            "SecretRmReport": null,
+            "Secrets": null,
+            "ServiceContainerID": "",
+            "ExitCode": null
+        }"#;
+
+        let response: PlayKubeResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.pods.len(), 1);
+        assert_eq!(
+            response.pods[0].id,
+            Some("a14d571d54b3fb6419956fbb37060bb69f77b2252442713ad6d771152921301f".to_string())
+        );
+        assert_eq!(response.pods[0].containers.len(), 1);
+        assert!(response.pods[0].init_containers.is_empty());
+        assert!(response.pods[0].logs.is_empty());
+        assert!(response.pods[0].container_errors.is_empty());
     }
 
     #[test]

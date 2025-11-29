@@ -236,8 +236,8 @@ This document defines the test scenarios for machineplane scheduler protocol.
 
 ## Integration Tests
 
-> Note: Integration tests require Podman runtime and network setup.
-> They are marked with #[ignore] for CI and run manually.
+> Note: Integration tests run in CI with Podman. Some tests require
+> specific Podman versions for full compatibility.
 
 ### Apply Command (apply_tests.rs)
 
@@ -246,19 +246,19 @@ This document defines the test scenarios for machineplane scheduler protocol.
 - When running apply command
 - Then the workload is scheduled to the mesh
 
-**apply_with_podman_creates_and_removes_pods** (requires Podman)
+**apply_with_podman_creates_and_removes_pods**
 - Given a manifest and running Podman daemon
 - When applying and then deleting the manifest
 - Then pods are created and then cleaned up
 
-**apply_distributes_replicas_across_nodes** (requires multi-node)
+**apply_distributes_replicas_across_nodes**
 - Given a manifest with replicas > 1
 - When applying to a multi-node mesh
 - Then replicas are distributed to different nodes
 
 ### Mesh Formation (mesh_tests.rs)
 
-**mesh_forms_and_endpoints_respond** (requires network)
+**mesh_forms_and_endpoints_respond**
 - Given multiple machineplane nodes
 - When they join the same mesh
-- Then they discover each other via mDNS and form a cluster
+- Then they discover each other and form a cluster
