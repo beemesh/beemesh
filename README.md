@@ -1,408 +1,429 @@
-# **Beemesh: Global Mesh Computing**
+# **Global Mesh Computing**
 
-> **Beemesh** is scale-out fabric orchestration that turns any device - cloud, on-prem, edge, or IoT - into an interchangeable compute resource.
+K8s API — **without** the hassle.
+
+✅ No masters, no etcd, no Raft quorum, no API servers to babysit  
+✅ Machines are disposable; **state lives with the workload**  
+✅ End-to-end mTLS between machines *and* workloads by default  
+✅ Designed for **tens of thousands of nodes**, partitions, and churn
+  
+> Just run, scale, enjoy!
+> 
+> **Beemesh** is a scale-out fabric that turns any device—cloud, on-prem, edge, or IoT—into an interchangeable compute resource.
 > It scales out by eliminating the centralized control plane, enabling **secure, self-healing workloads** across highly dynamic environments.
 
----
+[![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![libp2p](https://img.shields.io/badge/libp2p-0.56-green.svg)](https://libp2p.io)
+
+-----
+
+## **Table of Contents**
+
+1. [Introduction](#1-introduction)
+2. [Why Beemesh](#2-why-beemesh)
+3. [Core Concept](#3-core-concept)
+4. [How Beemesh Compares](#4-how-beemesh-compares)
+5. [Architecture](#5-architecture)
+6. [Quick Start](#6-quick-start)
+7. [Use Cases](#7-use-cases)
+8. [Summary](#8-summary)
+9. [Comparison Matrix](#9-comparison-matrix)
+10. [Specifications](#10-specifications)
+11. [Community & Support](#11-community--support)
+
+-----
 
 ## **1. Introduction**
 
-Modern orchestrators like Kubernetes and Nomad are powerful but **inherently limited by centralization**. As clusters grow:
+Clouds and modern systems like Kubernetes are powerful but **inherently limited by centralization**. As these systems grow:
 
-* Control planes become **scaling bottlenecks**.
-* Consensus overhead increases.
-* Infrastructure failures ripple through workloads.
+  * Control planes become **scaling bottlenecks**.
+  * Consensus overhead increases.
+  * Infrastructure failures ripple through workloads and disrupt our digital landscape.
 
-Beemesh rethinks orchestration from the ground up:
+Beemesh rethinks scale-out from the ground up:
 
-* **No central control plane** - fully scale-out fabric coordination.
-* **Workload-scoped consistency** - each application carries its own state management.
-* **Separate security and discovery planes** - machines and workloads each operate on their own DHT with independent trust domains.
-* **Scale out** - limited only by network capacity.
+  * **No global consensus**—fully scale-out fabric choreography.
+  * **Consumer-aligned consistency**—each application carries its own state management.
+  * **Scale out**—limited only by network capacity.
 
----
+Beemesh starts from the assumption that everything is transient: identity, state, and trust. The system is therefore designed from the ground up for motion. Built-in self-healing, intelligent workload clustering, and mutual authentication with end-to-end encryption by design.
+
+-----
 
 ## **2. Why Beemesh**
 
-| Problem in Legacy Systems                                                | Beemesh Solution                                                                   |
-| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| Scaling beyond 5,000–10,000 nodes is hard due to control plane overhead. | **Fully decentralized coordination** using DHT + Pub/Sub.                          |
-| Machine failures destabilize cluster state.                              | Machines are **fungible, disposable resources**; state lives **inside workloads**. |
-| High operational complexity (etcd, API servers, Raft quorums).           | **Single lightweight daemon** (\~50–80 MB RAM).                                    |
-| Weak identity and trust at scale.                                        | **Separate Peer IDs for machines and workloads**, mutually authenticated streams.  |
-| Vendor lock-in to specific clouds or infra.                              | **Infrastructure-agnostic**, runs on anything.                                     |
-| Day-2 toil for upgrades/patching of control planes.                      | **Decoupled, autonomous Machine Plane** → **rebuild > repair**, near-zero toil.    |
+| Problem in Legacy Systems                                                | Beemesh Solution                                                                                                                                           |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scaling beyond thousands of nodes is hard due to control plane overhead. | **Fully decentralized choreography** instead of central orchestration.                                                                                     |
+| Machine failures destabilize the control plane.                          | Machines are **fungible, disposable resources**; state lives **inside workloads**.                                                                         |
+| High operational complexity (etcd, API servers, Raft quorums).           | **Single lightweight daemon** (50–80 MiB RAM).                                                                                                             |
+| Weak identity and trust at scale.                                        | **Separate identities for machines and workloads**, with mutually authenticated streams.                                                                   |
+| Vendor lock-in to specific clouds or infra.                              | **Infrastructure-agnostic**, runs on anything.                                                                                                             |
+| Day-2 toil for upgrades/patching of control planes.                      | **Decoupled, autonomous Machineplane** → **rebuild > repair**, near-zero toil **as long as a bootstrap source (manifests/images or surviving workloads) exists**. |
 
----
+-----
 
-## **3. Core Concepts**
+## **3. Core Concept**
 
-### **3.1 Two-Plane Architecture**
+### **3.1 Separation of Concerns**
 
-Beemesh divides orchestration into **two planes**:
+CAP trade-offs are expressed as **A/P** (Availability + Partition Tolerance) and **C/P** (Consistency + Partition Tolerance).
 
-| Plane             | Purpose                                                               | CAP Trade-off                                |
-| ----------------- | --------------------------------------------------------------------- | -------------------------------------------- |
-| **Machine Plane** | Node-level coordination, scheduling, and resource management.         | **A/P** – Availability & Partition Tolerance |
-| **Work Plane**    | Application-level self-healing, service discovery, secure networking. | **C/P** – Consistency & Partition Tolerance  |
+| Concern       | Purpose                                                                                                                                                                                                  | CAP Trade-off                                  |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| **Machine**   | Node discovery and ephemeral tender negotiations; stores nothing. Machines are loosely coupled.                                                                                                            | **A/P** - Availability and Partition Tolerance |
+| **Workload**  | Service discovery between workloads; maintains workload state and connectivity information. Workloads are loosely coupled to each other but tightly coherent internally, whether stateless or stateful. | **C/P** - Consistency and Partition Tolerance  |
 
-This separation eliminates cross-cutting concerns and allows **each plane to optimize independently**. Scoping each plane to its domain prevents the monolithic anti-patterns that control-plane–centric platforms preserve.
+> **Key benefit:** Machine failures do **not** pollute the workload. Each concern is isolated and optimized for its purpose, ensuring security, scalability, and reliability by design. This separation eliminates cross-cutting concerns and allows **each plane to optimize independently**. Scoping each plane to its domain prevents the monolithic anti-patterns that control-plane-centric platforms preserve.
 
----
+-----
 
-### **3.2 Separate DHTs**
+### **3.2 Consumer-Scoped Consistency**
 
-Beemesh uses **two distinct Distributed Hash Tables (DHTs):**
-
-| DHT              | Purpose                                                                                                                                        |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Machine DHT**  | Node discovery and coordination; ephemeral task negotiations; stores only minimal, transient machine metadata.                                 |
-| **Workload DHT** | Service discovery between workloads; maintains workload-level peer state and connectivity info; **no machine-level data** is ever stored here. |
-
-> **Key benefit:** Machine failures do **not** pollute the workload discovery layer. Each DHT is optimized for its purpose, ensuring scalability and reliability.
-
----
-
-### **3.3 Workload-Scoped Consistency**
-
-Traditional systems bind **consistency to infrastructure**:
-
-* Kubernetes uses `etcd` for cluster state.
-* Nomad/Consul use Raft quorums for global consensus.
+Traditional cloud or orchestration systems stitch **infrastructure to clusters** and make the platform expensive and static, tying up a lot of operational resources by design.
 
 **Beemesh flips the model:**
 
-* **Infrastructure is stateless** and ephemeral.
-* Each **stateful workload carries its own consensus cluster** (e.g., a Raft group for a database).
+  * **Infrastructure is stateless**, ephemeral, and disposable by design.
+  * Each **stateful workload carries its own consensus** (e.g., Raft for databases).
 
-> Infra failures never corrupt workload state and enable scale out to **tens of thousands of nodes**.
+> Machine failures never corrupt workloads, and the architecture enables scale-out to **thousands of nodes**.  
+> Additionally, operational effort is reduced to near zero.
 
----
+-----
 
-## **4. Security and Identity Model**
+### **3.3 Security Model**
 
-### **4.1 Unique Peer IDs**
+Beemesh assigns transient and **separate cryptographic identities** to machines and workloads, and all communication in Beemesh is **mutually authenticated** and **end-to-end encrypted** using mutually authenticated, encrypted streams by design:
 
-Beemesh assigns **separate cryptographic identities** to machines and workloads:
+| Entity       | Identity Details                                                                                                                                                                                                                                |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Machine**  | Each machine has a **unique cryptographic identity** generated at initialization, backed by an Ed25519 key pair, and used for node discovery, scheduling, and secure, mutually authenticated, encrypted machine-to-machine communication. |
+| **Workload** | Each workload has a **unique cryptographic identity**, backed by a separate Ed25519 key pair, and used only for service discovery and secure, mutually authenticated, encrypted workload-to-workload communication.                      |
 
-| Entity       | Identity Details                                                                                                                                                                      |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Machine**  | Each machine has a **unique `libp2p` Peer ID** generated at first startup; backed by a public/private key pair; used for node discovery, scheduling, and Machine-Plane communication. |
-| **Workload** | Each workload Pod has a **unique `libp2p` Peer ID**; backed by a separate public/private key pair; used only for service discovery and secure workload-to-workload traffic.           |
+  * This separation ensures **complete isolation of trust boundaries** between infrastructure and workloads, implementing zero trust at the core by design.
+  * Machine and workload communication **never share credentials**.
+  * Even if a machine is compromised, workloads remain isolated and protected.
 
-This separation ensures **complete isolation of trust boundaries** between infrastructure and workloads.
+-----
 
----
+## **4. How Beemesh Compares**
 
-### **4.2 Secure Communication**
+| System      | Control Plane                   | Scaling Limit                | State Model                         | Notes                                       |
+| ----------- | ------------------------------- | ---------------------------- | ----------------------------------- | ------------------------------------------- |
+| Kubernetes  | Centralized (etcd + API server) | ~5,000 nodes / 150,000 pods  | Strong consistency cluster-wide     | Rich ecosystem but control-plane limited    |
+| Nomad       | Centralized Raft quorum         | Thousands of nodes           | Strong consistency global scheduler | Lighter than K8s but still infra-bound      |
+| Swarm       | Raft manager nodes              | ~1,000 nodes                 | Strong consistency cluster-wide     | Simple but infra-coupled                    |
+| **Beemesh** | **None—scale-out fabric**       | **Tens of thousands+**       | **Consistency scoped to workload**  | Scale-out; only stateful workloads run Raft |
 
-All communication in Beemesh is **mutually authenticated** and **end-to-end encrypted** using `libp2p` secure streams.
+-----
 
-| Communication Type      | Authentication Domain            | Encryption                                     |
-| ----------------------- | -------------------------------- | ---------------------------------------------- |
-| **Machine ↔ Machine**   | Verified using Machine Peer IDs  | Encrypted via `libp2p.Security` (TLS or Noise) |
-| **Workload ↔ Workload** | Verified using Workload Peer IDs | Encrypted via `libp2p.Security` (TLS or Noise) |
+## **5. Architecture**
 
-* Machine and workload communication **never share credentials**.
-* Even if a machine is compromised, workloads remain isolated and protected.
-
----
-
-## **5. How Beemesh Compares**
-
-| System      | Control Plane                   | Scaling Limit                | State Model                         | Notes                                            |
-| ----------- | ------------------------------- | ---------------------------- | ----------------------------------- | ------------------------------------------------ |
-| Kubernetes  | Centralized (etcd + API server) | \~5,000 nodes / 150,000 pods | Strong consistency cluster-wide     | Rich ecosystem but control-plane limited         |
-| Nomad       | Centralized Raft quorum         | Thousands of nodes           | Strong consistency global scheduler | Lighter than K8s but still infra-bound           |
-| Swarm       | Raft manager nodes              | \~1,000 nodes                | Strong consistency cluster-wide     | Simple but infra-coupled                         |
-| **Beemesh** | **None – scale-out fabric**     | **Tens of thousands+**       | **Consistency scoped to workload**  | Scale out; only stateful workloads run Raft |
-
----
-
-## **6. Architecture**
-
-### **6.1 High-Level Diagram**
+### **5.1 High-Level Diagram**
 
 ```mermaid
-flowchart TB
-  %% ===== Work Plane (per-workload trust domain) =====
-  subgraph "Work Plane (workload trust domain)" as WP
-    WDHT[(Workload DHT - Service Discovery)]
-    W1[Workload W1]
-    W2[Workload W2]
+flowchart LR
+  %% ============================================
+  %% Styles
+  %% ============================================
+  classDef dht        fill:#EEF6FF,stroke:#4975D0,stroke-width:1px;
+  classDef workload   fill:#E8FFF4,stroke:#1D7A46,stroke-width:1px;
+  classDef runtime    fill:#FFF7E6,stroke:#B76B00,stroke-width:1px;
+  classDef daemon     fill:#F5E6FF,stroke:#7B3FB3,stroke-width:1px;
+  classDef bus        fill:#FFF0F0,stroke:#C43D3D,stroke-width:1px;
+  classDef caption    fill:none,stroke-dasharray:3 3,stroke:#999,color:#666,font-size:11px;
 
+  %% ============================================
+  %% Workplane (per-workload trust domain)
+  %% ============================================
+  subgraph WP["Workplane (workload trust domain)"]
+    direction TB
+
+    WP_CAP["Per-workload mTLS and service discovery"]:::caption
+
+    WDHT[(Workload DHT<br/>Service discovery)]:::dht
+    W1[Workload W1]:::workload
+    W2[Workload W2]:::workload
+
+    %% Workload-to-workload mTLS
     W1 -->|mTLS| W2
     W2 -->|mTLS| W1
 
-    W1 -->|register/query| WDHT
-    W2 -->|register/query| WDHT
+    %% Workload DHT for service discovery
+    W1 -->|register / query| WDHT
+    W2 -->|register / query| WDHT
   end
 
-  %% ===== Machine Plane (infrastructure trust domain) =====
-  subgraph "Machine Plane (infrastructure trust domain)" as MP
-    MDHT[(Machine DHT - Node Discovery)]
-    PS{{Pub/Sub - scheduler topics}}
+  %% ============================================
+  %% Machineplane (infrastructure trust domain)
+  %% ============================================
+  subgraph MP["Machineplane (infrastructure trust domain)"]
+    direction TB
 
-    subgraph "Machine A" as M1
-      D1[Machine Daemon A]
-      R1[(Runtime A - Podman)]
+    MP_CAP["Per-machine secure streams, node discovery, and fabric pub/sub"]:::caption
+
+    MDHT[(Machine DHT<br/>Node discovery)]:::dht
+    PS{{Pub/Sub<br/>beemesh-fabric topic}}:::bus
+
+    %% ---------- Machine A ----------
+    subgraph MA["Machine A"]
+      direction TB
+      D1[Machine Daemon A]:::daemon
+      R1[(Runtime A<br/>Podman)]:::runtime
     end
 
-    subgraph "Machine B" as M2
-      D2[Machine Daemon B]
-      R2[(Runtime B - Podman)]
+    %% ---------- Machine B ----------
+    subgraph MB["Machine B"]
+      direction TB
+      D2[Machine Daemon B]:::daemon
+      R2[(Runtime B<br/>Podman)]:::runtime
     end
 
+    %% Secure streams between daemons
     D1 -->|secure stream| D2
     D2 -->|secure stream| D1
 
-    D1 -->|announce/lookup| MDHT
-    D2 -->|announce/lookup| MDHT
+    %% Machine DHT for node discovery
+    D1 -->|announce / lookup| MDHT
+    D2 -->|announce / lookup| MDHT
 
-    D1 -->|publish/subscribe| PS
-    D2 -->|publish/subscribe| PS
+    %% Fabric pub/sub
+    D1 -->|publish / subscribe| PS
+    D2 -->|publish / subscribe| PS
   end
 
-  D1 -->|deploy/start| R1
-  D2 -->|deploy/start| R2
+  %% ============================================
+  %% Runtime–Workload relationship
+  %% ============================================
+  D1 -->|deploy / start| R1
+  D2 -->|deploy / start| R2
 
-  R1 -.hosts.-> W1
-  R2 -.hosts.-> W2
+  R1 -. hosts .-> W1
+  R2 -. hosts .-> W2
+
 ```
 
 ---
 
-### **6.2 Machine Plane**
+### **5.2 Machineplane**
 
-The **Machine Plane** manages infrastructure resources and scheduling, with **no persistent state**. It is **disposable, fully decoupled, and autonomous** - rebuild at will.
+The **Machineplane** manages infrastructure resources and scheduling, with **no persistent state**. It is **disposable, fully decoupled, and autonomous**—rebuild at will **as long as you have some bootstrap source (e.g., registries, manifests, or surviving workloads) to repopulate the fabric**.
 
-#### **Responsibilities (explicit)**
+#### **Implementation**
 
-* Node discovery via **Machine DHT**.
-* Decentralized workload scheduling using ephemeral task negotiations.
+The machineplane is implemented in Rust using libp2p for peer-to-peer networking:
+
+| Module | Description |
+|--------|-------------|
+| `network/` | libp2p networking (Gossipsub + Kademlia DHT + Request-Response over QUIC) |
+| `scheduler.rs` | Tender/Bid/Award scheduling logic with replay protection |
+| `messages.rs` | Wire protocol message definitions (bincode serialization) |
+| `signatures.rs` | Ed25519 cryptographic signing/verification |
+| `runtimes/` | Container runtime adapters (Podman) |
+| `api/` | REST API with Kubernetes compatibility |
+
+#### **Responsibilities**
+
+* Node discovery via **Machine DHT** (Kademlia).
+* Decentralized workload scheduling using ephemeral tender negotiations.
 * Fabric-level coordination through secure, mutually authenticated streams.
-* Resource offer/bidding, capability advertisement, and local policy enforcement.
-* Lifecycle hooks to start/stop workloads via the runtime (e.g., **Podman**).
+* Resource offering and bidding, capability advertisement, and local policy enforcement.
+* Lifecycle hooks to start and stop workloads via the runtime (**Podman**).
 
-> **Operational impact:** no etcd, no API servers, no manager quorum, no backups - **near-zero operational toll.**
+> **Operational impact:** no etcd, no API servers, no manager quorum, no backups—**near-zero operational toll.**
 
 ---
 
-### **6.3 Ephemeral Scheduling Process**
+### **5.3 Ephemeral Scheduling Process**
 
-Traditional schedulers maintain global cluster state and enforce consensus (Raft, etcd), creating bottlenecks.
-
-Beemesh uses **ephemeral scheduling**: **tasks are never persisted** and scheduling happens dynamically across the scale-out fabric.
-
-#### **Step-by-Step Flow**
-
-1. **Task Publication**
-
-   * A new workload task is published on the `scheduler-tasks` Pub/Sub topic.
-   * **Task payload includes:** resource requirements (CPU, memory, etc.), priority and QoS hints, and a **workload manifest reference**.
-
-2. **Local Resource Evaluation**
-
-   * Each node listens to the task topic and evaluates: current resource availability, local policies (affinity rules, hardware constraints).
-
-3. **Bidding Phase**
-
-   * Nodes **submit bids** to the `scheduler-proposals` topic.
-   * **Bids include:** node identity (Machine Peer ID) and **scoring metrics** (resource fit, network locality, capabilities).
-
-4. **Selection Window**
-
-   * A short window (e.g., **100–500 ms**) allows multiple bids to arrive.
-   * Nodes independently select the **best bid** based on scoring rules.
-
-5. **Workload Deployment**
-
-   * The winning node deploys the workload using **Podman**.
-   * Deployment is confirmed via a follow-up Pub/Sub event.
+Traditional schedulers maintain global fabric state and enforce consensus (Raft, etcd), creating bottlenecks. Beemesh uses **ephemeral scheduling**: **tenders are never persisted**, and scheduling happens dynamically across the scale-out fabric. 
 
 #### **Advantages of Ephemeral Scheduling**
 
-| Advantage                      | Why It Matters                                                  |
-| ------------------------------ | --------------------------------------------------------------- |
-| **No single point of failure** | No central scheduler to crash or partition.                     |
-| **Low coordination overhead**  | Tasks are transient and do not require consensus.               |
-| **Partition tolerance**        | Nodes continue to schedule independently during network splits. |
-| **High throughput**            | Scales naturally with node count.                               |
+| Advantage                      | Why It Matters                                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| **No single point of failure** | No central scheduler to crash or be partitioned.                                                        |
+| **Low coordination overhead**  | Tenders are transient and do not require consensus.                                                       |
+| **Partition tolerance**        | Nodes continue to schedule independently during network splits.                                         |
+| **High throughput**            | Scales naturally with node count.                                                                       |
+| **Thundering herd mitigation** | Only nodes that match placement and resource criteria bid, so reply volume stays bounded even at scale. |
 
 ---
 
-### **6.4 Machine-to-Machine Security**
+### **5.4 Machine-to-Machine Security**
 
-* Each machine verifies scheduling message authenticity using **Machine Peer IDs**.
-* All communications are encrypted with `libp2p.Security` (TLS or Noise).
-* Rogue nodes can’t influence scheduling without a valid cryptographic identity.
+* Each machine verifies scheduling message authenticity using **Ed25519 signatures**.
+* All communications are encrypted and mutually authenticated using **QUIC transport with TLS 1.3**.
+* Replay protection via `(timestamp, nonce)` tuples with ±30 second clock skew tolerance.
+* Rogue nodes cannot influence scheduling without a valid cryptographic identity.
 
 ---
 
-### **6.5 Work Plane**
+### **5.5 Workplane**
 
-The **Work Plane** runs inside every Pod.
+The **Workplane** runs as a sidecar agent inside every Pod, providing per-workload service discovery and self-healing.
 
-| Function              | Description                                                                                                        |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Self-Healing**      | Monitors replica counts and autonomously spawns replacements using local manifest data.                            |
-| **Service Discovery** | Registers workloads in the **Workload DHT** for peer lookup and routing.                                           |
-| **Secure Networking** | Pod-to-pod traffic flows through mutually authenticated encrypted `libp2p` streams.                                |
-| **Manifest Storage**  | **Stores manifests locally for offline recovery** during partitions; enables autonomous re-spawn even if isolated. |
+#### **Implementation**
 
-**Workload-to-Workload Security**
+| Module | Description |
+|--------|-------------|
+| `agent.rs` | Main agent orchestrator |
+| `network.rs` | libp2p networking (Kademlia DHT + Request-Response RPC over QUIC) |
+| `discovery.rs` | In-memory WDHT cache with TTL-based expiration and conflict resolution |
+| `raft.rs` | Simplified Raft for leader election (stateful workloads only) |
+| `selfheal.rs` | Replica management and health probing |
+| `rpc.rs` | RPC request/response types |
+| `config.rs` | Environment-based configuration |
 
-* Each Pod uses a **unique Workload Peer ID**.
+#### **Functions**
+
+| Function              | Description                                                                                                                                                                                                       |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Self-Healing**      | Monitors desired replica counts and autonomously spawns replacements using local manifest data. Replica counts are treated as **"at least"** targets; the Machineplane may temporarily run extra replicas safely. |
+| **Service Discovery** | Registers workloads in the **Workload DHT** for peer lookup and routing via `ServiceRecord` entries with TTL.                                                                                                    |
+| **Secure Networking** | Pod-to-pod traffic flows through mutually authenticated, encrypted streams using libp2p QUIC.                                                                                                                    |
+| **Leader Election**   | For **stateful workloads** (StatefulSets), Raft consensus ensures leader-only writes and minority partition refusal.                                                                                              |
+
+#### **Workload-to-Workload Security**
+
+* Each Pod uses a **unique Workload Peer ID** (Ed25519).
 * Secure communication is **independent** of machine identities (separate trust domains).
 * Prevents cross-plane privilege escalation.
 
 ---
 
-## **7. Key Features**
+## **6. Quick Start**
 
-* **Scalability**
-  Two independent DHTs prevent machine churn from disrupting workloads.
+### **Prerequisites**
 
-* **Security by Design**
+* Rust 1.75+ (`rustup update stable`)
+* Podman 4.x+ (for container runtime)
+* Linux or macOS
 
-  * Unique Peer IDs for machines and workloads.
-  * Mutually authenticated encrypted streams for both planes.
+### **Build**
 
-* **Self-Healing Workloads**
-  Pods replicate themselves without relying on external control planes.
+```bash
+# Clone the repository
+git clone https://github.com/beemesh/beemesh.git
+cd beemesh
 
-* **Lightweight Footprint**
+# Build all components
+cargo build --release
+```
 
-  * Machine Plane Daemon: \~**50–80 MB RAM**.
-  * Work Plane overhead: \~**20–40 MB** including the Beemesh container.
+### **Run the Machineplane Daemon**
 
-* **Kubernetes-Compatible**
-  Accepts Kubernetes `Deployment` and `StatefulSet` manifests.
+```bash
+# Start a single node (auto-detects Podman socket)
+./target/release/machineplane
 
-* **Pluggable Runtime**
-  Deploy via **Podman** today; runtimes are swappable by design.
+# Start with explicit configuration
+./target/release/machineplane \
+  --rest-api-port 3000 \
+  --libp2p-quic-port 4001 \
+  --bootstrap-peer "/ip4/192.168.1.10/udp/4001/quic-v1/p2p/<peer_id>"
+```
 
-* **Disposable Machine Plane**
-  Rebuild nodes freely; **image rotation** > patching. Perfect for **spot/preemptible** mixes.
+#### **Machineplane CLI Options**
 
----
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--rest-api-host` | `0.0.0.0` | Host address for REST API |
+| `--rest-api-port` | `3000` | Port for REST API |
+| `--podman-socket` | (auto-detect) | Podman socket URL |
+| `--libp2p-quic-port` | `0` (auto) | Port for libp2p QUIC transport |
+| `--libp2p-host` | `0.0.0.0` | Host for libp2p listeners |
+| `--bootstrap-peer` | (none) | Bootstrap peer multiaddr (repeatable) |
+| `--dht-refresh-interval-secs` | `60` | DHT presence refresh interval |
+| `--ephemeral-keys` | `false` | Use ephemeral keys (no disk persistence) |
 
-## **8. True Multicloud: Concrete Scenarios & Patterns**
+### **Run the Workplane Agent**
 
-Beemesh treats **on-prem + Azure + AWS + GCP** as just more peers in the mesh. Mix and match freely.
+```bash
+# Inside a pod/container
+./target/release/workplane \
+  --namespace default \
+  --workload nginx \
+  --pod nginx-0 \
+  --workload-kind Deployment \
+  --replicas 3 \
+  --liveness-url http://127.0.0.1:8080/health \
+  --readiness-url http://127.0.0.1:8080/ready \
+  --privkey $BEE_PRIVATE_KEY_B64
+```
 
-### 8.1 Cross-cloud burst (Analytics/Batch)
+#### **Workplane Environment Variables**
 
-* **Baseline** on-prem; **burst** into **AWS EC2** spot and **GCP Compute Engine** preemptibles when queue depth spikes.
-* **Why it works:** ephemeral scheduling + disposable Machine Plane → no shared cluster state to extend or replicate across providers.
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BEE_NAMESPACE` | Kubernetes namespace | `default` |
+| `BEE_WORKLOAD_NAME` | Workload name | Required |
+| `BEE_POD_NAME` | Pod name | Required |
+| `BEE_WORKLOAD_KIND` | `Deployment` or `StatefulSet` | `Deployment` |
+| `BEE_REPLICAS` | Desired replica count | `1` |
+| `BEE_LIVENESS_URL` | HTTP liveness probe URL | None |
+| `BEE_READINESS_URL` | HTTP readiness probe URL | None |
+| `BEE_MACHINE_API` | Machineplane API URL | `http://localhost:8080` |
+| `BEE_PRIVATE_KEY_B64` | Base64-encoded Ed25519 private key | Required |
+| `BEE_DHT_TTL_SECS` | WDHT record TTL | `15` |
+| `BEE_HEALTH_INTERVAL_SECS` | Health check interval | `10` |
+| `BEE_REPLICA_CHECK_INTERVAL_SECS` | Reconciliation interval | `30` |
 
-### 8.2 Data-gravity aware microservices
+### **Deploy a Workload (kubectl-compatible)**
 
-* **Frontends** in **Azure** (close to users), **stateful stores** pinned to **on-prem** or **AWS**.
-* **Discovery** uses the **Workload DHT**, so services find the closest healthy peer automatically.
+```bash
+# Create a deployment
+curl -X POST http://localhost:3000/apis/apps/v1/namespaces/default/deployments \
+  -H "Content-Type: application/yaml" \
+  -d @nginx-deployment.yaml
 
-### 8.3 Active-active global services
+# List deployments
+curl http://localhost:3000/apis/apps/v1/namespaces/default/deployments
 
-* Run replicas across **AWS + Azure + GCP** regions simultaneously. If a provider browns out, the Work Plane routes to healthy workloads - **no failover controller** required.
+# List pods
+curl http://localhost:3000/api/v1/namespaces/default/pods
 
-### 8.4 Sovereign + public hybrid
-
-* Keep sensitive workloads **air-gapped on-prem**; run stateless API edges in **GCP** and **Azure**.
-* Periodic or courier-based sync patterns supported; the platform **does not require** public control endpoints.
-
-### 8.5 HPC/ML fleet sharing
-
-* **GPU islands** across providers (e.g., A100s in Azure, H100s in GCP, local Hoppers on-prem) appear as one pool of offers.
-* Jobs pick best fit (capabilities, price, proximity to data) via the bidding mechanism.
-
-> **Tip:** Because the Machine Plane is decoupled and disposable, you can aggressively **mix spot/preemptibles** with on-demand and on-prem **without risking control-plane stability**.
-
----
-
-## **9. Air-Gapped & Disconnected Enterprises**
-
-* **Works fully offline**: discovery and scheduling occur entirely inside the isolated network.
-* **Bootstrap** via pre-shared keys/offline identity distribution - **no external CA dependency** required.
-* **Controlled sync**: when/if connectivity exists, bridge selected workloads or artifacts via tightly scoped gateways - **by policy, not necessity**.
-* **DR without SaaS**: replicate only **workload state** that matters; machines remain disposable.
-
----
-
-## **10. Use Cases**
-
-| Scenario                     | Why Beemesh Works                                                            |
-| ---------------------------- | ---------------------------------------------------------------------------- |
-| **Edge & IoT Networks**      | Operates in unreliable, partitioned networks with minimal resources.         |
-| **Multicloud Microservices** | One service mesh across on-prem + Azure + AWS + GCP - no vendor lock-in.       |
-| **Global Analytics/Batch**   | Elastic bursts across providers; ephemeral scheduling matches queue spikes.  |
-| **Smart Cities / Telco**     | Millions of devices with frequent churn; Machine Plane is throwaway.         |
-| **Enterprise Databases**     | State lives with the workload’s own quorum; infra failures don’t corrupt it. |
-| **Air-Gapped IT/OT**         | Full functionality inside isolated networks; optional selective sync.        |
-| **Enterprise Workloads**     | Strong, consistent, reliable on-prem and multicloud behaviors by design.     |
-
----
-
-## **11. Scalability Advantages**
-
-1. **Two Independent DHTs**
-
-   * Machine DHT absorbs rapid infrastructure churn.
-   * Workload DHT remains stable and performant.
-
-2. **No Global Consensus**
-
-   * Eliminates `etcd` and cluster-wide Raft bottlenecks.
-
-3. **Scale-out Fabric Foundation**
-
-   * Built on `libp2p`, proven to scale to **tens of thousands of peers**.
-   * **Scale is bounded primarily by network capacity (`libp2p`).**
+# Delete a deployment
+curl -X DELETE http://localhost:3000/apis/apps/v1/namespaces/default/deployments/nginx
+```
 
 ---
 
-## **12. Security Summary**
+## **7. Use Cases**
 
-| Communication Type      | DHT Used     | Peer IDs          | Encryption                                         |
-| ----------------------- | ------------ | ----------------- | -------------------------------------------------- |
-| **Machine ↔ Machine**   | Machine DHT  | Machine Peer IDs  | Mutually authenticated `libp2p` stream (TLS/Noise) |
-| **Workload ↔ Workload** | Workload DHT | Workload Peer IDs | Mutually authenticated `libp2p` stream (TLS/Noise) |
-
-**Guarantees:**
-
-* Machine- and Work-Planes operate as **separate trust domains**.
-* Compromising one layer does **not** expose the other.
-
----
-
-## **13. Getting Started (Conceptual)**
-
-1. **Install** the single Beemesh daemon on any machines (on-prem VMs, bare metal, cloud instances).
-2. **Join** the Machine DHT (via bootstrap peers or offline bundles for air-gapped).
-3. **Submit** workloads (Kubernetes-style `Deployment`/`StatefulSet` manifests supported).
-4. **Watch** the fabric schedule, run, and heal - across providers - **without a control plane**.
-
-> Day-2 is basically **image rotation + key management**. That’s the point.
+| Scenario                     | Why Beemesh Works                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------- |
+| **Edge & IoT Networks**      | Operates in unreliable, partitioned networks with minimal resources.          |
+| **Multicloud Microservices** | One service mesh across on-prem + Azure + AWS + GCP—no vendor lock-in.        |
+| **Global Analytics/Batch**   | Elastic bursts across providers; ephemeral scheduling matches queue spikes.   |
+| **Smart Cities / Telco**     | Millions of devices with frequent churn; the Machineplane is throwaway.       |
+| **Enterprise Databases**     | State lives with the workload's own quorum; infra failures do not corrupt it. |
+| **Air-Gapped IT/OT**         | Full functionality inside isolated networks; optional selective sync.         |
+| **Enterprise Workloads**     | Strong, consistent, reliable on-prem and multicloud behaviors by design.      |
 
 ---
 
-## **14. Summary**
+## **8. Summary**
 
 Beemesh represents a **paradigm shift** in orchestration:
 
 * Eliminates centralized control planes and scaling bottlenecks.
 * Uses **ephemeral, decentralized scheduling** for effectively unparalleled scalability.
-* Provides **strict isolation** between infrastructure and workloads via two DHTs and unique Peer IDs.
+* Provides **strict isolation** between infrastructure and workloads.
 * Ensures **all communications are mutually authenticated and encrypted**.
 * Scales to **tens of thousands of nodes**, ideal for edge, IoT, cloud, **multicloud**, and **air-gapped** environments.
-* **Disposable, fully decoupled Machine Plane** → autonomous, low-toil operations.
+* A **disposable, fully decoupled Machineplane** enables autonomous, low-toil operations.
 
-> **Beemesh isn’t just another orchestrator - it's a secure, scale-out fabric for the future of global computing.**
+> **Beemesh is not just another orchestration system—it is a secure, scale-out choreography fabric for the future of global computing.**
 
 ---
 
-## **Appendix: Comparison Matrix**
+## **9. Comparison Matrix**
 
-> *Note on “Mutually Authenticated Streams”: legacy systems may add this via optional plugins/sidecars, but it’s **not** default cluster behavior.*
+> *Note on "Mutually Authenticated Streams": legacy systems may add this via optional plugins or sidecars, but it is **not** default fabric behavior.*
 
 | Feature                                 | Kubernetes        | Nomad             | **Beemesh**                 |
 | --------------------------------------- | ----------------- | ----------------- | --------------------------- |
@@ -413,18 +434,43 @@ Beemesh represents a **paradigm shift** in orchestration:
 | Mutually Authenticated Machine Streams  | Optional (addons) | Optional (addons) | **Yes (default)**           |
 | Mutually Authenticated Workload Streams | Optional (addons) | Optional (addons) | **Yes (default)**           |
 | Global Consensus Required               | Yes               | Yes               | **No**                      |
-| Scalability Ceiling                     | \~5,000 nodes     | \~10,000 nodes    | **Tens of thousands+**      |
+| Scalability Ceiling                     | ~5,000 nodes      | ~10,000 nodes     | **Tens of thousands+**      |
 | IoT Suitability                         | Medium            | Medium            | **Excellent**               |
 | Edge Suitability                        | Medium            | Medium            | **Excellent**               |
 | Enterprise Suitability                  | Excellent         | Excellent         | **Excellent (+air-gapped)** |
 
 ---
 
-## **Community & Support**
+## **10. Specifications**
 
-- **GitHub**: [github.com/beemesh/beemesh](https://github.com/beemesh/beemesh)
-- **Documentation**: [docs.beemesh.io](https://docs.beemesh.io)
+For full normative details, see:
+
+* **Technical Specification**: [`technical-spec.md`](./technical-spec.md)  
+  Comprehensive technical details including data structures, wire protocols, and API reference.
+
+* **Machineplane Spec**: [`machineplane/machineplane-spec.md`](./machineplane/machineplane-spec.md)  
+  Node discovery, ephemeral scheduling, deployment, security, failure handling, and observability.
+
+* **Workplane Spec**: [`workplane/workplane-spec.md`](./workplane/workplane-spec.md)  
+  Per-workload service discovery, workload identity, secure workload-to-workload connectivity, self-healing, and consistency gating.
+
+### **Technology Stack**
+
+| Component | Technology | Version |
+|-----------|------------|---------|
+| Language | Rust | 1.75+ |
+| Networking | libp2p | 0.56 |
+| Transport | QUIC | via libp2p |
+| DHT | Kademlia | via libp2p |
+| Pub/Sub | Gossipsub | via libp2p |
+| Serialization | bincode + serde | 1.3 / 1.0 |
+| Container Runtime | Podman | 4.x |
+| REST Framework | axum | — |
 
 ---
 
-**License**: Apache 2.0
+## **11. Community & Support**
+
+* **GitHub**: [github.com/beemesh/beemesh](https://github.com/beemesh/beemesh)
+* **Documentation**: [docs.beemesh.io](https://docs.beemesh.io)
+* **License**: Apache 2.0

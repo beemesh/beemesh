@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ main ]
+    branches: [ "main" ]
+    
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build-and-test:
@@ -15,36 +18,44 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            target
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+        uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: Cargo build
-        run: cargo build --workspace --all-targets --locked
+        run: cargo build --workspace --all-targets
 
-      - name: Install dependencies
+      - name: Install Podman
         run: |
           sudo apt-get update
           sudo apt-get -y install podman
 
-      - name: Start Podman service
+      - name: Start Podman API service
         run: |
-          export XDG_RUNTIME_DIR=/run/user/$UID
-          mkdir -p $XDG_RUNTIME_DIR
-          mkdir -p $XDG_RUNTIME_DIR/podman
-          podman system service --time=0 unix:///run/user/$UID/podman/podman.sock &
-          echo "PODMAN_HOST=unix:///run/user/$UID/podman/podman.sock" >> $GITHUB_ENV
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+          mkdir -p "$XDG_RUNTIME_DIR/podman"
+          podman system service --time=0 unix://$XDG_RUNTIME_DIR/podman/podman.sock &
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "CONTAINER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock" >> "$GITHUB_ENV"
 
-      - name: Cargo test
+      - name: Wait for Podman
+        run: |
+          for i in {1..20}; do
+            if podman info >/dev/null 2>&1; then
+              echo "Podman is ready"
+              exit 0
+            fi
+            echo "Waiting for Podman..."
+            sleep 0.5
+          done
+          echo "Podman did not become ready in time"
+          exit 1
+
+      - name: Pre-pull test images
+        run: |
+          echo "Pre-pulling nginx image to speed up integration tests..."
+          podman pull docker.io/library/nginx:latest
+      
+      - name: Cargo tests with Podman
         env:
-          PODMAN_HOST: ${{ env.PODMAN_HOST }}
-        run: cargo test --workspace --locked
+          CONTAINER_HOST: ${{ env.CONTAINER_HOST }}
+          BEEMESH_SELECTION_WINDOW_MS: "1000"
+        run: cargo test --workspace

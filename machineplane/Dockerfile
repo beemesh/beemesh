@@ -14,23 +14,11 @@ RUN rustup target add x86_64-unknown-linux-musl
 
 COPY . .
 
-RUN cargo build --release --locked -p machine --target x86_64-unknown-linux-musl
-RUN strip /app/target/x86_64-unknown-linux-musl/release/machine
-
-# ===============================
-# 2. Fetch static Podman client
-# ===============================
-ARG PODMAN_REMOTE_VERSION=5.6.2
-
-RUN curl -sSL "https://github.com/containers/podman/releases/download/v${PODMAN_REMOTE_VERSION}/podman-remote-static-linux_amd64.tar.gz" -o /tmp/podman.tar.gz \
-    && mkdir -p /out/podman \
-    && tar -xzf /tmp/podman.tar.gz -C /tmp \
-    && install -m 0755 /tmp/bin/podman-remote-static-linux_amd64 /out/podman/podman \
-    && strip /out/podman/podman \
-    && rm -rf /tmp/podman.tar.gz /tmp/bin
+RUN cargo build --release --locked -p beemesh-machineplane --target x86_64-unknown-linux-musl
+RUN strip /app/target/x86_64-unknown-linux-musl/release/machineplane
 
 # =====================
-# 3. Minimal scratch image
+# 2. Minimal scratch image
 # =====================
 FROM scratch
 
@@ -52,10 +40,9 @@ COPY --from=alpine:latest /etc/nsswitch.conf /etc/nsswitch.conf
 COPY --from=alpine:latest /etc/hosts /etc/hosts
 
 # Copy binaries into /usr/local/bin
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/machine /usr/local/bin/machine
-COPY --from=builder /out/podman/podman /usr/local/bin/podman
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/machineplane /usr/local/bin/machineplane
 
 # Set PATH so /bin and /usr/local/bin are both available
 ENV PATH=/usr/local/bin:/bin
 
-ENTRYPOINT ["machine"]
+ENTRYPOINT ["machineplane"]

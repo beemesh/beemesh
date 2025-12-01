@@ -1,0 +1,385 @@
+//! Runtime engine abstraction for container workload execution
+//!
+//! # Overview
+//!
+//! This module provides the runtime layer for deploying and managing containerized workloads
+//! in BeeMesh. It abstracts over different container runtime engines to execute Kubernetes
+//! manifests (Pods, Deployments, etc.) on cluster nodes.
+//!
+//! # Critical Requirement: Pod Support
+//!
+//! **IMPORTANT**: Any runtime engine added to this module MUST support Kubernetes Pods natively.
+//!
+//! ## Why Pods Are Required
+//!
+//! Kubernetes Pods are NOT just "multiple containers" - they are a fundamental primitive with
+//! specific semantics that cannot be emulated with simple container orchestration:
+//!
+//! - **Shared Network Namespace**: All containers in a pod share the same IP address and can
+//!   communicate via localhost. This is essential for sidecar patterns (service mesh, logging).
+//! - **Shared Storage Volumes**: Containers can share data via mounted volumes.
+//! - **Infra/Pause Container**: A special container holds the pod's namespaces even when
+//!   application containers restart.
+//! - **Atomic Lifecycle**: All containers in a pod are scheduled together on the same node
+//!   and share the same lifecycle (start, stop, restart as a unit).
+//!
+//! ## Supported Runtimes
+//!
+//! ### ✅ Podman (Current Default)
+//! - Native Kubernetes pod support via `podman kube play`
+//! - Creates pods with infra containers automatically
+//! - Full support for multi-container pods, sidecars, shared namespaces
+//! - Can run rootless for improved security
+//!
+//! ### ❌ Docker (Removed - Does NOT Support Pods)
+//! - Docker only supports individual containers, not pods
+//! - Docker Compose creates separate containers with separate network namespaces
+//! - Cannot implement true pod semantics without significant complexity
+//! - **DO NOT re-add Docker support** unless it gains native pod support
+//!
+//! ### 🔮 Future Options (Not Yet Implemented)
+//! - **CRI-O**: Native Kubernetes runtime, excellent pod support
+//! - **containerd**: With CRI plugin, full pod support
+//! - **Firecracker/Kata**: For VM-based isolation with pod semantics
+//!
+//! ## Adding New Runtime Engines
+//!
+//! Before adding a new runtime engine, verify it supports:
+//!
+//! 1. ✅ Kubernetes Pod API (not just containers)
+//! 2. ✅ Shared network namespace between containers
+//! 3. ✅ Infra/pause container pattern
+//! 4. ✅ Can parse and execute Kubernetes YAML manifests
+//!
+//! If a runtime only supports individual containers (like Docker), it is **NOT suitable**
+//! for BeeMesh and should not be added.
+
+use async_trait::async_trait;
+use log::warn;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use thiserror::Error;
+
+pub mod podman;
+pub mod podman_api;
+
+/// Configure the Podman runtime socket used for Libpod API calls.
+pub fn configure_podman_runtime(socket: Option<String>) {
+    podman::PodmanEngine::configure_runtime(socket);
+}
+
+/// Errors that can occur during runtime operations
+#[derive(Error, Debug)]
+pub enum RuntimeError {
+    #[error("Runtime engine not available: {0}")]
+    EngineNotAvailable(String),
+
+    #[error("Invalid manifest format: {0}")]
+    InvalidManifest(String),
+
+    #[error("Deployment failed: {0}")]
+    DeploymentFailed(String),
+
+    #[error("Instance not found: {0}")]
+    InstanceNotFound(String),
+
+    #[error("Instance not ready: {0}")]
+    InstanceNotReady(String),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("Command execution failed: {0}")]
+    CommandFailed(String),
+}
+
+/// Result type for runtime operations
+pub type RuntimeResult<T> = Result<T, RuntimeError>;
+
+/// Status of a deployed pod
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PodStatus {
+    /// Pod is starting up
+    Starting,
+    /// Pod is running successfully
+    Running,
+    /// Pod has stopped
+    Stopped,
+    /// Pod failed to start or crashed
+    Failed(String),
+    /// Status is unknown
+    Unknown,
+}
+
+/// Information about a deployed pod
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PodInfo {
+    /// Unique identifier for this pod (UUID v4)
+    pub id: String,
+    /// Kubernetes namespace (from manifest metadata.namespace, defaults to "default")
+    pub namespace: String,
+    /// Kubernetes resource kind (e.g., "Pod", "Deployment")
+    pub kind: String,
+    /// Kubernetes resource name (from manifest metadata.name)
+    pub name: String,
+    /// Current status of the pod
+    pub status: PodStatus,
+    /// Metadata associated with the pod
+    pub metadata: HashMap<String, String>,
+    /// When the pod was created
+    pub created_at: std::time::SystemTime,
+    /// When the pod was last updated
+    pub updated_at: std::time::SystemTime,
+    /// Exposed ports (if any)
+    pub ports: Vec<PortMapping>,
+}
+
+/// Port mapping for a pod
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortMapping {
+    /// Container/internal port
+    pub container_port: u16,
+    /// Host port (if exposed)
+    pub host_port: Option<u16>,
+    /// Protocol (tcp, udp)
+    pub protocol: String,
+}
+
+/// Configuration for deploying a workload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeploymentConfig {
+    /// Number of replicas to deploy
+    pub replicas: u32,
+    /// Environment variables
+    pub env: HashMap<String, String>,
+    /// Additional runtime-specific options
+    pub runtime_options: HashMap<String, String>,
+}
+
+impl Default for DeploymentConfig {
+    fn default() -> Self {
+        Self {
+            replicas: 1,
+            env: HashMap::new(),
+            runtime_options: HashMap::new(),
+        }
+    }
+}
+
+/// Trait that all runtime engines must implement
+///
+/// # Pod Support Requirement
+///
+/// **CRITICAL**: Implementations of this trait MUST support Kubernetes Pods, not just
+/// individual containers. This means:
+///
+/// - Ability to deploy multi-container pods with shared network namespace
+/// - Support for infra/pause containers to hold pod namespaces
+/// - Proper handling of pod lifecycle (all containers start/stop together)
+/// - Shared volumes between containers in the same pod
+///
+/// ## Why This Matters
+///
+/// BeeMesh uses Kubernetes manifests (Pods, Deployments) as its workload definition format.
+/// These manifests often include:
+/// - Sidecar containers (service mesh proxies, log collectors)
+/// - Init containers (setup tasks before main container starts)
+/// - Shared volumes for inter-container communication
+///
+/// A runtime that only supports individual containers (like Docker) **cannot properly
+/// execute these workloads** because it lacks the pod abstraction.
+///
+/// ## Verification
+///
+/// Before implementing this trait for a new runtime, verify:
+/// 1. Can it run `kubectl apply -f pod.yaml` or equivalent?
+/// 2. Do containers in a pod share localhost networking?
+/// 3. Does it create an infra/pause container?
+/// 4. Can it handle Kubernetes YAML manifests directly?
+///
+/// If the answer to any of these is "no", the runtime is not suitable for BeeMesh.
+#[async_trait]
+pub trait RuntimeEngine: Send + Sync {
+    /// Returns the name of this runtime engine
+    fn name(&self) -> &str;
+
+    /// Check if this runtime engine is available on the system
+    async fn is_available(&self) -> bool;
+
+    /// Enable downcasting to concrete types (for testing)
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Apply a manifest (like `kubectl apply`)
+    ///
+    /// # Arguments
+    /// * `manifest_content` - The raw manifest content (YAML, JSON, etc.)
+    /// * `config` - Deployment configuration
+    ///
+    /// # Returns
+    /// * `PodInfo` - Information about the deployed pod
+    async fn apply(
+        &self,
+        manifest_content: &[u8],
+        config: &DeploymentConfig,
+    ) -> RuntimeResult<PodInfo>;
+
+    /// Get status of a pod
+    async fn get_status(&self, pod_id: &str) -> RuntimeResult<PodInfo>;
+
+    /// List all pods managed by this engine
+    async fn list(&self) -> RuntimeResult<Vec<PodInfo>>;
+
+    /// Delete a pod (like `kubectl delete`)
+    async fn delete(&self, pod_id: &str) -> RuntimeResult<()>;
+
+    /// Get logs from a pod
+    async fn logs(
+        &self,
+        pod_id: &str,
+        tail: Option<usize>,
+    ) -> RuntimeResult<String>;
+
+    /// Validate a manifest before applying
+    async fn validate(&self, manifest_content: &[u8]) -> RuntimeResult<()>;
+
+    /// Export/generate a Kubernetes manifest from a running pod
+    /// This is useful for debugging and testing to see the actual runtime state
+    /// as a Kubernetes manifest.
+    ///
+    /// # Arguments
+    /// * `pod_id` - The unique identifier of the running pod
+    ///
+    /// # Returns
+    /// * The generated Kubernetes manifest as YAML bytes
+    async fn export(&self, pod_id: &str) -> RuntimeResult<Vec<u8>>;
+
+}
+
+/// Registry for managing multiple runtime engines
+pub struct RuntimeRegistry {
+    engines: HashMap<String, Box<dyn RuntimeEngine>>,
+    default_engine: Option<String>,
+}
+
+impl RuntimeRegistry {
+    /// Create a new runtime registry
+    pub fn new() -> Self {
+        Self {
+            engines: HashMap::new(),
+            default_engine: None,
+        }
+    }
+
+    /// Register a new runtime engine
+    pub fn register(&mut self, engine: Box<dyn RuntimeEngine>) {
+        let name = engine.name().to_string();
+        self.engines.insert(name.clone(), engine);
+
+        // Set as default if it's the first engine
+        if self.default_engine.is_none() {
+            self.default_engine = Some(name);
+        }
+    }
+
+    /// Get a runtime engine by name
+    pub fn get_engine(&self, name: &str) -> Option<&dyn RuntimeEngine> {
+        self.engines.get(name).map(|e| e.as_ref())
+    }
+
+    /// Get a mutable reference to a runtime engine by name (for testing)
+    #[cfg(test)]
+    pub fn get_engine_mut(&mut self, name: &str) -> Option<&mut Box<dyn RuntimeEngine>> {
+        self.engines.get_mut(name)
+    }
+
+    /// Get the default runtime engine
+    pub fn get_default_engine(&self) -> Option<&dyn RuntimeEngine> {
+        self.default_engine
+            .as_ref()
+            .and_then(|name| self.get_engine(name))
+    }
+
+    /// Set the default runtime engine
+    pub fn set_default_engine(&mut self, name: &str) -> RuntimeResult<()> {
+        if self.engines.contains_key(name) {
+            self.default_engine = Some(name.to_string());
+            Ok(())
+        } else {
+            Err(RuntimeError::EngineNotAvailable(name.to_string()))
+        }
+    }
+
+    /// List all registered engines
+    pub fn list_engines(&self) -> Vec<&str> {
+        self.engines.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Check which engines are available on the system
+    pub async fn check_available_engines(&self) -> HashMap<String, bool> {
+        let mut results = HashMap::new();
+        for (name, engine) in &self.engines {
+            results.insert(name.clone(), engine.is_available().await);
+        }
+        results
+    }
+}
+
+impl Default for RuntimeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Create a default runtime registry with Podman engine
+///
+/// Only Podman is currently supported as it provides native Kubernetes pod support
+/// via `podman kube play`. Docker does not support pods (only individual containers),
+/// so it cannot run Kubernetes manifests properly.
+///
+/// Future runtime engines like CRI-O may be added when needed.
+pub async fn create_default_registry() -> RuntimeRegistry {
+    let mut registry = RuntimeRegistry::new();
+
+    // Register Podman engine (only runtime that supports K8s pods)
+    registry.register(Box::new(podman::PodmanEngine::new()));
+
+    // Try to set Podman as default engine
+    let available = registry.check_available_engines().await;
+    if !*available.get("podman").unwrap_or(&false) {
+        warn!("Podman not available; setting Podman as default engine anyway");
+    }
+
+    let _ = registry.set_default_engine("podman");
+
+    registry
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_runtime_registry() {
+        let mut registry = RuntimeRegistry::new();
+
+        // Register Podman engine
+        registry.register(Box::new(podman::PodmanEngine::new()));
+
+        // Check that engine is registered and can be set as default
+        assert!(registry.get_engine("podman").is_some());
+        let _ = registry.set_default_engine("podman");
+        assert_eq!(registry.get_default_engine().unwrap().name(), "podman");
+
+        // List engines
+        let engines = registry.list_engines();
+        assert!(engines.contains(&"podman"));
+    }
+
+    #[tokio::test]
+    async fn test_default_deployment_config() {
+        let config = DeploymentConfig::default();
+        assert_eq!(config.replicas, 1);
+        assert!(config.env.is_empty());
+    }
+}

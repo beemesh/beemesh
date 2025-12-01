@@ -3,6 +3,26 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "runArgs": ["--privileged"],
-  "postCreateCommand": "chmod +x .devcontainer/setup-podman-storage.sh && .devcontainer/setup-podman-storage.sh"
+  "runArgs": [
+    "--privileged"
+  ],
+  "containerEnv": {
+    "RUST_LOG": "info",
+    "RUST_BACKTRACE": "1"
+  },
+  "postCreateCommand": "chmod +x .devcontainer/setup-podman-storage.sh && .devcontainer/setup-podman-storage.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.features": "all",
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  }
 }

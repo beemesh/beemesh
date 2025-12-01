@@ -2,18 +2,21 @@
 name = "workplane"
 version = "0.1.0"
 edition = "2024"
+description = "Beemesh workplane sidecar"
 
 [dependencies]
 anyhow = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 libp2p = { workspace = true }
-once_cell = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { workspace = true }

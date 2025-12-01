@@ -1,8 +1,0 @@
-# Exclude build artifacts from the Docker build context
-/target
-**/target
-**/*.rs.bk
-/.git
-.git/
-/target/
-**/*.log
