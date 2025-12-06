@@ -867,7 +867,8 @@ impl Scheduler {
                 .clone()
                 .or_else(|| get_local_manifest(&tender_id_clone))
             {
-                let owner_pubkey = keypair.to_protobuf_encoding().unwrap_or_default();
+                // Encode PUBLIC key (not keypair) for verification by recipients
+                let owner_pubkey = keypair.public().encode_protobuf();
 
                 // Send AwardWithManifest directly to each winner (spec v0.3)
                 // No gossipsub broadcast - awards are private to each winner
