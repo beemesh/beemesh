@@ -54,6 +54,18 @@ use std::time::{Duration, Instant};
 /// rejected to prevent replay attacks or clock manipulation.
 const MAX_CLOCK_SKEW_MS: i64 = 30_000;
 
+/// Maximum number of distinct workload IDs in the WDHT cache.
+///
+/// Prevents OOM from an attacker publishing records for many fake workloads.
+/// 10,000 workloads should be sufficient for any reasonable deployment.
+const MAX_WORKLOADS: usize = 10_000;
+
+/// Maximum number of peer records per workload.
+///
+/// Prevents OOM from an attacker publishing records for many fake peers.
+/// 1,000 peers per workload is generous for any realistic replica count.
+const MAX_PEERS_PER_WORKLOAD: usize = 1_000;
+
 /// A service record published by a workload replica to the WDHT.
 ///
 /// Each replica periodically publishes its [`ServiceRecord`] to advertise its
@@ -129,6 +141,15 @@ static WDHT: LazyLock<Mutex<HashMap<String, HashMap<String, RecordEntry>>>> =
 /// 2. No existing record exists for this peer, OR the incoming record wins
 ///    conflict resolution (higher version, newer timestamp, or peer ID tiebreaker)
 ///
+/// # Capacity Limits
+///
+/// The cache enforces two limits to prevent OOM attacks:
+/// - Maximum of [`MAX_WORKLOADS`] distinct workload IDs
+/// - Maximum of [`MAX_PEERS_PER_WORKLOAD`] peers per workload
+///
+/// If at capacity, expired entries are purged first. New records for
+/// unknown workloads/peers at capacity are rejected.
+///
 /// # Arguments
 ///
 /// * `record` - The service record to insert
@@ -144,12 +165,36 @@ pub fn put(record: ServiceRecord, ttl: Duration) -> bool {
     }
 
     let mut dht = WDHT.lock().expect("wdht lock");
+
+    // Check workload capacity limit for new workloads
+    if !dht.contains_key(&record.workload_id) && dht.len() >= MAX_WORKLOADS {
+        // Try to make room by removing empty or fully-expired workloads
+        let empty_keys: Vec<_> = dht
+            .iter()
+            .filter(|(_, peers)| peers.is_empty())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in empty_keys {
+            dht.remove(&key);
+        }
+        // If still at capacity, reject the new workload
+        if dht.len() >= MAX_WORKLOADS {
+            return false;
+        }
+    }
+
     let namespace_map = dht
         .entry(record.workload_id.clone())
         .or_default();
 
     // Lazily purge expired entries
     purge_expired(namespace_map);
+
+    // Check peer capacity limit for new peers
+    if !namespace_map.contains_key(&record.peer_id) && namespace_map.len() >= MAX_PEERS_PER_WORKLOAD {
+        // Already purged expired entries above, reject if still at capacity
+        return false;
+    }
 
     match namespace_map.entry(record.peer_id.clone()) {
         Entry::Occupied(mut occupied) => {
@@ -165,7 +210,7 @@ pub fn put(record: ServiceRecord, ttl: Duration) -> bool {
             }
         }
         Entry::Vacant(vacant) => {
-            // New peer - always insert
+            // New peer - always insert (already checked capacity above)
             vacant.insert(RecordEntry {
                 record,
                 expires_at: Instant::now() + ttl,

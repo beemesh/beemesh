@@ -286,7 +286,7 @@ pub async fn process_enhanced_self_apply_request(
         manifest.len()
     );
 
-    match bincode::deserialize::<ApplyRequest>(manifest) {
+    match crate::messages::deserialize_safe::<ApplyRequest>(manifest) {
         Ok(apply_req) => {
             debug!(
                 "Enhanced self-apply request - operation_id={:?} replicas={}",

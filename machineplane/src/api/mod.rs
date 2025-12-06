@@ -27,6 +27,13 @@ use tokio::{
 };
 use uuid::Uuid;
 
+/// Maximum number of tracked tenders in the tender_tracker.
+///
+/// This limit prevents OOM attacks via unbounded tender creation.
+/// 10,000 concurrent tenders is more than sufficient for normal operation
+/// while protecting against memory exhaustion from malicious API requests.
+const MAX_TRACKED_TENDERS: usize = 10_000;
+
 async fn create_response_with_fallback(
     body: &[u8],
 ) -> Result<axum::response::Response<axum::body::Body>, axum::http::StatusCode> {
@@ -242,6 +249,24 @@ pub async fn create_tender(
     };
     {
         let mut tracker = state.tender_tracker.write().await;
+        
+        // Enforce capacity limit to prevent OOM from excessive tender creation
+        if tracker.len() >= MAX_TRACKED_TENDERS {
+            // Evict the oldest tender to make room
+            if let Some(oldest_key) = tracker
+                .iter()
+                .min_by_key(|(_, v)| v.created_at)
+                .map(|(k, _)| k.clone())
+            {
+                log::warn!(
+                    "create_tender: tender_tracker at capacity ({}), evicting oldest tender '{}'",
+                    MAX_TRACKED_TENDERS,
+                    oldest_key
+                );
+                tracker.remove(&oldest_key);
+            }
+        }
+        
         log::info!(
             "create_tender: tracking tender with tender_id='{}'",
             tender_id

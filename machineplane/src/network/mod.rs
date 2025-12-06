@@ -50,6 +50,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::messages::EventType;
 use crate::scheduler::SchedulerCommand;
+use crate::signatures;
 
 // Submodules
 pub mod behaviour;
@@ -83,6 +84,14 @@ static NODE_KEYPAIRS: LazyLock<Mutex<KeypairMap>> =
 // Request-Response Protocol Types
 // ============================================================================
 
+/// Maximum size for request-response messages (64 MiB).
+///
+/// This limit prevents OOM attacks from malicious peers sending oversized
+/// messages. 64 MiB is sufficient for manifests and awards while protecting
+/// against memory exhaustion. This is larger than workplane's RPC limit
+/// because manifests can be substantial.
+const MAX_MESSAGE_SIZE: u64 = 64 * 1024 * 1024;
+
 /// Protocol identifier for the request-response codec.
 ///
 /// Used to negotiate the protocol during libp2p stream opening.
@@ -99,6 +108,11 @@ impl AsRef<str> for ByteProtocol {
 ///
 /// Reads and writes raw bytes without framing - the entire stream is
 /// consumed as a single message. Used for manifest transfer.
+///
+/// # Security
+///
+/// All reads are limited to [`MAX_MESSAGE_SIZE`] bytes to prevent
+/// OOM attacks from malicious peers.
 #[derive(Clone, Default)]
 pub struct ByteCodec;
 
@@ -108,6 +122,11 @@ impl request_response::Codec for ByteCodec {
     type Request = Vec<u8>;
     type Response = Vec<u8>;
 
+    /// Read a request from the stream.
+    ///
+    /// # Security
+    ///
+    /// Reads are limited to [`MAX_MESSAGE_SIZE`] bytes to prevent OOM.
     async fn read_request<T>(
         &mut self,
         _protocol: &Self::Protocol,
@@ -117,10 +136,22 @@ impl request_response::Codec for ByteCodec {
         T: futures::AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        let mut limited = io.take(MAX_MESSAGE_SIZE);
+        limited.read_to_end(&mut buf).await?;
+        if buf.len() as u64 >= MAX_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("request exceeds maximum size of {} bytes", MAX_MESSAGE_SIZE),
+            ));
+        }
         Ok(buf)
     }
 
+    /// Read a response from the stream.
+    ///
+    /// # Security
+    ///
+    /// Reads are limited to [`MAX_MESSAGE_SIZE`] bytes to prevent OOM.
     async fn read_response<T>(
         &mut self,
         _protocol: &Self::Protocol,
@@ -130,7 +161,14 @@ impl request_response::Codec for ByteCodec {
         T: futures::AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        let mut limited = io.take(MAX_MESSAGE_SIZE);
+        limited.read_to_end(&mut buf).await?;
+        if buf.len() as u64 >= MAX_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("response exceeds maximum size of {} bytes", MAX_MESSAGE_SIZE),
+            ));
+        }
         Ok(buf)
     }
 
@@ -605,7 +643,7 @@ pub async fn start_libp2p_node(
                                 info!("Received bid from peer={} ({} bytes)", peer, request.len());
 
                                 // Decode the bid and forward to scheduler
-                                let response_bytes = match bincode::deserialize::<crate::messages::Bid>(&request) {
+                                let response_bytes = match crate::messages::deserialize_safe::<crate::messages::Bid>(&request) {
                                     Ok(bid) => {
                                         // Forward to scheduler for bid collection
                                         scheduler.handle_bid_direct(&bid, &peer).await;
@@ -641,7 +679,7 @@ pub async fn start_libp2p_node(
                                 info!("Received event from peer={} ({} bytes)", peer, request.len());
 
                                 // Decode the event and forward to scheduler
-                                let response_bytes = match bincode::deserialize::<crate::messages::SchedulerEvent>(&request) {
+                                let response_bytes = match crate::messages::deserialize_safe::<crate::messages::SchedulerEvent>(&request) {
                                     Ok(event) => {
                                         // Forward to scheduler for event processing
                                         scheduler.handle_event_direct(&event, &peer).await;
@@ -677,58 +715,120 @@ pub async fn start_libp2p_node(
                                 info!("Received award from peer={} ({} bytes)", peer, request.len());
 
                                 // Decode the award with manifest and process deployment
-                                let response_bytes = match bincode::deserialize::<crate::messages::AwardWithManifest>(&request) {
+                                let response_bytes = match crate::messages::deserialize_safe::<crate::messages::AwardWithManifest>(&request) {
                                     Ok(award) => {
-                                        // Store the tender owner for event routing
-                                        crate::scheduler::set_tender_owner(&award.tender_id, &award.owner_peer_id);
+                                        // ============================================================
+                                        // SECURITY: Verify award before deployment (spec §7)
+                                        // ============================================================
+                                        
+                                        // 1. Verify timestamp freshness to prevent replay attacks
+                                        if !crate::scheduler::is_timestamp_fresh(award.timestamp) {
+                                            warn!(
+                                                "Rejecting award for tender {}: stale timestamp",
+                                                award.tender_id
+                                            );
+                                            b"rejected: stale timestamp".to_vec()
+                                        }
+                                        // 2. Verify the award signature using owner's public key
+                                        else if award.owner_pubkey.is_empty() {
+                                            warn!(
+                                                "Rejecting award for tender {}: missing owner public key",
+                                                award.tender_id
+                                            );
+                                            b"rejected: missing owner public key".to_vec()
+                                        }
+                                        else {
+                                            // Decode the owner's public key from protobuf encoding
+                                            let owner_pubkey = match libp2p::identity::PublicKey::try_decode_protobuf(&award.owner_pubkey) {
+                                                Ok(key) => key,
+                                                Err(e) => {
+                                                    warn!(
+                                                        "Rejecting award for tender {}: invalid owner public key: {}",
+                                                        award.tender_id, e
+                                                    );
+                                                    let _ = swarm.behaviour_mut().award_rr.send_response(
+                                                        channel,
+                                                        b"rejected: invalid owner public key".to_vec()
+                                                    );
+                                                    continue;
+                                                }
+                                            };
 
-                                        // Register manifest locally for cache
-                                        crate::scheduler::register_local_manifest(
-                                            &award.tender_id,
-                                            &award.manifest_json,
-                                        );
-
-                                        // Create apply request and deploy
-                                        let apply_req = crate::messages::ApplyRequest {
-                                            replicas: award.replicas.max(1),
-                                            operation_id: format!(
-                                                "award-{}-{}",
-                                                award.tender_id,
-                                                uuid::Uuid::new_v4()
-                                            ),
-                                            manifest_json: award.manifest_json.clone(),
-                                            origin_peer: award.owner_peer_id.clone(),
-                                            signature: Vec::new(),
-                                        };
-
-                                        match crate::runtime::process_manifest_deployment(
-                                            &mut swarm,
-                                            &apply_req,
-                                            &award.manifest_json,
-                                        ).await {
-                                            Ok(pod_id) => {
-                                                info!(
-                                                    "Successfully deployed manifest for tender {} as pod {}",
-                                                    award.tender_id, pod_id
+                                            // Verify the signature matches the owner's public key
+                                            if !signatures::verify_sign_award_with_manifest(&award, &owner_pubkey) {
+                                                warn!(
+                                                    "Rejecting award for tender {}: invalid signature",
+                                                    award.tender_id
                                                 );
-                                                scheduler.publish_event(
-                                                    &award.tender_id,
-                                                    EventType::Deployed,
-                                                    &format!("pod {} deployed", pod_id),
-                                                );
-                                                b"ok".to_vec()
+                                                b"rejected: invalid signature".to_vec()
                                             }
-                                            Err(e) => {
-                                                error!(
-                                                    "Deployment failed for tender {}: {}",
-                                                    award.tender_id, e
+                                            // 3. Verify the sender peer matches the claimed owner
+                                            else if owner_pubkey.to_peer_id() != peer {
+                                                warn!(
+                                                    "Rejecting award for tender {}: sender {} does not match owner {}",
+                                                    award.tender_id, peer, owner_pubkey.to_peer_id()
                                                 );
-                                                scheduler.publish_event(
+                                                b"rejected: sender mismatch".to_vec()
+                                            }
+                                            else {
+                                                // All security checks passed - proceed with deployment
+                                                info!(
+                                                    "Award verified for tender {} from owner {}",
+                                                    award.tender_id, award.owner_peer_id
+                                                );
+
+                                                // Store the tender owner for event routing
+                                                crate::scheduler::set_tender_owner(&award.tender_id, &award.owner_peer_id);
+
+                                                // Register manifest locally for cache
+                                                crate::scheduler::register_local_manifest(
                                                     &award.tender_id,
-                                                    EventType::Failed,
-                                                    &format!("deployment failed: {}", e),
+                                                    &award.manifest_json,
                                                 );
-                                                format!("deploy error: {}", e).into_bytes()
+
+                                                // Create apply request and deploy
+                                                let apply_req = crate::messages::ApplyRequest {
+                                                    replicas: award.replicas.max(1),
+                                                    operation_id: format!(
+                                                        "award-{}-{}",
+                                                        award.tender_id,
+                                                        uuid::Uuid::new_v4()
+                                                    ),
+                                                    manifest_json: award.manifest_json.clone(),
+                                                    origin_peer: award.owner_peer_id.clone(),
+                                                    signature: Vec::new(),
+                                                };
+
+                                                match crate::runtime::process_manifest_deployment(
+                                                    &mut swarm,
+                                                    &apply_req,
+                                                    &award.manifest_json,
+                                                ).await {
+                                                    Ok(pod_id) => {
+                                                        info!(
+                                                            "Successfully deployed manifest for tender {} as pod {}",
+                                                            award.tender_id, pod_id
+                                                        );
+                                                        scheduler.publish_event(
+                                                            &award.tender_id,
+                                                            EventType::Deployed,
+                                                            &format!("pod {} deployed", pod_id),
+                                                        );
+                                                        b"ok".to_vec()
+                                                    }
+                                                    Err(e) => {
+                                                        error!(
+                                                            "Deployment failed for tender {}: {}",
+                                                            award.tender_id, e
+                                                        );
+                                                        scheduler.publish_event(
+                                                            &award.tender_id,
+                                                            EventType::Failed,
+                                                            &format!("deployment failed: {}", e),
+                                                        );
+                                                        format!("deploy error: {}", e).into_bytes()
+                                                    }
+                                                }
                                             }
                                         }
                                     }

@@ -109,11 +109,26 @@ type EventReplayFilter = Arc<Mutex<HashMap<(String, String, u64), u64>>>;
 
 /// Maximum allowed clock skew between nodes (spec §3.3).
 /// Messages with timestamps outside this window are rejected.
-const MAX_CLOCK_SKEW_MS: u64 = 30_000;
+pub const MAX_CLOCK_SKEW_MS: u64 = 30_000;
 
 /// Duration to retain seen message tuples for replay protection (spec §3.3).
 /// After this window, a replayed message would be accepted again.
 const REPLAY_WINDOW_MS: u64 = 300_000;
+
+/// Maximum number of entries in replay protection filters.
+/// Prevents OOM under Sybil attack with many unique message keys.
+/// 100,000 entries × ~100 bytes per entry ≈ 10 MiB per filter.
+const MAX_REPLAY_FILTER_ENTRIES: usize = 100_000;
+
+/// Maximum number of manifests cached locally.
+/// Each manifest can be several MiB, so this limits memory usage.
+const MAX_MANIFEST_CACHE_ENTRIES: usize = 1_000;
+
+/// Maximum number of tender owner mappings.
+const MAX_TENDER_OWNER_ENTRIES: usize = 10_000;
+
+/// Maximum number of disposal entries.
+const MAX_DISPOSAL_ENTRIES: usize = 10_000;
 
 // ============================================================================
 // Global State (Process-Scoped Caches)
@@ -136,6 +151,12 @@ static TENDER_OWNERS: LazyLock<Mutex<HashMap<String, String>>> =
 
 /// Records the owner peer for a tender (called when receiving an award).
 ///
+/// # Capacity Limit
+///
+/// The map is limited to [`MAX_TENDER_OWNER_ENTRIES`] entries. If at capacity,
+/// random entries are evicted to make room. This is acceptable since tender
+/// owner mappings are only needed temporarily for event routing.
+///
 /// # Panics
 ///
 /// Panics if the mutex is poisoned. A poisoned mutex indicates scheduler
@@ -145,6 +166,16 @@ pub fn set_tender_owner(tender_id: &str, owner_peer_id: &str) {
     let mut owners = TENDER_OWNERS
         .lock()
         .expect("tender owners mutex poisoned - scheduler state corrupted");
+
+    // Enforce capacity limit by evicting oldest entries (FIFO approximation)
+    while owners.len() >= MAX_TENDER_OWNER_ENTRIES {
+        if let Some(key) = owners.keys().next().cloned() {
+            owners.remove(&key);
+        } else {
+            break;
+        }
+    }
+
     owners.insert(tender_id.to_string(), owner_peer_id.to_string());
 }
 
@@ -219,13 +250,37 @@ pub async fn is_disposing(resource_key: &str) -> bool {
 /// Called when a DISPOSAL message is received and verified. The entry will
 /// expire after `DISPOSAL_TTL` (5 minutes), after which the self-healer may
 /// attempt recovery if a new tender is published.
+///
+/// # Capacity Limit
+///
+/// The disposal set is limited to [`MAX_DISPOSAL_ENTRIES`] entries. If at
+/// capacity, expired entries are purged first. If still at capacity, the
+/// oldest entry is evicted to make room.
 pub async fn mark_disposal(resource_key: &str) {
     let mut set = DISPOSAL_SET.write().await;
-    let expires_at = std::time::Instant::now() + DISPOSAL_TTL;
+    let now = std::time::Instant::now();
+    let expires_at = now + DISPOSAL_TTL;
+
+    // Purge expired entries first
+    set.retain(|_, exp| *exp > now);
+
+    // If still at capacity, evict oldest entry
+    while set.len() >= MAX_DISPOSAL_ENTRIES {
+        if let Some(oldest_key) = set
+            .iter()
+            .min_by_key(|(_, exp)| *exp)
+            .map(|(k, _)| k.clone())
+        {
+            set.remove(&oldest_key);
+        } else {
+            break;
+        }
+    }
+
     set.insert(resource_key.to_string(), expires_at);
     info!(
-        "mark_disposal: resource_key={} expires_in={:?}",
-        resource_key, DISPOSAL_TTL
+        "mark_disposal: resource_key={} expires_in={:?} (cache_size={})",
+        resource_key, DISPOSAL_TTL, set.len()
     );
 }
 
@@ -500,13 +555,13 @@ impl Scheduler {
         }
 
         // Try to parse as Tender first
-        if let Ok(tender) = bincode::deserialize::<Tender>(&message.data) {
+        if let Ok(tender) = crate::messages::deserialize_safe::<Tender>(&message.data) {
             self.handle_tender(&tender, message).await;
             return;
         }
 
         // Try to parse as Disposal
-        if let Ok(disposal) = bincode::deserialize::<Disposal>(&message.data) {
+        if let Ok(disposal) = crate::messages::deserialize_safe::<Disposal>(&message.data) {
             if let Some(source_peer) = message.source.as_ref() {
                 if let Err(e) = handle_disposal(&disposal, source_peer).await {
                     error!("Failed to handle disposal: {}", e);
@@ -1250,6 +1305,12 @@ fn select_winners(context: &BidContext) -> Vec<BidOutcome> {
 /// Called when creating a tender to store the manifest JSON so it can be
 /// transferred to winners via the RequestResponse protocol.
 ///
+/// # Capacity Limit
+///
+/// The cache is limited to [`MAX_MANIFEST_CACHE_ENTRIES`] entries. If at capacity,
+/// the oldest entries are evicted to make room. This prevents memory exhaustion
+/// from accumulated manifests (each can be several MiB).
+///
 /// # Panics
 ///
 /// Panics if the manifest cache mutex is poisoned. Manifest integrity is
@@ -1259,6 +1320,16 @@ pub fn register_local_manifest(tender_id: &str, manifest_json: &str) {
     let mut cache = LOCAL_MANIFEST_CACHE
         .lock()
         .expect("manifest cache mutex poisoned - manifest state corrupted");
+
+    // Enforce capacity limit by evicting oldest entries (FIFO approximation)
+    while cache.len() >= MAX_MANIFEST_CACHE_ENTRIES {
+        if let Some(key) = cache.keys().next().cloned() {
+            cache.remove(&key);
+        } else {
+            break;
+        }
+    }
+
     cache.insert(tender_id.to_string(), manifest_json.to_string());
 }
 
@@ -1294,6 +1365,11 @@ fn now_ms() -> u64 {
 /// This function maintains a sliding window of seen keys. Keys older than
 /// `REPLAY_WINDOW_MS` are automatically pruned on each call.
 ///
+/// # Capacity Limit
+///
+/// The map is limited to [`MAX_REPLAY_FILTER_ENTRIES`] entries. If at capacity
+/// after pruning expired entries, the oldest entries are evicted to make room.
+///
 /// # Returns
 ///
 /// - `true` if the key was newly recorded (not a replay)
@@ -1303,6 +1379,19 @@ fn record_replay<K: Eq + Hash + Clone>(map: &mut HashMap<K, u64>, key: K) -> boo
 
     // Prune expired entries
     map.retain(|_, ts| now.saturating_sub(*ts) <= REPLAY_WINDOW_MS);
+
+    // Enforce capacity limit by evicting oldest entries
+    while map.len() >= MAX_REPLAY_FILTER_ENTRIES {
+        if let Some(oldest_key) = map
+            .iter()
+            .min_by_key(|(_, ts)| *ts)
+            .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest_key);
+        } else {
+            break;
+        }
+    }
 
     // Check if already seen
     if let Some(ts) = map.get(&key)
@@ -1318,7 +1407,7 @@ fn record_replay<K: Eq + Hash + Clone>(map: &mut HashMap<K, u64>, key: K) -> boo
 ///
 /// Messages with timestamps outside the `MAX_CLOCK_SKEW_MS` window are
 /// rejected to prevent replay attacks and stale message processing.
-fn is_timestamp_fresh(timestamp_ms: u64) -> bool {
+pub fn is_timestamp_fresh(timestamp_ms: u64) -> bool {
     let now = now_ms();
     let (min, max) = if now > timestamp_ms {
         (timestamp_ms, now)

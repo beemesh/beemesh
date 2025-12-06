@@ -368,3 +368,46 @@ impl Default for AppliedManifest {
         }
     }
 }
+
+// ============================================================================
+// Safe Bincode Deserialization
+// ============================================================================
+
+/// Maximum size for bincode deserialization (16 MiB).
+///
+/// This limit prevents OOM attacks from malicious peers sending payloads
+/// with inflated size prefixes. 16 MiB is sufficient for any legitimate
+/// message while protecting against memory exhaustion.
+pub const MAX_BINCODE_SIZE: u64 = 16 * 1024 * 1024;
+
+/// Safely deserialize a bincode payload with size limits.
+///
+/// Uses bincode's `Options` API to enforce a maximum deserialization size,
+/// preventing OOM attacks from malicious payloads that claim to have
+/// extremely large sizes in their length prefixes.
+///
+/// # Arguments
+///
+/// * `bytes` - The serialized bincode data
+///
+/// # Returns
+///
+/// The deserialized value, or an error if deserialization fails or
+/// the payload would exceed the size limit.
+///
+/// # Security
+///
+/// This function MUST be used for all network-received bincode data
+/// instead of `bincode::deserialize()` to prevent OOM attacks.
+pub fn deserialize_safe<'a, T>(bytes: &'a [u8]) -> Result<T, bincode::Error>
+where
+    T: serde::Deserialize<'a>,
+{
+    use bincode::Options;
+    
+    bincode::DefaultOptions::new()
+        .with_limit(MAX_BINCODE_SIZE)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .deserialize(bytes)
+}

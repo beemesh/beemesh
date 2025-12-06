@@ -94,10 +94,29 @@ struct WorkplaneBehaviour {
 // RPC Codec
 // ============================================================================
 
+/// Maximum size for RPC messages (16 MiB).
+///
+/// This limit prevents OOM attacks from malicious peers sending oversized
+/// messages. 16 MiB is sufficient for any legitimate RPC payload while
+/// protecting against memory exhaustion.
+const MAX_RPC_MESSAGE_SIZE: u64 = 16 * 1024 * 1024;
+
+/// Maximum number of concurrent pending RPC requests.
+///
+/// This limit prevents OOM attacks from flooding outbound request channels.
+/// 10,000 concurrent requests is more than sufficient for normal operation
+/// while protecting against memory exhaustion.
+const MAX_PENDING_REQUESTS: usize = 10_000;
+
 /// JSON codec for RPC request/response serialization.
 ///
 /// Implements libp2p's `Codec` trait to serialize [`RPCRequest`] and
 /// [`RPCResponse`] as JSON over the wire.
+///
+/// # Security
+///
+/// All reads are limited to [`MAX_RPC_MESSAGE_SIZE`] bytes to prevent
+/// OOM attacks from malicious peers.
 #[derive(Clone, Default)]
 struct RPCCodec;
 
@@ -118,6 +137,10 @@ impl request_response::Codec for RPCCodec {
     type Response = RPCResponse;
 
     /// Read an RPC request from the stream.
+    ///
+    /// # Security
+    ///
+    /// Reads are limited to [`MAX_RPC_MESSAGE_SIZE`] bytes to prevent OOM.
     async fn read_request<T>(
         &mut self,
         _protocol: &Self::Protocol,
@@ -127,12 +150,23 @@ impl request_response::Codec for RPCCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut vec = Vec::new();
-        AsyncReadExt::read_to_end(io, &mut vec).await?;
+        let mut limited = io.take(MAX_RPC_MESSAGE_SIZE);
+        AsyncReadExt::read_to_end(&mut limited, &mut vec).await?;
+        if vec.len() as u64 >= MAX_RPC_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("RPC request exceeds maximum size of {} bytes", MAX_RPC_MESSAGE_SIZE),
+            ));
+        }
         serde_json::from_slice(&vec)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     /// Read an RPC response from the stream.
+    ///
+    /// # Security
+    ///
+    /// Reads are limited to [`MAX_RPC_MESSAGE_SIZE`] bytes to prevent OOM.
     async fn read_response<T>(
         &mut self,
         _protocol: &Self::Protocol,
@@ -142,7 +176,14 @@ impl request_response::Codec for RPCCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut vec = Vec::new();
-        AsyncReadExt::read_to_end(io, &mut vec).await?;
+        let mut limited = io.take(MAX_RPC_MESSAGE_SIZE);
+        AsyncReadExt::read_to_end(&mut limited, &mut vec).await?;
+        if vec.len() as u64 >= MAX_RPC_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("RPC response exceeds maximum size of {} bytes", MAX_RPC_MESSAGE_SIZE),
+            ));
+        }
         serde_json::from_slice(&vec)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
@@ -708,8 +749,17 @@ async fn network_event_loop(
                     }
                     // Send RPC request to peer
                     NetworkCommand::SendRequest { target, request, reply_tx } => {
-                        let request_id = swarm.behaviour_mut().request_response.send_request(&target, request);
-                        pending_requests.insert(request_id, reply_tx);
+                        // Enforce capacity limit to prevent OOM under flooding attacks
+                        if pending_requests.len() >= MAX_PENDING_REQUESTS {
+                            warn!(
+                                "Pending requests at capacity ({}), rejecting new request",
+                                MAX_PENDING_REQUESTS
+                            );
+                            let _ = reply_tx.send(Err(anyhow!("Too many pending requests")));
+                        } else {
+                            let request_id = swarm.behaviour_mut().request_response.send_request(&target, request);
+                            pending_requests.insert(request_id, reply_tx);
+                        }
                     }
                     // Start listening on address
                     NetworkCommand::StartListening { addr, reply_tx } => {
