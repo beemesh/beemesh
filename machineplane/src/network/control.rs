@@ -47,7 +47,10 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
                             .or_else(|| SCHEDULER_INPUT_TX.get().cloned());
 
                     if let Some(tx) = tx {
-                        let _ = tx.send((
+                        // Use try_send for synchronous delivery (bounded channel)
+                        // This is safe because the channel has sufficient capacity
+                        // and we want immediate feedback on channel full conditions
+                        if let Err(e) = tx.try_send((
                             topic.hash(),
                             gossipsub::Message {
                                 source: Some(local_peer_id),
@@ -55,7 +58,9 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
                                 sequence_number: None,
                                 topic: topic.hash(),
                             },
-                        ));
+                        )) {
+                            log::warn!("Failed to deliver tender to local scheduler: {}", e);
+                        }
                     }
 
                     let _ = reply_tx.send(Ok(()));
@@ -81,7 +86,10 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
                             .or_else(|| SCHEDULER_INPUT_TX.get().cloned());
 
                     if let Some(tx) = tx {
-                        let _ = tx.send((
+                        // Use try_send for synchronous delivery (bounded channel)
+                        // This is safe because the channel has sufficient capacity
+                        // and we want immediate feedback on channel full conditions
+                        if let Err(e) = tx.try_send((
                             topic.hash(),
                             gossipsub::Message {
                                 source: Some(local_peer_id),
@@ -89,7 +97,9 @@ pub async fn handle_control_message(msg: Libp2pControl, swarm: &mut Swarm<MyBeha
                                 sequence_number: None,
                                 topic: topic.hash(),
                             },
-                        ));
+                        )) {
+                            log::warn!("Failed to deliver disposal to local scheduler: {}", e);
+                        }
                     }
 
                     let _ = reply_tx.send(Ok(()));
