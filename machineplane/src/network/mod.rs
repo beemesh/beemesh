@@ -363,13 +363,18 @@ pub fn setup_libp2p_node(
                 gossipsub_config,
             )?;
 
+            // Configure request-response with explicit timeouts to prevent resource exhaustion
+            // from slowloris-style attacks or hung connections.
+            let rr_config = request_response::Config::default()
+                .with_request_timeout(Duration::from_secs(30));
+
             // Create the request-response behavior for bid submission (bidder → tender owner)
             let bid_rr = request_response::Behaviour::new(
                 std::iter::once((
                     ByteProtocol("/beemesh/bid/1.0.0"),
                     request_response::ProtocolSupport::Full,
                 )),
-                request_response::Config::default(),
+                rr_config.clone(),
             );
 
             // Create the request-response behavior for event reporting (winner → tender owner)
@@ -378,7 +383,7 @@ pub fn setup_libp2p_node(
                     ByteProtocol("/beemesh/event/1.0.0"),
                     request_response::ProtocolSupport::Full,
                 )),
-                request_response::Config::default(),
+                rr_config.clone(),
             );
 
             // Create the request-response behavior for award delivery (tender owner → winner)
@@ -387,7 +392,7 @@ pub fn setup_libp2p_node(
                     ByteProtocol("/beemesh/award/1.0.0"),
                     request_response::ProtocolSupport::Full,
                 )),
-                request_response::Config::default(),
+                rr_config,
             );
 
             // Create Kademlia DHT behavior with configuration suitable for small networks
@@ -501,10 +506,14 @@ pub async fn start_libp2p_node(
     let mut dht_bootstrapped = false;
 
     // --- Scheduler Setup ---
-    // Create channels for scheduler input/output
+    // Create bounded channels for scheduler input/output to prevent OOM under message flooding.
+    // Capacity of 10,000 allows burst handling while providing backpressure.
+    const SCHEDULER_INPUT_CHANNEL_CAPACITY: usize = 10_000;
+    const SCHEDULER_OUTPUT_CHANNEL_CAPACITY: usize = 10_000;
+    
     let (sched_input_tx, mut sched_input_rx) =
-        mpsc::unbounded_channel::<(gossipsub::TopicHash, gossipsub::Message)>();
-    let (sched_output_tx, mut sched_output_rx) = mpsc::unbounded_channel::<SchedulerCommand>();
+        mpsc::channel::<(gossipsub::TopicHash, gossipsub::Message)>(SCHEDULER_INPUT_CHANNEL_CAPACITY);
+    let (sched_output_tx, mut sched_output_rx) = mpsc::channel::<SchedulerCommand>(SCHEDULER_OUTPUT_CHANNEL_CAPACITY);
 
     // Initialize scheduler input sender for this specific peer
     // This allows multiple nodes in the same process to have separate schedulers

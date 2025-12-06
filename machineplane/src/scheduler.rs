@@ -421,7 +421,8 @@ pub struct Scheduler {
     seen_events: EventReplayFilter,
 
     /// Channel to send commands (Publish, SendBid, SendAward, SendEvent) to the network loop.
-    outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
+    /// Uses bounded channel to provide backpressure under high load.
+    outbound_tx: mpsc::Sender<SchedulerCommand>,
 }
 
 // ============================================================================
@@ -512,11 +513,11 @@ impl Scheduler {
     ///
     /// * `local_node_id` - This node's PeerId as a string
     /// * `keypair` - Ed25519 keypair for signing messages
-    /// * `outbound_tx` - Channel to send commands to the network loop
+    /// * `outbound_tx` - Bounded channel to send commands to the network loop
     pub fn new(
         local_node_id: String,
         keypair: Keypair,
-        outbound_tx: mpsc::UnboundedSender<SchedulerCommand>,
+        outbound_tx: mpsc::Sender<SchedulerCommand>,
     ) -> Self {
         Self {
             local_node_id,
@@ -736,16 +737,25 @@ impl Scheduler {
         // Step 4: Send bid directly to tender owner (spec v0.3)
         // Uses request-response protocol instead of gossipsub broadcast
         // The tender owner is identified from gossipsub message.source
-        if let Err(e) = self.outbound_tx.send(SchedulerCommand::SendBid {
+        match self.outbound_tx.try_send(SchedulerCommand::SendBid {
             peer_id: source_peer.to_string(),
             payload: bid_bytes,
         }) {
-            error!("Failed to queue bid for tender {}: {}", tender_id, e);
-        } else {
-            info!(
-                "Queued Bid for tender {} to owner {} with score {:.2}",
-                tender_id, source_peer, my_score
-            );
+            Ok(()) => {
+                info!(
+                    "Queued Bid for tender {} to owner {} with score {:.2}",
+                    tender_id, source_peer, my_score
+                );
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                error!(
+                    "Failed to queue bid for tender {}: output channel full (backpressure)",
+                    tender_id
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                error!("Failed to queue bid for tender {}: channel closed", tender_id);
+            }
         }
     }
 
@@ -889,19 +899,28 @@ impl Scheduler {
                     let award_bytes = bincode::serialize(&award_with_manifest)
                         .unwrap_or_else(|_| Vec::new());
 
-                    if let Err(e) = outbound_tx.send(SchedulerCommand::SendAward {
+                    match outbound_tx.try_send(SchedulerCommand::SendAward {
                         peer_id: winner.bidder_id.clone(),
                         payload: award_bytes,
                     }) {
-                        error!(
-                            "Failed to queue award for tender {} to {}: {}",
-                            tender_id_clone, winner.bidder_id, e
-                        );
-                    } else {
-                        info!(
-                            "Queued award+manifest for tender {} to winner {}",
-                            tender_id_clone, winner.bidder_id
-                        );
+                        Ok(()) => {
+                            info!(
+                                "Queued award+manifest for tender {} to winner {}",
+                                tender_id_clone, winner.bidder_id
+                            );
+                        }
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            error!(
+                                "Failed to queue award for tender {} to {}: output channel full (backpressure)",
+                                tender_id_clone, winner.bidder_id
+                            );
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            error!(
+                                "Failed to queue award for tender {} to {}: channel closed",
+                                tender_id_clone, winner.bidder_id
+                            );
+                        }
                     }
                 }
 
@@ -1221,19 +1240,28 @@ impl Scheduler {
         };
 
         // Send event directly to tender owner via request-response (spec v0.3)
-        if let Err(e) = self.outbound_tx.send(SchedulerCommand::SendEvent {
+        match self.outbound_tx.try_send(SchedulerCommand::SendEvent {
             peer_id: owner_peer_id.clone(),
             payload,
         }) {
-            error!(
-                "Failed to queue event for tender {} to owner {}: {}",
-                tender_id, owner_peer_id, e
-            );
-        } else {
-            info!(
-                "Queued {:?} event for tender {} to owner {}",
-                event.event_type, tender_id, owner_peer_id
-            );
+            Ok(()) => {
+                info!(
+                    "Queued {:?} event for tender {} to owner {}",
+                    event.event_type, tender_id, owner_peer_id
+                );
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                error!(
+                    "Failed to queue event for tender {} to owner {}: output channel full (backpressure)",
+                    tender_id, owner_peer_id
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                error!(
+                    "Failed to queue event for tender {} to owner {}: channel closed",
+                    tender_id, owner_peer_id
+                );
+            }
         }
     }
 }

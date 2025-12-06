@@ -376,12 +376,14 @@ impl Network {
                 let kad_config = kad::Config::default();
                 let kademlia = kad::Behaviour::with_config(peer_id, store, kad_config);
 
-                // Configure request/response with our RPC protocol
+                // Configure request/response with our RPC protocol and explicit timeout
+                // to prevent resource exhaustion from slowloris-style attacks.
                 let protocols = std::iter::once((
                     RPCProtocol("/workplane/rpc/1.0.0"),
                     request_response::ProtocolSupport::Full,
                 ));
-                let rr_config = request_response::Config::default();
+                let rr_config = request_response::Config::default()
+                    .with_request_timeout(Duration::from_secs(30));
                 let request_response = request_response::Behaviour::new(protocols, rr_config);
 
                 Ok(WorkplaneBehaviour {
@@ -391,7 +393,10 @@ impl Network {
             })?
             .build();
 
-        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        // Bounded channel for network commands. 256 slots allows sufficient burst
+        // handling for concurrent operations while providing backpressure under load.
+        const NETWORK_CMD_CHANNEL_CAPACITY: usize = 256;
+        let (cmd_tx, cmd_rx) = mpsc::channel(NETWORK_CMD_CHANNEL_CAPACITY);
 
         // Spawn the background event loop
         tokio::spawn(network_event_loop(swarm, cmd_rx));
@@ -679,14 +684,23 @@ impl Network {
 ///
 /// * `swarm` - The libp2p swarm to drive
 /// * `cmd_rx` - Channel for receiving commands from application code
+/// Tracks pending request metadata for cleanup on peer disconnect.
+struct PendingRequestInfo {
+    /// The peer this request was sent to.
+    peer_id: PeerId,
+    /// Channel to send the response or error.
+    reply_tx: oneshot::Sender<Result<RPCResponse>>,
+}
+
 async fn network_event_loop(
     mut swarm: Swarm<WorkplaneBehaviour>,
     mut cmd_rx: mpsc::Receiver<NetworkCommand>,
 ) {
-    // Map of pending outbound RPC requests awaiting responses
+    // Map of pending outbound RPC requests awaiting responses.
+    // Includes peer_id for cleanup on disconnect.
     let mut pending_requests: HashMap<
         request_response::OutboundRequestId,
-        oneshot::Sender<Result<RPCResponse>>,
+        PendingRequestInfo,
     > = HashMap::new();
 
     loop {
@@ -713,16 +727,37 @@ async fn network_event_loop(
                             }
                             // Outbound RPC response received
                             request_response::Message::Response { request_id, response } => {
-                                if let Some(tx) = pending_requests.remove(&request_id) {
-                                    let _ = tx.send(Ok(response));
+                                if let Some(info) = pending_requests.remove(&request_id) {
+                                    let _ = info.reply_tx.send(Ok(response));
                                 }
                             }
                         }
                     }
                     // Outbound RPC failed
                     SwarmEvent::Behaviour(WorkplaneBehaviourEvent::RequestResponse(request_response::Event::OutboundFailure { request_id, error, .. })) => {
-                        if let Some(tx) = pending_requests.remove(&request_id) {
-                            let _ = tx.send(Err(anyhow!("RPC failed: {:?}", error)));
+                        if let Some(info) = pending_requests.remove(&request_id) {
+                            let _ = info.reply_tx.send(Err(anyhow!("RPC failed: {:?}", error)));
+                        }
+                    }
+                    // Clean up pending requests when a peer disconnects (H-3 fix)
+                    SwarmEvent::ConnectionClosed { peer_id, num_established: 0, .. } => {
+                        // All connections to this peer are closed - clean up any pending requests
+                        let disconnected_requests: Vec<_> = pending_requests
+                            .iter()
+                            .filter(|(_, info)| info.peer_id == peer_id)
+                            .map(|(id, _)| *id)
+                            .collect();
+                        
+                        for request_id in disconnected_requests {
+                            if let Some(info) = pending_requests.remove(&request_id) {
+                                warn!(
+                                    "Cleaning up pending request {:?} due to peer {} disconnect",
+                                    request_id, peer_id
+                                );
+                                let _ = info.reply_tx.send(Err(anyhow!(
+                                    "Peer {} disconnected before response", peer_id
+                                )));
+                            }
                         }
                     }
                     _ => {}
@@ -758,7 +793,10 @@ async fn network_event_loop(
                             let _ = reply_tx.send(Err(anyhow!("Too many pending requests")));
                         } else {
                             let request_id = swarm.behaviour_mut().request_response.send_request(&target, request);
-                            pending_requests.insert(request_id, reply_tx);
+                            pending_requests.insert(request_id, PendingRequestInfo {
+                                peer_id: target,
+                                reply_tx,
+                            });
                         }
                     }
                     // Start listening on address

@@ -39,7 +39,10 @@ use tokio::sync::mpsc;
 // ============================================================================
 
 /// Type alias for scheduler input channel sender.
-pub type SchedulerInputSender = mpsc::UnboundedSender<(gossipsub::TopicHash, gossipsub::Message)>;
+/// 
+/// Uses a bounded channel to provide backpressure under message flooding.
+/// The capacity is set to allow burst handling while preventing OOM.
+pub type SchedulerInputSender = mpsc::Sender<(gossipsub::TopicHash, gossipsub::Message)>;
 
 /// Type alias for per-peer scheduler input channel map.
 type SchedulerInputChannels = LazyLock<Mutex<HashMap<PeerId, SchedulerInputSender>>>;
@@ -155,16 +158,34 @@ pub fn gossipsub_message(
 
         // First try to find the scheduler for this specific local peer
         if let Some(tx) = get_scheduler_input_for_peer(&local_peer_id) {
-            if let Err(e) = tx.send((topic, message)) {
-                error!("Failed to forward scheduler message: {}", e);
+            // Use try_send for backpressure - drop message if channel is full
+            match tx.try_send((topic, message)) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!(
+                        "Scheduler input channel full for peer {}, dropping message (backpressure)",
+                        local_peer_id
+                    );
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    error!("Scheduler input channel closed for peer {}", local_peer_id);
+                }
             }
             return;
         }
 
         // Fall back to global channel for single-node mode
         if let Some(tx) = SCHEDULER_INPUT_TX.get() {
-            if let Err(e) = tx.send((topic, message)) {
-                error!("Failed to forward scheduler message: {}", e);
+            match tx.try_send((topic, message)) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!(
+                        "Global scheduler input channel full, dropping message (backpressure)"
+                    );
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    error!("Global scheduler input channel closed");
+                }
             }
         } else {
             warn!(
